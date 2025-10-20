@@ -1,0 +1,22 @@
+[project]
+name = "artflow"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "accelerate>=1.10.1",
+    "datasets>=4.2.0",
+    "diffusers>=0.35.2",
+    "gradio>=5.49.1",
+    "pandas>=2.3.3",
+    "pillow>=11.3.0",
+    "requests>=2.32.5",
+    "torch>=2.9.0",
+    "torchvision>=0.24.0",
+    "transformers>=4.57.1",
+]
+
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple/"
+default = true
