@@ -9,6 +9,7 @@ dependencies = [
     "datasets>=4.2.0",
     "diffusers>=0.35.2",
     "gradio>=5.49.1",
+    "huggingface-hub>=0.35.3",
     "pandas>=2.3.3",
     "pillow>=11.3.0",
     "requests>=2.32.5",
@@ -20,3 +21,10 @@ dependencies = [
 [[tool.uv.index]]
 url = "https://mirrors.aliyun.com/pypi/simple/"
 default = true
+
+[dependency-groups]
+dev = [
+    "black>=25.9.0",
+    "mypy>=1.18.2",
+    "ruff>=0.14.1",
+]
