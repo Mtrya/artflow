@@ -13,8 +13,8 @@ generated from multiple vision-language models. The pipeline:
 Caption generation uses 4 different approaches:
 - Qwen-VL Plus with direct captioning prompt
 - Qwen-VL Plus with reverse image prompt (text-to-image style)
-- GPT-5 Mini with direct captioning prompt
-- Gemini 2.5 Flash with direct captioning prompt
+- GPT 5 Mini with direct captioning prompt
+- Template constructed by style, genre and artist
 """
 
 from datasets import load_dataset
@@ -31,7 +31,7 @@ except ImportError:
     from .get_captions import call_parallel, CAPTIONERS
 
 MAX_RETRIES = 3
-BATCH_SIZE = 16
+BATCH_SIZE = 4
 
 # Mapping dictionaries for integer indices to string names
 ARTIST_MAP = {
@@ -86,7 +86,7 @@ STYLE_MAP = {
 }
 
 # Step 1. Load dataset
-ds = load_dataset("huggan/wikiart")["train"].shuffle(2000).select(range(200))
+ds = load_dataset("huggan/wikiart")["train"]
 
 
 # Step 2. Filter for a subset
@@ -156,7 +156,7 @@ for retry_round in range(MAX_RETRIES):
         break
 
     print(f"Retry round {retry_round + 1}: {missing_count} images need captions")
-    captioned_ds = captioned_ds.map(add_captions, batched=True, batch_size=BATCH_SIZE//(2**retry_round))
+    captioned_ds = captioned_ds.map(add_captions, batched=True, batch_size=max(1,BATCH_SIZE//(2**retry_round)))
 
     if retry_round < MAX_RETRIES - 1:
         import time

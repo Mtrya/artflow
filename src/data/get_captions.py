@@ -8,6 +8,7 @@ import os
 from io import BytesIO
 import concurrent.futures
 from typing import Dict, List, Optional
+from PIL import Image
 
 DIRECT_CAPTION_PROMPT = """You are an expert art curator. Write a single, compelling sentence that describes the core essence of this artwork.
 
@@ -30,29 +31,22 @@ Include details on:
 CAPTIONERS = [
     {
         "name": "qwen-direct",
-        "provider": "siliconflow",
-        "model": "Qwen/Qwen3-VL-30B-A3B-Instruct",
-        "api_key_env": "SILICONFLOW_API_KEY",
+        "provider": "dashscope",
+        "model": "qwen3-vl-plus",
+        "api_key_env": "DASHSCOPE_API_KEY",
         "prompt": DIRECT_CAPTION_PROMPT
     },
     {
         "name": "qwen-reverse",
-        "provider": "siliconflow",
-        "model": "Qwen/Qwen3-VL-30B-A3B-Instruct",
-        "api_key_env": "SILICONFLOW_API_KEY",
+        "provider": "dashscope",
+        "model": "qwen3-vl-plus",
+        "api_key_env": "DASHSCOPE_API_KEY",
         "prompt": REVERSE_IMAGE_PROMPT
-    },
-    {
-        "name": "glm-direct",
-        "provider": "siliconflow",
-        "model": "zai-org/GLM-4.5V",
-        "api_key_env": "SILICONFLOW_API_KEY",
-        "prompt": DIRECT_CAPTION_PROMPT
     },
     {
         "name": "gpt-direct",
         "provider": "openrouter",
-        "model": "openai/gpt-5-nano",
+        "model": "openai/gpt-5-mini",
         "api_key_env": "OPENROUTER_API_KEY",
         "prompt": DIRECT_CAPTION_PROMPT
     }
@@ -61,8 +55,14 @@ CAPTIONERS = [
 
 def pil_to_base64(image):
     """Convert PIL Image to base64 string for OpenAI-compatible API"""
+    # Resize to 3/4 of original dimensions to speed up generation
+    width, height = image.size
+    new_width = int(width * 0.6)
+    new_height = int(height * 0.6)
+    resized_image = image.resize((new_width, new_height), Image.LANCZOS)
+
     buffer = BytesIO()
-    image.save(buffer, format="PNG")
+    resized_image.save(buffer, format="PNG")
     image_str = base64.b64encode(buffer.getvalue()).decode('utf-8')
     return image_str
 
@@ -106,10 +106,10 @@ def call_vision_api(base64_image: str, captioner_config: Dict[str,str]):
         ]
     }
 
-    if provider.lower() == "dashscope" and model == "qwen3-vl-plus":
-        payload["extra_body"] = {"enable_thinking": True, "thinking_budget": 64}
+    if provider.lower() == "dashscope" and model.startswith("qwen3-vl"):
+        payload["extra_body"] = {"enable_thinking": False}
     elif provider.lower() == "openrouter" and model.startswith("google/gemini-2.5"):
-        payload["reasoning"] = {"max_tokens": 64}
+        payload["reasoning"] = {"max_tokens": 4}
     elif provider.lower() == "openrouter" and model.startswith("openai/gpt-5"):
         payload["reasoning"] = {"effort": "low"}
     elif provider.lower() == "siliconflow" and model == "zai-org/GLM-4.5V":
