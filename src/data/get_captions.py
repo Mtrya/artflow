@@ -31,16 +31,16 @@ Include details on:
 CAPTIONERS = [
     {
         "name": "qwen-direct",
-        "provider": "dashscope",
-        "model": "qwen3-vl-plus",
-        "api_key_env": "DASHSCOPE_API_KEY",
+        "provider": "siliconflow",
+        "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
+        "api_key_env": "SILICONFLOW_API_KEY",
         "prompt": DIRECT_CAPTION_PROMPT
     },
     {
         "name": "qwen-reverse",
-        "provider": "dashscope",
-        "model": "qwen3-vl-plus",
-        "api_key_env": "DASHSCOPE_API_KEY",
+        "provider": "siliconflow",
+        "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
+        "api_key_env": "SILICONFLOW_API_KEY",
         "prompt": REVERSE_IMAGE_PROMPT
     },
     {
@@ -189,9 +189,9 @@ if __name__ == "__main__":
         """Test caption generation"""
         from PIL import Image
 
-        images = [Image.open("image1.png"), Image.open("image2.png")]
+        images = [Image.open("image.png")]
 
-        captions_batch = call_parallel(images, [{},{"qwenvl-reverse": "ocean wave crashing, turbulent foam, golden sunset glow, warm amber and ochre tones, watercolor wash technique, impressionistic brushstrokes, horizontal composition, rule of thirds framing, soft diffused lighting, atmospheric haze, J.M.W. Turner influence, romantic seascape, moody and serene ambiance, textured paper grain, vintage aesthetic"}])
+        captions_batch = call_parallel(images, [{}])
 
         print("\n=== CAPTION RESULTS ===")
         for img_idx, captions in enumerate(captions_batch):

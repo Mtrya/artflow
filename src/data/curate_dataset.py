@@ -31,58 +31,58 @@ except ImportError:
     from .get_captions import call_parallel, CAPTIONERS
 
 MAX_RETRIES = 3
-BATCH_SIZE = 4
+BATCH_SIZE = 6
 
 # Mapping dictionaries for integer indices to string names
 ARTIST_MAP = {
-    0: "Unknown Artist", 1: "boris-kustodiev", 2: "camille-pissarro", 3: "childe-hassam",
-    4: "claude-monet", 5: "edgar-degas", 6: "eugene-boudin", 7: "gustave-dore", 8: "ilya-repin",
-    9: "ivan-aivazovsky", 10: "ivan-shishkin", 11: "john-singer-sargent", 12: "marc-chagall",
-    13: "martiros-saryan", 14: "nicholas-roerich", 15: "pablo-picasso", 16: "paul-cezanne",
-    17: "pierre-auguste-renoir", 18: "pyotr-konchalovsky", 19: "raphael-kirchner", 20: "rembrandt",
-    21: "salvador-dali", 22: "vincent-van-gogh", 23: "hieronymus-bosch", 24: "leonardo-da-vinci",
-    25: "albrecht-durer", 26: "edouard-cortes", 27: "sam-francis", 28: "juan-gris",
-    29: "lucas-cranach-the-elder", 30: "paul-gauguin", 31: "konstantin-makovsky", 32: "egon-schiele",
-    33: "thomas-eakins", 34: "gustave-moreau", 35: "francisco-goya", 36: "edvard-munch",
-    37: "henri-matisse", 38: "fra-angelico", 39: "maxime-maufra", 40: "jan-matejko",
-    41: "mstislav-dobuzhinsky", 42: "alfred-sisley", 43: "mary-cassatt", 44: "gustave-loiseau",
-    45: "fernando-botero", 46: "zinaida-serebriakova", 47: "georges-seurat", 48: "isaac-levitan",
-    49: "joaquín-sorolla", 50: "jacek-malczewski", 51: "berthe-morisot", 52: "andy-warhol",
-    53: "arkhip-kuindzhi", 54: "niko-pirosmani", 55: "james-tissot", 56: "vasily-polenov",
-    57: "valentin-serov", 58: "pietro-perugino", 59: "pierre-bonnard", 60: "ferdinand-hodler",
-    61: "bartolome-esteban-murillo", 62: "giovanni-boldini", 63: "henri-martin", 64: "gustav-klimt",
-    65: "vasily-perov", 66: "odilon-redon", 67: "tintoretto", 68: "gene-davis", 69: "raphael",
-    70: "john-henry-twachtman", 71: "henri-de-toulouse-lautrec", 72: "antoine-blanchard",
-    73: "david-burliuk", 74: "camille-corot", 75: "konstantin-korovin", 76: "ivan-bilibin",
-    77: "titian", 78: "maurice-prendergast", 79: "edouard-manet", 80: "peter-paul-rubens",
-    81: "aubrey-beardsley", 82: "paolo-veronese", 83: "joshua-reynolds", 84: "kuzma-petrov-vodkin",
-    85: "gustave-caillebotte", 86: "lucian-freud", 87: "michelangelo", 88: "dante-gabriel-rossetti",
-    89: "felix-vallotton", 90: "nikolay-bogdanov-belsky", 91: "georges-braque", 92: "vasily-surikov",
-    93: "fernand-leger", 94: "konstantin-somov", 95: "katsushika-hokusai", 96: "sir-lawrence-alma-tadema",
-    97: "vasily-vereshchagin", 98: "ernst-ludwig-kirchner", 99: "mikhail-vrubel", 100: "orest-kiprensky",
-    101: "william-merritt-chase", 102: "aleksey-savrasov", 103: "hans-memling", 104: "amedeo-modigliani",
-    105: "ivan-kramskoy", 106: "utagawa-kuniyoshi", 107: "gustave-courbet", 108: "william-turner",
-    109: "theo-van-rysselberghe", 110: "joseph-wright", 111: "edward-burne-jones", 112: "koloman-moser",
-    113: "viktor-vasnetsov", 114: "anthony-van-dyck", 115: "raoul-dufy", 116: "frans-hals",
-    117: "hans-holbein-the-younger", 118: "ilya-mashkov", 119: "henri-fantin-latour", 120: "m.c.-escher",
-    121: "el-greco", 122: "mikalojus-ciurlionis", 123: "james-mcneill-whistler", 124: "karl-bryullov",
-    125: "jacob-jordaens", 126: "thomas-gainsborough", 127: "eugene-delacroix", 128: "canaletto"
+    0: "Unknown Artist", 1: "Boris Kustodiev", 2: "Camille Pissarro", 3: "Childe Hassam",
+    4: "Claude Monet", 5: "Edgar Degas", 6: "Eugene Boudin", 7: "Gustave Dore", 8: "Ilya Repin",
+    9: "Ivan Aivazovsky", 10: "Ivan Shishkin", 11: "John Singer Sargent", 12: "Marc Chagall",
+    13: "Martiros Saryan", 14: "Nicholas Roerich", 15: "Pablo Picasso", 16: "Paul Cezanne",
+    17: "Pierre Auguste Renoir", 18: "Pyotr Konchalovsky", 19: "Raphael Kirchner", 20: "Rembrandt",
+    21: "Salvador Dali", 22: "Vincent Van Gogh", 23: "Hieronymus Bosch", 24: "Leonardo da-vinci",
+    25: "Albrecht Durer", 26: "Edouard Cortes", 27: "Sam Francis", 28: "Juan Gris",
+    29: "Lucas Cranach the Elder", 30: "Paul Gauguin", 31: "Konstantin Makovsky", 32: "Egon Schiele",
+    33: "Thomas Eakins", 34: "Gustave Moreau", 35: "Francisco Goya", 36: "Edvard Munch",
+    37: "Henri Matisse", 38: "Fra Angelico", 39: "Maxime Maufra", 40: "Jan Matejko",
+    41: "Mstislav Dobuzhinsky", 42: "Alfred Sisley", 43: "Mary Cassatt", 44: "Gustave Loiseau",
+    45: "Fernando Botero", 46: "Zinaida Serebriakova", 47: "Georges Seurat", 48: "Isaac Levitan",
+    49: "Joaquín Sorolla", 50: "Jacek Malczewski", 51: "Berthe Morisot", 52: "Andy Warhol",
+    53: "Arkhip Kuindzhi", 54: "Niko Pirosmani", 55: "James Tissot", 56: "Vasily Polenov",
+    57: "Valentin Serov", 58: "Pietro Perugino", 59: "Pierre Bonnard", 60: "Ferdinand Hodler",
+    61: "Bartolome Esteban Murillo", 62: "Giovanni Boldini", 63: "Henri Martin", 64: "Gustav Klimt",
+    65: "Vasily Perov", 66: "Odilon Redon", 67: "Tintoretto", 68: "Gene Davis", 69: "Raphael",
+    70: "John Henry Twachtman", 71: "Henri de Toulouse-Lautrec", 72: "Antoine Blanchard",
+    73: "David Burliuk", 74: "Camille Corot", 75: "Konstantin Korovin", 76: "Ivan Bilibin",
+    77: "Titian", 78: "Maurice Prendergast", 79: "Edouard Manet", 80: "Peter Paul Rubens",
+    81: "Aubrey Beardsley", 82: "Paolo Veronese", 83: "Joshua Reynolds", 84: "Kuzma Petrov-Vodkin",
+    85: "Gustave Caillebotte", 86: "Lucian Freud", 87: "Michelangelo", 88: "Dante Gabriel Rossetti",
+    89: "Felix Vallotton", 90: "Nikolay Bogdanov-Belsky", 91: "Georges Braque", 92: "Vasily Surikov",
+    93: "Fernand Leger", 94: "Konstantin Somov", 95: "Katsushika Hokusai", 96: "Sir Lawrence Alma-Tadema",
+    97: "Vasily Vereshchagin", 98: "Ernst Ludwig Kirchner", 99: "Mikhail Vrubel", 100: "Orest Kiprensky",
+    101: "William Merritt Chase", 102: "Aleksey Savrasov", 103: "Hans Memling", 104: "Amedeo Modigliani",
+    105: "Ivan Kramskoy", 106: "Utagawa Kuniyoshi", 107: "Gustave Courbet", 108: "William Turner",
+    109: "Theo van Rysselberghe", 110: "Joseph Wright", 111: "Edward Burne-Jones", 112: "Koloman Moser",
+    113: "Viktor Vasnetsov", 114: "Anthony van Dyck", 115: "Raoul Dufy", 116: "Frans Hals",
+    117: "Hans Holbein the Younger", 118: "Ilya Mashkov", 119: "Henri Fantin-Latour", 120: "M.C. Escher",
+    121: "El Greco", 122: "Mikalojus Ciurlionis", 123: "James McNeill Whistler", 124: "Karl Bryullov",
+    125: "Jacob Jordaens", 126: "Thomas Gainsborough", 127: "Eugene Delacroix", 128: "Canaletto"
 }
 
 GENRE_MAP = {
-    0: "abstract_painting", 1: "cityscape", 2: "genre_painting", 3: "illustration",
-    4: "landscape", 5: "nude_painting", 6: "portrait", 7: "religious_painting",
-    8: "sketch_and_study", 9: "still_life", 10: "Unknown Genre"
+    0: "abstract painting", 1: "cityscape", 2: "genre painting", 3: "illustration",
+    4: "landscape", 5: "nude painting", 6: "portrait", 7: "religious painting",
+    8: "sketch and study", 9: "still life", 10: "Unknown Genre"
 }
 
 STYLE_MAP = {
-    0: "Abstract_Expressionism", 1: "Action_painting", 2: "Analytical_Cubism", 3: "Art_Nouveau",
-    4: "Baroque", 5: "Color_Field_Painting", 6: "Contemporary_Realism", 7: "Cubism",
-    8: "Early_Renaissance", 9: "Expressionism", 10: "Fauvism", 11: "High_Renaissance",
-    12: "Impressionism", 13: "Mannerism_Late_Renaissance", 14: "Minimalism", 15: "Naive_Art_Primitivism",
-    16: "New_Realism", 17: "Northern_Renaissance", 18: "Pointillism", 19: "Pop_Art",
-    20: "Post_Impressionism", 21: "Realism", 22: "Rococo", 23: "Romanticism",
-    24: "Symbolism", 25: "Synthetic_Cubism", 26: "Ukiyo_e"
+    0: "abstract expressionism", 1: "action painting", 2: "analytical cubism", 3: "art nouveau",
+    4: "baroque", 5: "color field painting", 6: "contemporary realism", 7: "cubism",
+    8: "early renaissance", 9: "expressionism", 10: "fauvism", 11: "high renaissance",
+    12: "impressionism", 13: "mannerism late renaissance", 14: "minimalism", 15: "naive art primitivism",
+    16: "new realism", 17: "northern renaissance", 18: "pointillism", 19: "pop art",
+    20: "post impressionism", 21: "realism", 22: "rococo", 23: "romanticism",
+    24: "symbolism", 25: "synthetic cubism", 26: "ukiyo-e"
 }
 
 # Step 1. Load dataset
@@ -91,12 +91,12 @@ ds = load_dataset("huggan/wikiart")["train"]
 
 # Step 2. Filter for a subset
 STYLES = [
-    "High_Renaissance", "Impressionism", "Post_Impressionism", 
-    "Baroque", "Northern_Renaissance", "Romanticism", 
-    "Abstract_Expressionism", "Ukiyo_e", "Art_Nouveau", 
-    "Expressionism", "Fauvism", "Symbolism", "Analytical_Cubism", 
-    "Pointillism", "Early_Renaissance", "Realism", "Rococo", 
-    "Pop_Art", "Mannerism_Late_Renaissance"
+    "high renaissance", "impressionism", "post impressionism", 
+    "baroque", "northern renaissance", "romanticism", 
+    "abstract expressionism", "ukiyo-e", "art nouveau", 
+    "expressionism", "fauvism", "symbolism", "analytical cubism", 
+    "pointillism", "early renaissance", "realism", "rococo", 
+    "pop art", "mannerism late renaissance"
     ]
 
 def filter_dataset(batch):
@@ -129,7 +129,7 @@ def add_captions(batch):
     else:
         existing_captions: List[Dict[str,str]] = []
         for i in range(len(images)):
-            # For example, existing = {"qwenvl-direct-caption": "<caption_content>"}
+            # For example, existing = {"qwen-direct-caption": "<caption_content>"}
             existing = {f"{c["name"]}-caption": batch.get(f"{c["name"]}-caption")[i] for c in CAPTIONERS}
             existing_captions.append(existing)
 
