@@ -20,6 +20,7 @@ Caption generation uses 4 different approaches:
 from datasets import load_dataset
 import sys
 import os
+from typing import List, Dict
 
 # Add src/data to path for imports
 sys.path.append(os.path.join(os.path.dirname(__file__)))
@@ -30,6 +31,7 @@ except ImportError:
     from .get_captions import call_parallel, CAPTIONERS
 
 MAX_RETRIES = 3
+BATCH_SIZE = 16
 
 # Mapping dictionaries for integer indices to string names
 ARTIST_MAP = {
@@ -84,7 +86,7 @@ STYLE_MAP = {
 }
 
 # Step 1. Load dataset
-ds = load_dataset("huggan/wikiart")["train"].shuffle(100).select(range(200))
+ds = load_dataset("huggan/wikiart")["train"].shuffle(2000).select(range(200))
 
 
 # Step 2. Filter for a subset
@@ -114,22 +116,36 @@ filtered_ds = ds.filter(filter_dataset, batched=True)
 print(f"Filtered dataset length: {len(ds)} -> {len(filtered_ds)}")
 
 # Step 3. Initial caption generation
-def add_captions(example):
-    """Add captions to a single example using multiple VLM models."""
-    existing = {f"{c['name']}-caption": example.get(f"{c['name']}-caption") for c in CAPTIONERS}
-    try:
-        captions = call_parallel(example["image"], existing)
-    except Exception:
-        captions = existing
+def add_captions(batch):
+    """Add captions to a batch of examples using multiple VLM models"""
+    images = batch["image"]
 
-    example["wikiart-caption"] = f"{STYLE_MAP[example['style']]} {GENRE_MAP[example['genre']]} by {ARTIST_MAP[example['artist']]}"
-    for captioner in CAPTIONERS:
-        example[f"{captioner['name']}-caption"] = captions.get(captioner["name"])
+    # Extract existing captions for all images
+    if batch.get(f"{CAPTIONERS[0]["name"]}-caption") is None: # first round, no existing captions, need to initialize the caption keys
+        batch["wikiart-caption"] = [None for _ in range(len(images))]
+        for c in CAPTIONERS:
+            batch[f"{c["name"]}-caption"] = [None for _ in range(len(images))]
+        existing_captions = None
+    else:
+        existing_captions: List[Dict[str,str]] = []
+        for i in range(len(images)):
+            # For example, existing = {"qwenvl-direct-caption": "<caption_content>"}
+            existing = {f"{c["name"]}-caption": batch.get(f"{c["name"]}-caption")[i] for c in CAPTIONERS}
+            existing_captions.append(existing)
 
-    return example
+    # Call VLM to caption
+    captions_batch = call_parallel(images, existing_captions)
+
+    # Add wikiart captions and distribute VLM results
+    for i in range(len(images)):
+        batch["wikiart-caption"][i] = f"{STYLE_MAP[batch['style'][i]]} {GENRE_MAP[batch['genre'][i]]} by {ARTIST_MAP[batch['artist'][i]]}"
+        for captioner in CAPTIONERS:
+            batch[f"{captioner['name']}-caption"][i] = captions_batch[i].get(captioner["name"])
+
+    return batch
 
 print("Generating initial captions...")
-captioned_ds = filtered_ds.map(add_captions)
+captioned_ds = filtered_ds.map(add_captions, batched=True, batch_size=BATCH_SIZE)
 
 # Step 4. Retry missing captions
 for retry_round in range(MAX_RETRIES):
@@ -140,7 +156,7 @@ for retry_round in range(MAX_RETRIES):
         break
 
     print(f"Retry round {retry_round + 1}: {missing_count} images need captions")
-    captioned_ds = captioned_ds.map(add_captions)
+    captioned_ds = captioned_ds.map(add_captions, batched=True, batch_size=BATCH_SIZE//(2**retry_round))
 
     if retry_round < MAX_RETRIES - 1:
         import time

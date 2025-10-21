@@ -7,7 +7,7 @@ import base64
 import os
 from io import BytesIO
 import concurrent.futures
-from typing import Dict
+from typing import Dict, List, Optional
 
 DIRECT_CAPTION_PROMPT = """You are an expert art curator. Write a single, compelling sentence that describes the core essence of this artwork.
 
@@ -29,30 +29,30 @@ Include details on:
 
 CAPTIONERS = [
     {
-        "name": "qwenvl-direct",
-        "provider": "dashscope",
-        "model": "qwen3-vl-flash",
-        "api_key_env": "DASHSCOPE_API_KEY",
+        "name": "qwen-direct",
+        "provider": "siliconflow",
+        "model": "Qwen/Qwen3-VL-30B-A3B-Instruct",
+        "api_key_env": "SILICONFLOW_API_KEY",
         "prompt": DIRECT_CAPTION_PROMPT
     },
     {
-        "name": "qwenvl-reverse",
-        "provider": "dashscope",
-        "model": "qwen3-vl-flash",
-        "api_key_env": "DASHSCOPE_API_KEY",
+        "name": "qwen-reverse",
+        "provider": "siliconflow",
+        "model": "Qwen/Qwen3-VL-30B-A3B-Instruct",
+        "api_key_env": "SILICONFLOW_API_KEY",
         "prompt": REVERSE_IMAGE_PROMPT
+    },
+    {
+        "name": "glm-direct",
+        "provider": "siliconflow",
+        "model": "zai-org/GLM-4.5V",
+        "api_key_env": "SILICONFLOW_API_KEY",
+        "prompt": DIRECT_CAPTION_PROMPT
     },
     {
         "name": "gpt-direct",
         "provider": "openrouter",
         "model": "openai/gpt-5-nano",
-        "api_key_env": "OPENROUTER_API_KEY",
-        "prompt": DIRECT_CAPTION_PROMPT
-    },
-    {
-        "name": "gemini-direct",
-        "provider": "openrouter",
-        "model": "google/gemini-2.5-flash-lite",
         "api_key_env": "OPENROUTER_API_KEY",
         "prompt": DIRECT_CAPTION_PROMPT
     }
@@ -77,8 +77,10 @@ def call_vision_api(base64_image: str, captioner_config: Dict[str,str]):
         base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     elif provider.lower() == "openrouter":
         base_url = "https://openrouter.ai/api/v1"
+    elif provider.lower() == "siliconflow":
+        base_url = "https://api.siliconflow.cn/v1"
     else:
-        raise ValueError(f"providers other than dashscope and openrouter not supported")
+        raise ValueError(f"provider {provider} not supported.")
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -95,7 +97,8 @@ def call_vision_api(base64_image: str, captioner_config: Dict[str,str]):
                     {
                         "type": "image_url",
                         "image_url": {
-                            "url": f"data:image/png;base64,{base64_image}"
+                            "url": f"data:image/png;base64,{base64_image}",
+                            "detail": "low"
                         }
                     }
                 ]
@@ -105,82 +108,95 @@ def call_vision_api(base64_image: str, captioner_config: Dict[str,str]):
 
     if provider.lower() == "dashscope" and model == "qwen3-vl-plus":
         payload["extra_body"] = {"enable_thinking": True, "thinking_budget": 64}
-    elif provider.lower() == "openrouter" and model == "google/gemini-2.5-flash":
+    elif provider.lower() == "openrouter" and model.startswith("google/gemini-2.5"):
         payload["reasoning"] = {"max_tokens": 64}
-    elif provider.lower() == "openrouter" and model == "openai/gpt-5-mini":
+    elif provider.lower() == "openrouter" and model.startswith("openai/gpt-5"):
         payload["reasoning"] = {"effort": "low"}
+    elif provider.lower() == "siliconflow" and model == "zai-org/GLM-4.5V":
+        payload["enable_thinking"] = False
 
     response = requests.post(
         f"{base_url}/chat/completions",
         headers=headers,
         json=payload,
-        timeout=10
+        timeout=45
     )
 
     response.raise_for_status()
     return response.json()
 
-def call_parallel(image, existing_captions: Dict[str,str]={}):
+def call_parallel(images, existing_captions: Optional[List[Dict[str,str]]]=None) -> List[Dict[str,str]]:
     """
     Call different VLM models simultaneously.
     If existing_captions is provided, it will only call models for missing captions.
     """
-    base64_image = pil_to_base64(image)
+    base64_images = [pil_to_base64(img) for img in images]
 
     if existing_captions is None:
-        existing_captions = {c["name"]: None for c in CAPTIONERS}
+        existing_captions = [{c["name"]: None for c in CAPTIONERS} for _ in images]
+    
+    assert len(base64_images) == len(existing_captions)
 
-    captioners_to_call = [
-        c for c in CAPTIONERS if existing_captions.get(c["name"]) is None 
-        or len(existing_captions.get(c["name"])) < 10
-    ]
+    # Flatten all (image_idx, captioner) pairs that need calls
+    tasks = []
+    for img_idx, base64_image in enumerate(base64_images):
+        for captioner in CAPTIONERS:
+            if existing_captions[img_idx].get(captioner["name"]) is None:
+                tasks.append((img_idx, base64_image, captioner))
 
-    if not captioners_to_call:
+    if not tasks:
         return existing_captions
     
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-        future_to_captioner = {
-            executor.submit(call_vision_api, base64_image, config): config["name"]
-            for config in captioners_to_call
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        # Map future -> (image_idx, captioner_name)
+        future_to_task = {
+            executor.submit(call_vision_api, base64_image, captioner): (img_idx, captioner["name"])
+            for img_idx, base64_image, captioner in tasks
         }
+        
+        # Initialize results structure
+        results = [{} for _ in images]
 
-        results = {}
-
-        for future in concurrent.futures.as_completed(future_to_captioner):
-            captioner_name = future_to_captioner[future]
+        for future in concurrent.futures.as_completed(future_to_task):
+            img_idx, captioner_name = future_to_task[future]
             try:
-                results[captioner_name] = future.result(timeout=15)
+                results[img_idx][captioner_name] = future.result(timeout=50)
             except Exception as exc:
-                print(f"{captioner_name} generated an exception: {exc}")
-                results[captioner_name] = None
+                print(f"{captioner_name} for image {img_idx} failed: {exc}")
+                results[img_idx][captioner_name] = None
+        
+    # Process results and merge with existing captions
+    final_captions = [existing.copy() for existing in existing_captions]
+    for img_idx, img_results in enumerate(results):
+        for captioner_name, result in img_results.items():
+            caption = None
+            # Extract message content from openai-compatible api response
+            if result and 'choices' in result and result['choices']:
+                message = result["choices"][0].get("message",{})
+                content = message.get("content")
+                if content and isinstance(content, str):
+                    caption_text = content.strip()
+                    if len(caption_text) >= 10:
+                        caption = caption_text
 
-    final_captions = existing_captions.copy()
-    for captioner_name, result in results.items():
-        caption = None
-        if result and 'choices' in result and result['choices']:
-            message = result["choices"][0].get("message",{})
-            content = message.get("content")
-            if content and isinstance(content, str):
-                caption_text = content.strip()
-                if len(caption_text) >= 10:
-                    caption = caption_text
-        final_captions[captioner_name] = caption
+            final_captions[img_idx][captioner_name] = caption
 
+    
     return final_captions
 
 if __name__ == "__main__":
     def test_captions():
         """Test caption generation"""
         from PIL import Image
-        
-        image = Image.open("image.png")
 
-        captions = call_parallel(image,{"qwenvl-reverse": "ocean wave crashing, turbulent foam, golden sunset glow, warm amber and ochre tones, watercolor wash technique, impressionistic brushstrokes, horizontal composition, rule of thirds framing, soft diffused lighting, atmospheric haze, J.M.W. Turner influence, romantic seascape, moody and serene ambiance, textured paper grain, vintage aesthetic"})
+        images = [Image.open("image1.png"), Image.open("image2.png")]
+
+        captions_batch = call_parallel(images, [{},{"qwenvl-reverse": "ocean wave crashing, turbulent foam, golden sunset glow, warm amber and ochre tones, watercolor wash technique, impressionistic brushstrokes, horizontal composition, rule of thirds framing, soft diffused lighting, atmospheric haze, J.M.W. Turner influence, romantic seascape, moody and serene ambiance, textured paper grain, vintage aesthetic"}])
 
         print("\n=== CAPTION RESULTS ===")
-        for captioner, caption in captions.items():
-            print(f"\n{captioner}:")
-            print(f"  {caption}")
+        for img_idx, captions in enumerate(captions_batch):
+            for captioner, caption in captions.items():
+                print(f"\n{captioner} for image {img_idx}:")
+                print(f"  {caption}")
 
-    
     test_captions()
