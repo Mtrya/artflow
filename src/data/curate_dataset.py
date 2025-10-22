@@ -9,10 +9,9 @@ generated from multiple vision-language models. The pipeline:
 4. Removes images that lack captions
 5. Uploads final dataset to HuggingFace Hub
 
-Caption generation uses 4 different approaches:
-- Qwen-VL Plus with direct captioning prompt
-- Qwen-VL Plus with reverse image prompt (text-to-image style)
-- GPT 5 Mini with direct captioning prompt
+Caption generation uses multiple different approaches with multiple models:
+- Direct captioning prompt
+- Reverse image prompt (text-to-image style)
 - Template constructed by style, genre and artist
 """
 
