@@ -6,9 +6,8 @@ generated from multiple vision-language models. The pipeline:
 1. Downloads huggan/wikiart dataset
 2. Filters for specific artistic styles and known artists/genres  
 3. Generates captions using multiple VLM models in parallel
-4. Retries missing captions automatically
-5. Removes images that still lack captions after retries
-6. Uploads final dataset to HuggingFace Hub
+4. Removes images that lack captions
+5. Uploads final dataset to HuggingFace Hub
 
 Caption generation uses 4 different approaches:
 - Qwen-VL Plus with direct captioning prompt
@@ -32,6 +31,7 @@ except ImportError:
 
 MAX_RETRIES = 3
 BATCH_SIZE = 6
+TEST_MODE = True
 
 # Mapping dictionaries for integer indices to string names
 ARTIST_MAP = {
@@ -112,7 +112,11 @@ def filter_dataset(batch):
     return mask
 
 print("Filtering original dataset...")
-filtered_ds = ds.filter(filter_dataset, batched=True)
+if TEST_MODE:
+    filtered_ds = ds.select(range(1080))
+else:
+    filtered_ds = ds.filter(filter_dataset, batched=True)
+
 print(f"Filtered dataset length: {len(ds)} -> {len(filtered_ds)}")
 
 # Step 3. Initial caption generation
@@ -147,22 +151,7 @@ def add_captions(batch):
 print("Generating initial captions...")
 captioned_ds = filtered_ds.map(add_captions, batched=True, batch_size=BATCH_SIZE)
 
-# Step 4. Retry missing captions
-for retry_round in range(MAX_RETRIES):
-    missing_count = sum(1 for x in captioned_ds if any(x.get(f"{c['name']}-caption") is None for c in CAPTIONERS))
-
-    if missing_count == 0:
-        print(f"All captions completed after {retry_round} retries")
-        break
-
-    print(f"Retry round {retry_round + 1}: {missing_count} images need captions")
-    captioned_ds = captioned_ds.map(add_captions, batched=True, batch_size=max(1,BATCH_SIZE//(2**retry_round)))
-
-    if retry_round < MAX_RETRIES - 1:
-        import time
-        time.sleep(5)
-
-# Step 5. Remove images that still have None captions
+# Step 4. Remove images that have None captions
 print("Removing images with persistent None captions...")
 
 def has_all_captions(example):
@@ -180,7 +169,7 @@ total_captions = len(final_ds) * len(CAPTIONERS)
 print(f"Total captions generated: {total_captions}")
 print(f"Captioners used: {[c['name'] for c in CAPTIONERS]}")
 
-# Step 6. Push to HuggingFace
+# Step 5. Push to HuggingFace
 print("Uploading final dataset to HuggingFace...")
 dataset_length = len(final_ds) // 1000
 final_ds.push_to_hub(f"kaupane/wikiart-captions-{dataset_length}k")

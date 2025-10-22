@@ -14,7 +14,7 @@ DIRECT_CAPTION_PROMPT = """You are an expert art curator. Write a single, compel
 
 Your description must be direct and start immediately with the subject, action, or mood. Do not use introductory phrases like "This is a painting of...", "The image depicts...", or "In this artwork...".
 
-Focus on what's in the image and what makes the image striking."""
+Focus on what's in the image and what makes the image striking. Maintain authenticity and accuracy, avoid generalizations."""
 
 REVERSE_IMAGE_PROMPT = """You are a prompt engineer for an advanced text-to-image model like Midjourney or DALL-E 3. Your task is to create the perfect prompt that would generate this exact image.
 
@@ -22,33 +22,41 @@ Your output must be a single string of descriptive phrases and comma-separated k
 
 Include details on:
 - Subject and its specific features
-- Artistic style (e.g., oil painting, impressionism, ukiyo-e)
-- Composition and framing (e.g., wide shot, portrait, rule of thirds)
-- Lighting (e.g., dramatic chiaroscuro, soft morning light, golden hour)
+- Object attributes, vision relations between objects, and environmental details
+- Artistic style
+- Composition and framing
+- Lighting
 - Color palette and mood
-- Influences from famous artists if applicable"""
+- Influences from famous artists (only if applicable)"""
 
 CAPTIONERS = [
     {
-        "name": "qwen-direct",
+        "name": "qwen3-direct",
         "provider": "siliconflow",
         "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
         "api_key_env": "SILICONFLOW_API_KEY",
         "prompt": DIRECT_CAPTION_PROMPT
     },
     {
-        "name": "qwen-reverse",
+        "name": "qwen3-reverse",
         "provider": "siliconflow",
         "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
         "api_key_env": "SILICONFLOW_API_KEY",
         "prompt": REVERSE_IMAGE_PROMPT
     },
     {
-        "name": "gpt-direct",
-        "provider": "openrouter",
-        "model": "openai/gpt-5-mini",
-        "api_key_env": "OPENROUTER_API_KEY",
+        "name": "qwen2.5-direct",
+        "provider": "siliconflow",
+        "model": "Qwen/Qwen2.5-VL-72B-Instruct",
+        "api_key_env": "SILICONFLOW_API_KEY",
         "prompt": DIRECT_CAPTION_PROMPT
+    },
+    {
+        "name": "qwen2.5-reverse",
+        "provider": "siliconflow",
+        "model": "Qwen/Qwen2.5-VL-72B-Instruct",
+        "api_key_env": "SILICONFLOW_API_KEY",
+        "prompt": REVERSE_IMAGE_PROMPT
     }
 ]
 
@@ -189,7 +197,7 @@ if __name__ == "__main__":
         """Test caption generation"""
         from PIL import Image
 
-        images = [Image.open("image.png")]
+        images = [Image.open("image2.png")]
 
         captions_batch = call_parallel(images, [{}])
 
