@@ -11,15 +11,23 @@ from typing import Dict, List, Optional
 
 from PIL import Image
 
+SYSTEM_PROMPT = """You are analyzing artwork. Be accurate, concise, and describe only what you directly observe in the image in English."""
+
 DIRECT_CAPTION_PROMPT = """You are an expert art curator. Write a single, compelling sentence that describes the core essence of this artwork.
 
 Your description must be direct and start immediately with the subject, action, or mood. Do not use introductory phrases like "This is a painting of...", "The image depicts...", or "In this artwork...".
 
 Focus on what's in the image and what makes the image striking. Maintain authenticity and accuracy, avoid generalizations."""
 
+SPATIAL_RELATIONSHIP_PROMPT = """You are an expert writing 'alt text' for web accessibility. Your task is to write a single, objective sentence describing the image's content, focusing on the spatial arrangement of its key elements.
+
+Your description must be direct and start immediately with the subject, action, or mood. Do not use introductory phrases like "This is a painting of...", "The image depicts...", or "In this artwork...".
+
+Focus on the location of objects relative to each other and the frame. Use clear, directional language. (e.g., 'the right foreground', 'behind') Cover emotion or style briefly and stick to a literal, spatial description."""
+
 REVERSE_IMAGE_PROMPT = """You are a prompt engineer for an advanced text-to-image model like Midjourney or DALL-E 3. Your task is to create the perfect prompt that would generate this exact image.
 
-Your output must be a single string of descriptive phrases and comma-separated keywords. Do not write any explanations.
+Your output must be a single string of descriptive phrases and comma-separated keywords. Do not write any explanations. Output directly without quotation marks.
 
 Include details on:
 - Subject and its specific features (location, texture, etc.)
@@ -30,40 +38,41 @@ Include details on:
 - Color palette and mood
 - Influences from famous artists (only if applicable)"""
 
-CAPTIONERS = [
+CAPTIONERS_QWEN = [
     {
         "name": "qwen-direct",
         "provider": "siliconflow",
-        "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
+        "model": "Qwen/Qwen3-VL-32B-Instruct",
         "api_key_env": "SILICONFLOW_API_KEY",
         "prompt": DIRECT_CAPTION_PROMPT
     },
     {
+        "name": "qwen-spatial",
+        "provider": "siliconflow",
+        "model": "Qwen/Qwen3-VL-32B-Instruct",
+        "api_key_env": "SILICONFLOW_API_KEY",
+        "prompt": SPATIAL_RELATIONSHIP_PROMPT
+    },
+    {
         "name": "qwen-reverse",
         "provider": "siliconflow",
-        "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
+        "model": "Qwen/Qwen3-VL-32B-Instruct",
         "api_key_env": "SILICONFLOW_API_KEY",
         "prompt": REVERSE_IMAGE_PROMPT
     },
+]
+
+CAPTIONERS_MISTRAL = [
     {
-        "name": "gpt-direct",
+        "name": "mistral",
         "provider": "openrouter",
-        "model": "openai/gpt-5-mini",
+        "model": "mistralai/mistral-small-3.2-24b-instruct",
         "api_key_env": "OPENROUTER_API_KEY",
         "prompt": DIRECT_CAPTION_PROMPT
     }
 ]
 
-CAPTIONERS_TEST = [{
-    "name": "mistral",
-    "provider": "openrouter",
-    "model": "mistralai/mistral-small-3.2-24b-instruct",
-    "api_key_env": "OPENROUTER_API_KEY",
-    "prompt": DIRECT_CAPTION_PROMPT
-}]
-
-
-def pil_to_base64(image):
+def pil_to_base64(image) -> str:
     """Convert PIL Image to base64 string for OpenAI-compatible API"""
     # Resize to 3/5 of original dimensions to speed up generation
     width, height = image.size
@@ -75,6 +84,12 @@ def pil_to_base64(image):
     resized_image.save(buffer, format="PNG")
     image_str = base64.b64encode(buffer.getvalue()).decode('utf-8')
     return image_str
+
+def unwrap_quotes(s: str) -> str:
+    """Remove surrounding quotes if present"""
+    if len(s) >= 2 and ((s[0] == '"' and s[-1] == '"') or (s[0] == "'" and s[-1] == "'")):
+        return s[1:-1]
+    return s
 
 def call_vision_api(base64_image: str, captioner_config: Dict[str,str]):
     """Call vision API"""
@@ -135,7 +150,7 @@ def call_vision_api(base64_image: str, captioner_config: Dict[str,str]):
     response.raise_for_status()
     return response.json()
 
-def call_parallel(images, existing_captions: Optional[List[Dict[str,str]]]=None) -> List[Dict[str,str]]:
+def call_parallel(images, captioners: Optional[List[Dict[str,str]]]=CAPTIONERS_QWEN, existing_captions: Optional[List[Dict[str,str]]]=None) -> List[Dict[str,str]]:
     """
     Call different VLM models simultaneously.
     If existing_captions is provided, it will only call models for missing captions.
@@ -143,14 +158,14 @@ def call_parallel(images, existing_captions: Optional[List[Dict[str,str]]]=None)
     base64_images = [pil_to_base64(img) for img in images]
 
     if existing_captions is None:
-        existing_captions = [{c["name"]: None for c in CAPTIONERS} for _ in images]
+        existing_captions = [{c["name"]: None for c in captioners} for _ in images]
     
     assert len(base64_images) == len(existing_captions)
 
     # Flatten all (image_idx, captioner) pairs that need calls
     tasks = []
     for img_idx, base64_image in enumerate(base64_images):
-        for captioner in CAPTIONERS:
+        for captioner in captioners:
             if existing_captions[img_idx].get(captioner["name"]) is None:
                 tasks.append((img_idx, base64_image, captioner))
 
@@ -186,6 +201,7 @@ def call_parallel(images, existing_captions: Optional[List[Dict[str,str]]]=None)
                 content = message.get("content")
                 if content and isinstance(content, str):
                     caption_text = content.strip()
+                    caption_text = unwrap_quotes(caption_text)
                     if len(caption_text) >= 10:
                         caption = caption_text
 
