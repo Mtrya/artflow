@@ -9,7 +9,8 @@ wheels/
 # Virtual environments
 .venv
 
-# Intermediate documents
+# Intermediate documents and tests
 *.md
 !README.md
 !notes/*.md
+test*
