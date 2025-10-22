@@ -10,6 +10,7 @@ generated from multiple vision-language models. The pipeline:
 
 Caption generation uses multiple different approaches with multiple models:
 - Direct captioning prompt
+- Spatial relationship prompt
 - Reverse image prompt (text-to-image style)
 - Template constructed by style, genre and artist
 """
