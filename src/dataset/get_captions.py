@@ -217,7 +217,7 @@ if __name__ == "__main__":
 
         images = [Image.open("test_image.png")]
 
-        captions_batch = call_parallel(images, [{}])
+        captions_batch = call_parallel(images)
 
         print("\n=== CAPTION RESULTS ===")
         for img_idx, captions in enumerate(captions_batch):

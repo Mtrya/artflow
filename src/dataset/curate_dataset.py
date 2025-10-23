@@ -171,7 +171,8 @@ def curate_dataset(
     batch_size: int,
     chunk_size: int,
     hf_username: str,
-    model: Optional[str]
+    model: Optional[str],
+    resume_from: Optional[int] = None,
 ) -> None:
     """Main pipeline: load dataset, generate captions, filter, and upload to HuggingFace"""
     # Step 1. Load dataset
@@ -195,6 +196,21 @@ def curate_dataset(
     # Step 2. Checkpoint-based caption generation with chunked processing
     print("Checking for existing checkpoint...")
     processed_ds, start_idx = load_checkpoint()
+
+    # Handle --resume-from argument to override checkpoint
+    if resume_from is not None:
+        print(f"Forcing resume from index {resume_from}.")
+        if processed_ds is not None:
+            # If checkpoint has more data than resume_from, truncate it
+            if resume_from < len(processed_ds):
+                print(f"Truncating checkpoint data from {len(processed_ds)} to {resume_from} examples.")
+                processed_ds = processed_ds.select(range(resume_from))
+                # Save the truncated dataset as the new checkpoint
+                save_checkpoint(processed_ds, resume_from)
+            elif resume_from > len(processed_ds):
+                print(f"Warning: --resume-from ({resume_from}) is greater than checkpoint size ({len(processed_ds)}).")
+
+        start_idx = resume_from
 
     if processed_ds is None:
         processed_ds = ds.select(range(0))  # empty dataset
@@ -276,6 +292,14 @@ if __name__ == "__main__":
         metavar="N",
         help="Set of captioner model and prompts (available: ['qwen','mistral'], default: 'qwen')"
     )
+    parser.add_argument(
+        "--resume-from",
+
+        type=int,
+        default=None,
+        metavar="INDEX",
+        help="Force resumption from a specific index, discarding any corrupted progress beyond it."
+    )
 
     args = parser.parse_args()
 
@@ -284,5 +308,6 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         chunk_size=args.chunk_size,
         hf_username=args.hf_username,
-        model=args.model
+        model=args.model,
+        resume_from=args.resume_from
     )
