@@ -72,7 +72,7 @@ CAPTIONERS_MISTRAL = [
     }
 ]
 
-def pil_to_base64(image) -> str:
+def pil_to_base64(image: Image.Image) -> str:
     """Convert PIL Image to base64 string for OpenAI-compatible API"""
     # Resize to 3/5 of original dimensions to speed up generation
     width, height = image.size
@@ -150,7 +150,7 @@ def call_vision_api(base64_image: str, captioner_config: Dict[str,str]):
     response.raise_for_status()
     return response.json()
 
-def call_parallel(images, captioners: Optional[List[Dict[str,str]]]=CAPTIONERS_QWEN, existing_captions: Optional[List[Dict[str,str]]]=None) -> List[Dict[str,str]]:
+def call_parallel(images: List[Image.Image], captioners: Optional[List[Dict[str,str]]]=CAPTIONERS_QWEN, existing_captions: Optional[List[Dict[str,str]]]=None) -> List[Dict[str,str]]:
     """
     Call different VLM models simultaneously.
     If existing_captions is provided, it will only call models for missing captions.

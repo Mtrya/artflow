@@ -173,6 +173,7 @@ def curate_dataset(
     hf_username: str,
     model: Optional[str],
     resume_from: Optional[int] = None,
+    max_retries: int = 3,
 ) -> None:
     """Main pipeline: load dataset, generate captions, filter, and upload to HuggingFace"""
     # Step 1. Load dataset
@@ -236,8 +237,33 @@ def curate_dataset(
     captioned_ds = processed_ds
     print("\nCaption generation complete!")
 
-    # Step 3. Remove images that have None captions
-    print("Removing images with None captions...")
+    # Step 2.5: Retry examples with missing captions
+    print("\nChecking for examples with missing captions...")
+
+    for attempt in range(1, max_retries + 1):
+        # Split dataset into complete and incomplete
+        complete_ds = captioned_ds.filter(has_all_captions)
+        incomplete_ds = captioned_ds.filter(lambda x: not has_all_captions(x))
+
+        if len(incomplete_ds) == 0:
+            print("All examples have complete captions!")
+            break
+
+        print(f"\nRetry attempt {attempt}/{max_retries}: {len(incomplete_ds)} examples missing captions")
+
+        # Retry caption generation for incomplete examples
+        retried_ds = incomplete_ds.map(add_captions, batched=True, batch_size=batch_size)
+
+        # Merge back: complete examples + retried examples
+        captioned_ds = concatenate_datasets([complete_ds, retried_ds])
+
+        # Save checkpoint after retry
+        save_checkpoint(captioned_ds, len(ds))
+
+    print("\nRetry phase complete!")
+
+    # Step 3. Remove images that still have None captions after retries
+    print("Removing images that failed all retry attempts...")
 
     final_ds = captioned_ds.filter(has_all_captions)
 
@@ -294,11 +320,17 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--resume-from",
-
         type=int,
         default=None,
         metavar="INDEX",
         help="Force resumption from a specific index, discarding any corrupted progress beyond it."
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=3,
+        metavar="N",
+        help="Maximum number of retry attempts for examples with missing captions (default: 3)"
     )
 
     args = parser.parse_args()
@@ -309,5 +341,6 @@ if __name__ == "__main__":
         chunk_size=args.chunk_size,
         hf_username=args.hf_username,
         model=args.model,
-        resume_from=args.resume_from
+        resume_from=args.resume_from,
+        max_retries=args.max_retries
     )
