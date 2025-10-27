@@ -8,7 +8,7 @@ from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 import torch
 
 def encode_text(
-    text: List[str],
+    texts: List[str],
     model: Qwen3VLForConditionalGeneration,
     processor: AutoProcessor,
     pooling: bool
@@ -29,7 +29,7 @@ def encode_text(
     """
 
     inputs = processor(
-        text=text, 
+        text=texts, 
         return_tensors="pt", 
         padding=True,
         truncation=True,
@@ -38,7 +38,7 @@ def encode_text(
 
     with torch.no_grad():
         outputs = model(**inputs, output_hidden_states=True)
-        embeddings = outputs.hidden_states[-1] # [b, s, d]
+        embedding = outputs.hidden_states[-1] # [b, s, d]
 
     mask = inputs.attention_mask # [b, s]
 
@@ -46,9 +46,9 @@ def encode_text(
     if pooling:
         # Mean pooling
         mask_unsqueezed = mask.unsqueeze(-1) # [b, s, 1]
-        pooled = (embeddings * mask_unsqueezed).sum(1) / mask_unsqueezed.sum(1)
+        pooled = (embedding * mask_unsqueezed).sum(1) / mask_unsqueezed.sum(1)
 
-    return embeddings, mask, pooled
+    return embedding, mask, pooled
 
 if __name__ == "__main__":
     model = Qwen3VLForConditionalGeneration.from_pretrained(
@@ -58,10 +58,10 @@ if __name__ == "__main__":
     )
     processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-4B-Instruct")
 
-    text = ["Impressionism landscape by Claude Monet"]
+    texts = ["Impressionism landscape by Claude Monet", "romanticism marina by Van Gogh"]
 
-    embeddings, mask, pooled = encode_text(text, model, processor, True)
+    embedding, mask, pooled = encode_text(texts, model, processor, True)
 
-    print(f"Embedding shape: {embeddings.shape}")
+    print(f"Embedding shape: {embedding.shape}")
     print(f"Mask shape: {mask.shape}")
     print(f"Pooled shape: {pooled.shape}")
