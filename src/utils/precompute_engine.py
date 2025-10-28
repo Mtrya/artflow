@@ -241,6 +241,7 @@ class PrecomputeEngine:
         caption_scheduling_args: Optional[Dict[str, Any]]=None,
         do_data_augmentation: Optional[bool]=None,
         data_augmentation_args: Optional[Dict[str, Any]]=None,
+        cfg_drop_prob: Optional[float]=None,
     ) -> None:
         self.caption_fields = list(caption_fields)
         self.text_encoder = text_encoder
@@ -282,6 +283,8 @@ class PrecomputeEngine:
             "aspect_ratio_range": (0.75, 1.33),
             "mask_blur_radius": 3.0,
         }
+
+        self.cfg_drop_prob = cfg_drop_prob or 0.1
 
         self.size_to_bucket = {
             tuple(size): bucket_id for bucket_id, size in self.resolution_buckets.items()
@@ -350,6 +353,10 @@ class PrecomputeEngine:
                 else:
                     sampled_caption = _sample_caption(caption_candidates, 0.5, 0.0, 1.0) # equal probabilities
 
+                # Apply CFG caption dropping
+                if random.random() < self.cfg_drop_prob:
+                    sampled_caption = ""
+
                 processed_images.append(augmented_image)
                 bucket_ids.append(bucket_id)
                 captions.append(sampled_caption)
@@ -413,6 +420,7 @@ def precompute(
     caption_scheduling_args: Optional[Dict[str, Any]]=None,
     do_data_augmentation: Optional[bool]=None,
     data_augmentation_args: Optional[Dict[str, Any]]=None,
+    cfg_drop_prob: Optional[float]=None,
     stage: float=0.5,
     map_batch_size: int=8,
 ) -> Dataset:
@@ -430,6 +438,7 @@ def precompute(
         caption_scheduling_args=caption_scheduling_args,
         do_data_augmentation=do_data_augmentation,
         data_augmentation_args=data_augmentation_args,
+        cfg_drop_prob=cfg_drop_prob,
     )
     return engine.run(dataset, stage=stage, map_batch_size=map_batch_size)
 
@@ -623,6 +632,10 @@ def _test_sample_resolution_bucket(
             frequency = counts[bucket_id] / sample_count
             aspect_ratio = w / h
             print(f"  Bucket {bucket_id} ({w}x{h}, {aspect_ratio:.2f}): {frequency:.2f}")
+
+def _test_precompute_engine():
+    """Test precompute function with kaupane/wikiart-captions-2k"""
+    pass
 
 if __name__ == "__main__":
     """

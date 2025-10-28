@@ -1,8 +1,9 @@
+"""DataLoader utilities for resolution bucket sampling and batching."""
 
-
-
+from typing import List, Dict, Any, Optional
 import random
 
+import torch
 from torch.utils.data import Sampler
 
 
@@ -50,6 +51,91 @@ class ResolutionBucketSampler(Sampler):
         for bucket_indices in buckets.values():
             total_batches += len(bucket_indices) // self.batch_size
         return total_batches
+
+def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
+    """Collate function for batching precomputed dataset samples.
+
+    Handles variable-length text sequences by padding to max length in batch.
+
+    Args:
+        batch: List of dataset samples, each containing:
+            - caption: str
+            - resolution_bucket_id: int
+            - latents: torch.Tensor of shape (C, H, W)
+            - text_embedding: torch.Tensor of shape (seq_len, hidden_dim)
+            - attention_mask: torch.Tensor of shape (seq_len,)
+            - pooled_text_embedding: Optional[torch.Tensor] of shape (hidden_dim,)
+
+    Returns:
+        Batched dictionary with:
+            - latents: torch.Tensor of shape (B, C, H, W)
+            - text_embeddings: torch.Tensor of shape (B, max_seq_len, hidden_dim)
+            - attention_masks: torch.Tensor of shape (B, max_seq_len)
+            - pooled_text_embeddings: Optional[torch.Tensor] of shape (B, hidden_dim)
+            - captions: List[str] of length B
+            - resolution_bucket_ids: torch.Tensor of shape (B,)
+    """
+    batch_size = len(batch)
+
+    # Extract components
+    latents = [sample["latents"] for sample in batch]
+    text_embeddings = [sample["text_embedding"] for sample in batch]
+    attention_masks = [sample["attention_mask"] for sample in batch]
+    pooled_embeddings = [sample.get("pooled_text_embedding") for sample in batch]
+    captions = [sample["caption"] for sample in batch]
+    bucket_ids = [sample["resolution_bucket_id"] for sample in batch]
+
+    # Stack latents (all same resolution in bucket)
+    latents_batch = torch.stack(latents, dim=0)
+
+    # Find max sequence length for padding
+    max_seq_len = max(emb.shape[0] for emb in text_embeddings)
+    hidden_dim = text_embeddings[0].shape[1]
+
+    # Pad text embeddings and attention masks
+    padded_embeddings = []
+    padded_masks = []
+
+    for emb, mask in zip(text_embeddings, attention_masks):
+        seq_len = emb.shape[0]
+        if seq_len < max_seq_len:
+            pad_len = max_seq_len - seq_len
+            # Pad embeddings with zeros
+            padded_emb = torch.cat([
+                emb,
+                torch.zeros(pad_len, hidden_dim, dtype=emb.dtype, device=emb.device)
+            ], dim=0)
+            # Pad mask with zeros (0 = ignore)
+            padded_mask = torch.cat([
+                mask,
+                torch.zeros(pad_len, dtype=mask.dtype, device=mask.device)
+            ], dim=0)
+        else:
+            padded_emb = emb
+            padded_mask = mask
+
+        padded_embeddings.append(padded_emb)
+        padded_masks.append(padded_mask)
+
+    text_embeddings_batch = torch.stack(padded_embeddings, dim=0)
+    attention_masks_batch = torch.stack(padded_masks, dim=0)
+
+    # Stack pooled embeddings if present
+    pooled_batch = None
+    if pooled_embeddings[0] is not None:
+        pooled_batch = torch.stack([p for p in pooled_embeddings if p is not None], dim=0)
+
+    # Convert bucket IDs to tensor
+    bucket_ids_batch = torch.tensor(bucket_ids, dtype=torch.long)
+
+    return {
+        "latents": latents_batch,
+        "text_embeddings": text_embeddings_batch,
+        "attention_masks": attention_masks_batch,
+        "pooled_text_embeddings": pooled_batch,
+        "captions": captions,
+        "resolution_bucket_ids": bucket_ids_batch,
+    }
 
 def test_resolution_bucket_sampler():
     """Test the ResolutionBucketSampler to visualize batch grouping and randomization."""
