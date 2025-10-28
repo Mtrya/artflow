@@ -19,7 +19,7 @@ import time
 import os
 import json
 import argparse
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Set
 
 from datasets import load_dataset, Dataset, concatenate_datasets
 
@@ -84,6 +84,66 @@ STYLE_MAP = {
     24: "symbolism", 25: "synthetic cubism", 26: "ukiyo-e"
 }
 
+# Create reverse mappings for filtering
+ARTIST_MAP_REVERSE = {name.lower(): idx for idx, name in ARTIST_MAP.items()}
+GENRE_MAP_REVERSE = {name.lower(): idx for idx, name in GENRE_MAP.items()}
+STYLE_MAP_REVERSE = {name.lower(): idx for idx, name in STYLE_MAP.items()}
+
+def parse_filter_input(filter_input: Optional[str], name_map: Dict[str, int], filter_type: str) -> Set[int]:
+    """Parse and validate filter input, returning a set of valid indices."""
+    if not filter_input:
+        return set()
+    
+    names = [name.strip().lower() for name in filter_input.split(',')]
+    valid_indices = set()
+    invalid_names = []
+    
+    for name in names:
+        if name in name_map:
+            valid_indices.add(name_map[name])
+        else:
+            invalid_names.append(name)
+    
+    if invalid_names:
+        print(f"Warning: Invalid {filter_type} names provided: {invalid_names}. "
+              f"Valid {filter_type}s: {[k for k in name_map.keys() if k != 'unknown artist']}[:5]...")
+    
+    return valid_indices
+
+def apply_filtering(ds: Dataset, artists: Optional[str], genres: Optional[str], styles: Optional[str]) -> Dataset:
+    """Apply filtering based on artist, genre, and style specifications."""
+    artist_indices = parse_filter_input(artists, ARTIST_MAP_REVERSE, "artist")
+    genre_indices = parse_filter_input(genres, GENRE_MAP_REVERSE, "genre")
+    style_indices = parse_filter_input(styles, STYLE_MAP_REVERSE, "style")
+    
+    # Log filter information
+    if artist_indices:
+        artist_names = [k for k, v in ARTIST_MAP_REVERSE.items() if v in artist_indices]
+        print(f"Filtering for artists: {artist_names}")
+    if genre_indices:
+        genre_names = [k for k, v in GENRE_MAP_REVERSE.items() if v in genre_indices]
+        print(f"Filtering for genres: {genre_names}")
+    if style_indices:
+        style_names = [k for k, v in STYLE_MAP_REVERSE.items() if v in style_indices]
+        print(f"Filtering for styles: {style_names}")
+    
+    # Create batched filter function
+    def batch_filter_fn(batch):
+        artist_matches = [not artist_indices or artist in artist_indices for artist in batch['artist']]
+        genre_matches = [not genre_indices or genre in genre_indices for genre in batch['genre']]
+        style_matches = [not style_indices or style in style_indices for style in batch['style']]
+        
+        # Combine all conditions with AND logic
+        combined_matches = [am and gm and sm for am, gm, sm in zip(artist_matches, genre_matches, style_matches)]
+        
+        return combined_matches
+    
+    # Apply filtering with batching
+    filtered_ds = ds.filter(batch_filter_fn, batched=True, batch_size=1000)
+    print(f"Dataset filtered: {len(ds)} -> {len(filtered_ds)} examples")
+    
+    return filtered_ds
+
 def save_checkpoint(processed_ds: Dataset, next_idx: int) -> None:
     """Save current processing progress"""
     import shutil
@@ -133,7 +193,7 @@ def load_checkpoint() -> Tuple[Optional[Dataset], int]:
 
     return None, 0
 
-def add_captions(batch):
+def add_captions(batch: Dict, captioners: List[Dict[str,str]]):
     """Add captions to a batch of examples using multiple VLM models"""
     images = batch["image"]
 
@@ -162,7 +222,7 @@ def add_captions(batch):
 
     return batch
 
-def has_all_captions(example):
+def has_all_captions(example: Dict, captioners: List[Dict[str,str]]):
     """Check if example has all captions (no None values)"""
     return all(example.get(f"{c['name']}") is not None for c in captioners)
 
@@ -174,10 +234,17 @@ def curate_dataset(
     model: Optional[str],
     resume_from: Optional[int] = None,
     max_retries: int = 3,
+    artists: Optional[str] = None,
+    genres: Optional[str] = None,
+    styles: Optional[str] = None,
 ) -> None:
     """Main pipeline: load dataset, generate captions, filter, and upload to HuggingFace"""
     # Step 1. Load dataset
     ds = load_dataset("huggan/wikiart")["train"]
+    
+    # Apply filtering if specified
+    if artists or genres or styles:
+        ds = apply_filtering(ds, artists, genres, styles)
 
     # Apply range limit if specified
     if range_limit is not None:
@@ -186,7 +253,6 @@ def curate_dataset(
         print(f"Limiting dataset to first {actual_limit} examples...")
         ds = ds.select(range(actual_limit))
 
-    global captioners
     if model.lower() == "qwen":
         captioners = CAPTIONERS_QWEN
     elif model.lower() == "mistral":
@@ -226,7 +292,7 @@ def curate_dataset(
 
         # Process this chunk
         chunk = ds.select(range(chunk_start, chunk_end))
-        captioned_chunk = chunk.map(add_captions, batched=True, batch_size=batch_size)
+        captioned_chunk = chunk.map(lambda batch: add_captions(batch, captioners), batched=True, batch_size=batch_size)
 
         # Merge with already processed data
         processed_ds = concatenate_datasets([processed_ds, captioned_chunk])
@@ -242,8 +308,8 @@ def curate_dataset(
 
     for attempt in range(1, max_retries + 1):
         # Split dataset into complete and incomplete
-        complete_ds = captioned_ds.filter(has_all_captions)
-        incomplete_ds = captioned_ds.filter(lambda x: not has_all_captions(x))
+        complete_ds = captioned_ds.filter(lambda x: has_all_captions(x, captioners))
+        incomplete_ds = captioned_ds.filter(lambda x: not has_all_captions(x, captioners))
 
         if len(incomplete_ds) == 0:
             print("All examples have complete captions!")
@@ -252,7 +318,7 @@ def curate_dataset(
         print(f"\nRetry attempt {attempt}/{max_retries}: {len(incomplete_ds)} examples missing captions")
 
         # Retry caption generation for incomplete examples
-        retried_ds = incomplete_ds.map(add_captions, batched=True, batch_size=batch_size)
+        retried_ds = incomplete_ds.map(lambda batch: add_captions(batch, captioners), batched=True, batch_size=batch_size)
 
         # Merge back: complete examples + retried examples
         captioned_ds = concatenate_datasets([complete_ds, retried_ds])
@@ -265,7 +331,7 @@ def curate_dataset(
     # Step 3. Remove images that still have None captions after retries
     print("Removing images that failed all retry attempts...")
 
-    final_ds = captioned_ds.filter(has_all_captions)
+    final_ds = captioned_ds.filter(lambda x: has_all_captions(x, captioners))
 
     total_captions = len(final_ds) * len(captioners)
     print(f"Total captions generated: {total_captions}")
@@ -326,6 +392,27 @@ if __name__ == "__main__":
         help="Force resumption from a specific index, discarding any corrupted progress beyond it."
     )
     parser.add_argument(
+        "--artists",
+        type=str,
+        default=None,
+        metavar="ARTISTS",
+        help="Comma-separated list of artists to include (e.g., 'van gogh, monet, picasso')"
+    )
+    parser.add_argument(
+        "--genres",
+        type=str,
+        default=None,
+        metavar="GENRES",
+        help="Comma-separated list of genres to include (e.g., 'portrait, landscape, still life')"
+    )
+    parser.add_argument(
+        "--styles",
+        type=str,
+        default=None,
+        metavar="STYLES",
+        help="Comma-separated list of styles to include (e.g., 'impressionism, cubism, realism')"
+    )
+    parser.add_argument(
         "--max-retries",
         type=int,
         default=3,
@@ -342,5 +429,8 @@ if __name__ == "__main__":
         hf_username=args.hf_username,
         model=args.model,
         resume_from=args.resume_from,
-        max_retries=args.max_retries
+        max_retries=args.max_retries,
+        artists=args.artists,
+        genres=args.genres,
+        styles=args.styles
     )

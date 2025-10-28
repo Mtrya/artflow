@@ -64,9 +64,9 @@ CAPTIONERS_QWEN = [
 
 CAPTIONERS_MISTRAL = [
     {
-        "name": "mistral",
+        "name": "mistral-caption",
         "provider": "openrouter",
-        "model": "mistralai/mistral-small-3.2-24b-instruct",
+        "model": "mistralai/mistral-medium-3.1",
         "api_key_env": "OPENROUTER_API_KEY",
         "prompt": DIRECT_CAPTION_PROMPT
     }
@@ -217,7 +217,7 @@ if __name__ == "__main__":
 
         images = [Image.open("test_image.png")]
 
-        captions_batch = call_parallel(images)
+        captions_batch = call_parallel(images, captioners=CAPTIONERS_MISTRAL)
 
         print("\n=== CAPTION RESULTS ===")
         for img_idx, captions in enumerate(captions_batch):
