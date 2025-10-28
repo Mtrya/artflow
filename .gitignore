@@ -8,6 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+settings*json
 
 # Intermediate documents and tests
 *.md
