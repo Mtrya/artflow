@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import random
 import numpy as np
 import torch
-from datasets import Dataset
+from datasets import Dataset, concatenate_datasets
 from PIL import Image, ImageFilter
 from torchvision.transforms import ColorJitter
 try:
@@ -226,15 +226,12 @@ def _apply_data_augmentations(
     return Image.fromarray(output)
 
 class PrecomputeEngine:
-    """Reusable orchestrator that caches text encodings across epochs."""
-
     def __init__(
         self,
         caption_fields: List[str],
-        text_encoder: Any,
-        processor: Any,
+        text_encoder_path: str,
         pooling: bool,
-        vae: Any,
+        vae_path: str,
         resolution_buckets: Optional[Dict[int, Tuple[int, int]]]=None,
         resolution_probs: Optional[List[float]]=None,
         do_caption_scheduling: Optional[bool]=None,
@@ -244,10 +241,9 @@ class PrecomputeEngine:
         cfg_drop_prob: Optional[float]=None,
     ) -> None:
         self.caption_fields = list(caption_fields)
-        self.text_encoder = text_encoder
-        self.processor = processor
+        self.text_encoder_path = text_encoder_path
         self.pooling = pooling
-        self.vae = vae
+        self.vae_path = vae_path
 
         self.resolution_buckets = resolution_buckets or {
             1: (336, 336),
@@ -290,70 +286,51 @@ class PrecomputeEngine:
             tuple(size): bucket_id for bucket_id, size in self.resolution_buckets.items()
         }
 
-        self.text_cache: Dict[Tuple[str, bool], Optional[Tuple[torch.Tensor, torch.Tensor, Any]]] = {}
-
-    def reset_cache(self) -> None:
-        """Clear all cached text embeddings."""
-
-        self.text_cache.clear()
-
-    def run(self, dataset: Dataset, stage: float, map_batch_size: int = 8) -> Dataset:
-        """Apply pre-computation to a dataset using the persistent cache."""
+    def _pass1_preprocessing(
+        self,
+        dataset: Dataset,
+        stage: float,
+        batch_size: int
+    ) -> Dataset:
+        """Pass 1: Sample resolutions, apply augmentations, sample captions."""
 
         min_prob = float(self.caption_scheduling_args["min_prob"])
         max_prob = float(self.caption_scheduling_args["max_prob"])
 
-        def _ensure_pil(image: Any) -> Image.Image:
-            if isinstance(image, Image.Image):
-                return image
-            if isinstance(image, np.ndarray):
-                if image.dtype != np.uint8:
-                    image = np.clip(image * 255.0, 0, 255).astype(np.uint8)
-                return Image.fromarray(image)
-            return image.convert("RGB")  # assume caller-provided objects are compatible
-
-        def _process_batch(batch: Dict[str, List[Any]]) -> Dict[str, List[Any]]:
+        def _process(batch: Dict) -> Dict:
             images = batch["image"]
-
             batch_size = len(images)
+
             processed_images: List[Image.Image] = []
             bucket_ids: List[int] = []
             captions: List[str] = []
 
             for idx in range(batch_size):
-                pil_image = _ensure_pil(images[idx])
-                width, height = pil_image.size
+                image = images[idx]
+                width, height = image.size
 
                 resolution = _sample_resolution_bucket(
-                    width,
-                    height,
-                    self.resolution_buckets,
-                    self.resolution_probs,
+                    width, height, self.resolution_buckets, self.resolution_probs
                 )
 
                 bucket_id = self.size_to_bucket[tuple(resolution)]
 
                 if self.do_data_augmentation:
                     augmented_image = _apply_data_augmentations(
-                        pil_image,
-                        resolution,
-                        self.data_augmentation_args,
+                        image, resolution, self.data_augmentation_args
                     )
                 else:
-                    augmented_image = pil_image.resize(resolution, Image.BICUBIC)
+                    augmented_image = image.resize(resolution, Image.BICUBIC)
 
                 caption_candidates = [
-                    batch[field][idx].strip()
-                    for field in self.caption_fields
-                    if isinstance(batch[field][idx], str) and batch[field][idx].strip()
+                    batch[field][idx] for field in self.caption_fields
                 ]
 
                 if self.do_caption_scheduling:
                     sampled_caption = _sample_caption(caption_candidates, stage, min_prob, max_prob)
                 else:
-                    sampled_caption = _sample_caption(caption_candidates, 0.5, 0.0, 1.0) # equal probabilities
+                    sampled_caption = _sample_caption(caption_candidates, 0.5, 0.0, 1.0)
 
-                # Apply CFG caption dropping
                 if random.random() < self.cfg_drop_prob:
                     sampled_caption = ""
 
@@ -361,77 +338,187 @@ class PrecomputeEngine:
                 bucket_ids.append(bucket_id)
                 captions.append(sampled_caption)
 
-            latents_batch = encode_image(processed_images, self.vae).detach().cpu()
-
-            missing_captions: List[str] = []
-            missing_keys: List[Tuple[str, bool]] = []
-            for caption in captions:
-                cache_key = (caption, self.pooling)
-                if cache_key not in self.text_cache:
-                    self.text_cache[cache_key] = None
-                    missing_keys.append(cache_key)
-                    missing_captions.append(caption)
-
-            if missing_captions:
-                embeddings, masks, pooled = encode_text(
-                    missing_captions,
-                    self.text_encoder,
-                    self.processor,
-                    self.pooling,
-                )
-                embeddings = embeddings.detach().cpu()
-                masks = masks.detach().cpu()
-                pooled_cpu = None if pooled is None else pooled.detach().cpu()
-
-                for idx, cache_key in enumerate(missing_keys):
-                    pooled_value = None if pooled_cpu is None else pooled_cpu[idx]
-                    self.text_cache[cache_key] = (embeddings[idx], masks[idx], pooled_value)
-
-            text_embeddings = [self.text_cache[(caption, self.pooling)][0] for caption in captions]
-            attention_masks = [self.text_cache[(caption, self.pooling)][1] for caption in captions]
-            pooled_embeddings = [self.text_cache[(caption, self.pooling)][2] for caption in captions]
-
             return {
+                "image": processed_images,
                 "caption": captions,
-                "resolution_bucket_id": bucket_ids,
-                "latents": [latents_batch[idx] for idx in range(batch_size)],
-                "text_embedding": text_embeddings,
-                "attention_mask": attention_masks,
-                "pooled_text_embedding": pooled_embeddings,
+                "resolution_bucket_id": bucket_ids
             }
+        
+        columns_to_keep = {"image", "caption", "resolution_bucket_id"}
+        columns_to_remove = [col for col in dataset.column_names if col not in columns_to_keep]
+        return dataset.map(
+            _process,
+            batched=True,
+            batch_size=batch_size,
+            remove_columns=columns_to_remove,
+            keep_in_memory=False,
+            desc="Pass 1: Preprocessing"
+        )
+
+    def _pass2_vae_encoding(
+        self,
+        dataset: Dataset,
+        batch_size: int
+    ) -> Dataset:
+        """Pass 2: Encode images bucket-by-bucket for efficient encoding."""
+        bucket_ids = set(dataset['resolution_bucket_id'])
+        encoded_datasets = []
+
+        from diffusers import AutoencoderKLQwenImage
+        vae = AutoencoderKLQwenImage.from_pretrained(
+            self.vae_path,
+            torch_dtype=torch.bfloat16,
+            device_map="cuda:0"
+        )
+
+        for bucket_id in bucket_ids:
+            bucket_ds = dataset.filter(
+                lambda batch: [bid==bucket_id for bid in batch["resolution_bucket_id"]],
+                batched=True,
+                batch_size=2560,
+                keep_in_memory=False,
+                desc=f"Filtering bucket {bucket_id}"
+            )
+
+            def _encode(batch):
+                images = batch["image"]
+                latents_batch = encode_image(images, vae).detach().cpu()
+
+                return {
+                    'latents': [latents_batch[i] for i in range(len(images))],
+                    'caption': batch['caption'],
+                    'resolution_bucket_id': batch['resolution_bucket_id'],
+                }
+            
+            columns_to_keep = {"caption", "resolution_bucket_id", "latents"}
+            columns_to_remove = [col for col in dataset.column_names if col not in columns_to_keep]
+            encoded_bucket = bucket_ds.map(
+                _encode,
+                batched=True,
+                batch_size=batch_size,
+                keep_in_memory=False,
+                remove_columns=columns_to_remove,
+                desc=f"Encoding bucket {bucket_id}"
+            )
+
+            encoded_datasets.append(encoded_bucket)
+
+        return concatenate_datasets(encoded_datasets)
+    
+    def _pass3_text_encoding(self, dataset: Dataset, batch_size: int):
+        """Pass 3: Encode text"""
+        from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
+        text_encoder = Qwen3VLForConditionalGeneration.from_pretrained(
+            self.text_encoder_path,
+            dtype=torch.bfloat16,
+            device_map="cuda:0",
+            low_cpu_mem_usage=True
+        )
+        processor=AutoProcessor.from_pretrained(self.text_encoder_path)
+
+        def _encode(batch):
+            captions = batch["caption"]
+
+            embeddings, masks, pooled = encode_text(
+                captions, text_encoder, processor, self.pooling
+            )
+
+            if self.pooling:
+                return {
+                    "latents": batch["latents"],
+                    "text_embedding": embeddings,
+                    "attention_mask": masks,
+                    "pooled_embedding": pooled
+                }
+            else:
+                return {
+                    "latents": batch["latents"],
+                    "text_embedding": embeddings,
+                    "attention_mask": masks
+                }
 
         return dataset.map(
-            _process_batch,
+            _encode,
             batched=True,
-            batch_size=map_batch_size,
-            desc="Precomputing encodings",
+            batch_size=batch_size,
+            keep_in_memory=False,
+            desc="Pass 3: Text encoding"
         )
+
+    def run(
+        self,
+        dataset: Dataset,
+        stage: float,
+        preprocessing_batch_size: int = 128,
+        vae_batch_size: int = 32,
+        text_batch_size: int = 4,
+    ) -> Dataset:
+        """Run all three precomputation passes in sequence.
+
+        Args:
+            dataset: Input dataset with image and caption fields.
+            stage: Training stage in [0, 1] for caption curriculum scheduling.
+            preprocessing_batch_size: Batch size for pass 1 (preprocessing).
+            vae_batch_size: Batch size for pass 2 (VAE encoding).
+            text_batch_size: Batch size for pass 3 (text encoding).
+
+        Returns:
+            Fully precomputed dataset ready for training.
+        """
+        dataset = self._pass1_preprocessing(dataset, stage, preprocessing_batch_size)
+        dataset = self._pass2_vae_encoding(dataset, vae_batch_size)
+        dataset = self._pass3_text_encoding(dataset, text_batch_size)
+        return dataset
+
 
 def precompute(
     dataset: Dataset,
+    stage: float,
     caption_fields: List[str],
-    text_encoder: Any,
-    processor: Any,
+    text_encoder_path: str,
     pooling: bool,
-    vae: Any,
-    resolution_buckets: Optional[Dict[int, Tuple[int, int]]]=None,
-    resolution_probs: Optional[List[float]]=None,
-    do_caption_scheduling: Optional[bool]=None,
-    caption_scheduling_args: Optional[Dict[str, Any]]=None,
-    do_data_augmentation: Optional[bool]=None,
-    data_augmentation_args: Optional[Dict[str, Any]]=None,
-    cfg_drop_prob: Optional[float]=None,
-    stage: float=0.5,
-    map_batch_size: int=8,
+    vae_path: str,
+    resolution_buckets: Optional[Dict[int, Tuple[int, int]]] = None,
+    resolution_probs: Optional[List[float]] = None,
+    do_caption_scheduling: Optional[bool] = None,
+    caption_scheduling_args: Optional[Dict[str, Any]] = None,
+    do_data_augmentation: Optional[bool] = None,
+    data_augmentation_args: Optional[Dict[str, Any]] = None,
+    cfg_drop_prob: Optional[float] = None,
+    preprocessing_batch_size: int = 128,
+    vae_batch_size: int = 32,
+    text_batch_size: int = 4,
 ) -> Dataset:
-    """Convenience wrapper that instantiates :class:`PrecomputeEngine` and runs it."""
+    """Convenience function for stateless precomputation.
 
+    Creates a PrecomputeEngine instance and runs all three passes.
+
+    Args:
+        dataset: Input dataset with image and caption fields.
+        stage: Training stage in [0, 1] for caption curriculum scheduling.
+        caption_fields: List of caption field names to sample from.
+        text_encoder_path: Path to Qwen3-VL text encoder.
+        pooling: Whether to return pooled text embeddings.
+        vae_path: Path to Qwen-Image VAE.
+        resolution_buckets: Optional resolution bucket definitions.
+        resolution_probs: Optional sampling probabilities for buckets.
+        do_caption_scheduling: Whether to use caption curriculum scheduling.
+        caption_scheduling_args: Arguments for caption scheduling.
+        do_data_augmentation: Whether to apply data augmentation.
+        data_augmentation_args: Arguments for data augmentation.
+        cfg_drop_prob: Probability of dropping captions for classifier-free guidance.
+        preprocessing_batch_size: Batch size for pass 1.
+        vae_batch_size: Batch size for pass 2.
+        text_batch_size: Batch size for pass 3.
+
+    Returns:
+        Fully precomputed dataset ready for training.
+    """
     engine = PrecomputeEngine(
         caption_fields=caption_fields,
-        text_encoder=text_encoder,
-        processor=processor,
+        text_encoder_path=text_encoder_path,
         pooling=pooling,
-        vae=vae,
+        vae_path=vae_path,
         resolution_buckets=resolution_buckets,
         resolution_probs=resolution_probs,
         do_caption_scheduling=do_caption_scheduling,
@@ -440,7 +527,13 @@ def precompute(
         data_augmentation_args=data_augmentation_args,
         cfg_drop_prob=cfg_drop_prob,
     )
-    return engine.run(dataset, stage=stage, map_batch_size=map_batch_size)
+    return engine.run(
+        dataset=dataset,
+        stage=stage,
+        preprocessing_batch_size=preprocessing_batch_size,
+        vae_batch_size=vae_batch_size,
+        text_batch_size=text_batch_size,
+    )
 
 
 def _test_data_augmentation(
@@ -633,15 +726,104 @@ def _test_sample_resolution_bucket(
             aspect_ratio = w / h
             print(f"  Bucket {bucket_id} ({w}x{h}, {aspect_ratio:.2f}): {frequency:.2f}")
 
+def _test_precompute():
+    """Test the full precomputation pipeline using PrecomputeEngine.run()"""
+    from datasets import load_dataset
+
+    print("Loading dataset...")
+    dataset = load_dataset("kaupane/wikiart-captions-monet")["train"].select(range(256))
+    print(f"Dataset size: {len(dataset)}\n")
+
+    pooling = True
+    engine = PrecomputeEngine(
+        caption_fields=["wikiart-caption", "mistral-caption"],
+        text_encoder_path="Qwen/Qwen3-VL-2B-Instruct",
+        pooling=pooling,
+        vae_path="REPA-E/e2e-qwenimage-vae"
+    )
+
+    print("Running full precomputation pipeline...")
+    dataset = engine.run(
+        dataset=dataset,
+        stage=0.5,
+        preprocessing_batch_size=128,
+        vae_batch_size=32,
+        text_batch_size=32
+    )
+
+    print("\nPrecomputation complete!")
+    print(f"Final dataset: {dataset}\n")
+
+    # Set format for torch tensors
+    if pooling:
+        dataset = dataset.with_format("torch", ["latents", "text_embedding", "attention_mask", "pooled_embedding"])
+    else:
+        dataset = dataset.with_format("torch", ["latents", "text_embedding", "attention_mask"])
+
+    # Sample and inspect results
+    print("Sampling results:")
+    for idx in range(min(10, len(dataset))):
+        sample_idx = idx * (len(dataset) // 10) if len(dataset) >= 10 else idx
+        print(f"\nSample {sample_idx}:")
+        print(f"  Latent shape: {dataset[sample_idx]['latents'].shape}")
+        print(f"  Text embedding shape: {dataset[sample_idx]['text_embedding'].shape}")
+        print(f"  Attention mask shape: {dataset[sample_idx]['attention_mask'].shape}")
+        print(f"  Attention mask: {dataset[sample_idx]['attention_mask']}")
+        if pooling:
+            print(f"  Pooled embedding shape: {dataset[sample_idx]['pooled_embedding'].shape}")
+
+def _test_precompute_stateless():
+    """Test the stateless precompute() convenience function"""
+    from datasets import load_dataset
+
+    print("Loading dataset...")
+    dataset = load_dataset("kaupane/wikiart-captions-monet")["train"].select(range(256))
+    print(f"Dataset size: {len(dataset)}\n")
+
+    print("Running stateless precomputation...")
+    dataset = precompute(
+        dataset=dataset,
+        stage=0.5,
+        caption_fields=["wikiart-caption", "mistral-caption"],
+        text_encoder_path="Qwen/Qwen3-VL-2B-Instruct",
+        pooling=True,
+        vae_path="REPA-E/e2e-qwenimage-vae",
+        preprocessing_batch_size=128,
+        vae_batch_size=32,
+        text_batch_size=32
+    )
+
+    print("\nPrecomputation complete!")
+    print(f"Final dataset: {dataset}\n")
+
+    # Set format and inspect
+    dataset = dataset.with_format("torch", ["latents", "text_embedding", "attention_mask", "pooled_embedding"])
+
+    print("Sample result:")
+    sample = dataset[0]
+    print(f"  Latent shape: {sample['latents'].shape}")
+    print(f"  Text embedding shape: {sample['text_embedding'].shape}")
+    print(f"  Attention mask shape: {sample['attention_mask'].shape}")
+    print(f"  Pooled embedding shape: {sample['pooled_embedding'].shape}")
+    
+
+
 if __name__ == "__main__":
     """Tests"""
+
+    # Test full precomputation pipeline
+    _test_precompute()
+
+    # Test stateless convenience function
+    _test_precompute_stateless()
+
     # Visualize data augmentation effects
-    _test_data_augmentation(
+    """_test_data_augmentation(
         image_path="./test_image.png",
         output_path="./test_augmentation.png",
         num_samples=9
     )
-    
+
     # Test _sample_caption function
     _test_sample_caption(
         output_path="./test_sample_caption.png",
@@ -654,7 +836,7 @@ if __name__ == "__main__":
         stages_count=257,
         sample_count=1000
     )
-    
+
     # Test _sample_resolution_bucket function
     _test_sample_resolution_bucket(
         resolution_buckets={
@@ -668,4 +850,4 @@ if __name__ == "__main__":
         },
         probs=[0.80,0.10,0.10],
         sample_count=1000
-    )
+    )"""

@@ -37,8 +37,11 @@ def encode_text(
     ).to(model.device)
 
     with torch.no_grad():
-        outputs = model(**inputs, output_hidden_states=True)
-        embedding = outputs.hidden_states[-1] # [b, s, d]
+        outputs = model.model(
+            input_ids=inputs.input_ids,
+            attention_mask=inputs.attention_mask
+        )
+        embedding = outputs.last_hidden_state # [b, s, d]
 
     mask = inputs.attention_mask # [b, s]
 
@@ -51,10 +54,11 @@ def encode_text(
     return embedding, mask, pooled
 
 if __name__ == "__main__":
+
     model = Qwen3VLForConditionalGeneration.from_pretrained(
         "Qwen/Qwen3-VL-4B-Instruct",
         dtype=torch.bfloat16,
-        device_map="auto"
+        device_map="cuda:0"
     )
     processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-4B-Instruct")
 
@@ -63,5 +67,11 @@ if __name__ == "__main__":
     embedding, mask, pooled = encode_text(texts, model, processor, True)
 
     print(f"Embedding shape: {embedding.shape}")
+    print(f"Embedding dtype: {embedding.dtype}")
+    print(f"Embedding device: {embedding.device}")
     print(f"Mask shape: {mask.shape}")
+    print(f"Mask dtype: {mask.dtype}")
+    print(f"Mask device: {mask.device}")
     print(f"Pooled shape: {pooled.shape}")
+    print(f"Pooled dtype: {pooled.dtype}")
+    print(f"Pooled device: {pooled.device}")

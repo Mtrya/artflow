@@ -85,12 +85,18 @@ def decode_latents(
 
 
 if __name__ == "__main__":
-    vae = AutoencoderKLQwenImage.from_pretrained("REPA-E/e2e-qwenimage-vae")
+    vae = AutoencoderKLQwenImage.from_pretrained(
+        "REPA-E/e2e-qwenimage-vae",
+        torch_dtype=torch.bfloat16,
+        device_map="cuda:0"
+    )
 
     test_image = Image.open("test_image.png")
 
     latents = encode_image([test_image], vae)
     print(f"Latents shape: {latents.shape}")
+    print(f"Latents dtype: {latents.dtype}")
+    print(f"Latents device: {latents.device}")
 
     # Decode back to images
     reconstructed_images = decode_latents(latents, vae)
