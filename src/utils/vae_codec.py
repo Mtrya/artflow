@@ -24,11 +24,12 @@ def encode_image(
         Latents tensor of shape [batch_size, channel, height, width]
     """
     device = next(model.parameters()).device
+    dtype = next(model.parameters()).dtype
 
     # Convert PIL images to tensors and normalize to [-1, 1]
     tensors = []
     for img in images:
-        tensor = torch.from_numpy(np.array(img)).permute(2, 0, 1).to(torch.float32)
+        tensor = torch.from_numpy(np.array(img)).permute(2, 0, 1).to(dtype)
         tensor = tensor / 127.5 - 1.0
         tensors.append(tensor)
 
@@ -59,8 +60,11 @@ def decode_latents(
     Returns:
         List of PIL Images
     """
+    device = next(model.parameters()).device
+    dtype = next(model.parameters()).device
+
     # Add temporal dimension [b, c, 1, h, w]
-    latents = latents.unsqueeze(2)
+    latents = latents.unsqueeze(2).to(device).to(dtype)
 
     with torch.no_grad():
         reconstructed = model.decode(latents).sample

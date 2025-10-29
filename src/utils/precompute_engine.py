@@ -633,15 +633,8 @@ def _test_sample_resolution_bucket(
             aspect_ratio = w / h
             print(f"  Bucket {bucket_id} ({w}x{h}, {aspect_ratio:.2f}): {frequency:.2f}")
 
-def _test_precompute_engine():
-    """Test precompute function with kaupane/wikiart-captions-2k"""
-    pass
-
 if __name__ == "__main__":
-    """
-    Data augmentation tests
-    Precompute engine tests
-    """
+    """Tests"""
     # Visualize data augmentation effects
     _test_data_augmentation(
         image_path="./test_image.png",
