@@ -30,7 +30,14 @@ def _estimate_token_counts(texts: List[str]) -> List[int]:
 
 def _sample_caption(captions: List[str], stage: float, min_prob, max_prob) -> str:
     """
-    Sample a caption using a stage-controlled mixture of inverse-length and length-proportional weights.
+    Sample a caption using stage-controlled symmetric preference scores.
+
+    This method creates a smooth curriculum from short to long captions by computing
+    deviation from mean token count and applying stage-dependent preference:
+
+    - stage=0.0: Strongly favor short captions (below-mean length)
+    - stage=0.5: No preference (uniform distribution)
+    - stage=1.0: Strongly favor long captions (above-mean length)
 
     Args:
         stage: Training stage in [0, 1] that interpolates between short- and long-caption preferences.
@@ -49,28 +56,40 @@ def _sample_caption(captions: List[str], stage: float, min_prob, max_prob) -> st
 
     token_counts = _estimate_token_counts(captions)
     total_tokens = sum(token_counts)
-    if total_tokens == 0:
+
+    if total_tokens == 0 or len(captions) == 1:
         probabilities = [1.0 / len(captions)] * len(captions)
     else:
-        inv_token_counts = [1.0 / (count + 1e-6) for count in token_counts]
+        # Compute deviation from mean token count (symmetric around 0)
+        mean_tokens = total_tokens / len(captions)
+        deviations = [(count - mean_tokens) / mean_tokens for count in token_counts]
+
+        # Stage controls preference direction with symmetric push/pull
+        # preference_strength controls how aggressive the curriculum is
+        preference_strength = 2.0
         alpha = float(np.clip(stage, 0.0, 1.0))
 
-        weights = [count / total_tokens for count in token_counts]
-        inv_total = sum(inv_token_counts)
-        inv_weights = [inv_count / inv_total for inv_count in inv_token_counts]
+        # At stage=0.5, (alpha - 0.5) = 0 → all scores equal → uniform
+        # At stage=0.0, negative deviations (short) get boosted
+        # At stage=1.0, positive deviations (long) get boosted
+        scores = [1.0 + preference_strength * (alpha - 0.5) * dev for dev in deviations]
 
-        interpolated_weights = [
-            (1 - alpha) * inv_weight + alpha * weight
-            for weight, inv_weight in zip(weights, inv_weights)
-        ]
+        # Ensure positive scores
+        scores = [max(score, 1e-6) for score in scores]
 
+        # Apply min/max probability clipping
         max_prob = min(max_prob, 1.0 - min_prob * (len(captions) - 1)) if len(captions) > 1 else 1.0
         if max_prob < min_prob:
             max_prob = min_prob
 
-        clipped_weights = [np.clip(weight, min_prob, max_prob) for weight in interpolated_weights]
-        weight_sum = sum(clipped_weights)
-        probabilities = [weight / weight_sum for weight in clipped_weights]
+        # Normalize to probabilities
+        total_score = sum(scores)
+        probabilities = [s / total_score for s in scores]
+
+        # Clip probabilities
+        clipped_probs = [np.clip(p, min_prob, max_prob) for p in probabilities]
+        prob_sum = sum(clipped_probs)
+        probabilities = [p / prob_sum for p in clipped_probs]
 
     sampled_idx = random.choices(range(len(captions)), weights=probabilities, k=1)[0]
 
@@ -818,7 +837,7 @@ if __name__ == "__main__":
     _test_precompute_stateless()
 
     # Visualize data augmentation effects
-    """_test_data_augmentation(
+    _test_data_augmentation(
         image_path="./test_image.png",
         output_path="./test_augmentation.png",
         num_samples=9
@@ -850,4 +869,4 @@ if __name__ == "__main__":
         },
         probs=[0.80,0.10,0.10],
         sample_count=1000
-    )"""
+    )
