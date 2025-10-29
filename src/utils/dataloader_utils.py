@@ -1,11 +1,10 @@
 """DataLoader utilities for resolution bucket sampling and batching."""
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 import random
 
 import torch
 from torch.utils.data import Sampler
-
 
 class ResolutionBucketSampler(Sampler):
     def __init__(self, dataset, batch_size):
@@ -137,6 +136,7 @@ def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         "resolution_bucket_ids": bucket_ids_batch,
     }
 
+
 def test_resolution_bucket_sampler():
     """Test the ResolutionBucketSampler to visualize batch grouping and randomization."""
     from torch.utils.data import Dataset, DataLoader
@@ -194,5 +194,98 @@ def test_resolution_bucket_sampler():
     print("Test passed! All batches contain same-resolution samples.")
     print("Notice how bucket order changes between epochs.")
 
+def test_collate_fn():
+    """Test the collate_fn to verify proper padding and batching."""
+    print(f"{'='*60}")
+    print("Testing collate_fn")
+    print(f"{'='*60}\n")
+
+    # Create mock samples with variable-length text embeddings
+    batch_size = 4
+    hidden_dim = 512
+    latent_channels = 16
+    latent_h, latent_w = 32, 32
+
+    # Different sequence lengths to test padding
+    seq_lengths = [10, 25, 15, 30]  # Max will be 30
+
+    mock_batch = []
+    for i, seq_len in enumerate(seq_lengths):
+        sample = {
+            "caption": f"Sample caption {i} with length {seq_len}",
+            "resolution_bucket_id": 3,
+            "latents": torch.randn(latent_channels, latent_h, latent_w),
+            "text_embedding": torch.randn(seq_len, hidden_dim),
+            "attention_mask": torch.ones(seq_len),
+            "pooled_text_embedding": torch.randn(hidden_dim),
+        }
+        mock_batch.append(sample)
+
+    print(f"Created {len(mock_batch)} mock samples with sequence lengths: {seq_lengths}")
+    print(f"Expected max_seq_len after padding: {max(seq_lengths)}\n")
+
+    # Run collate_fn
+    batched = collate_fn(mock_batch)
+
+    # Verify shapes
+    print("Verifying output shapes:")
+    print(f"  latents: {batched['latents'].shape} (expected: [{batch_size}, {latent_channels}, {latent_h}, {latent_w}])")
+    assert batched['latents'].shape == (batch_size, latent_channels, latent_h, latent_w)
+
+    max_seq_len = max(seq_lengths)
+    print(f"  text_embeddings: {batched['text_embeddings'].shape} (expected: [{batch_size}, {max_seq_len}, {hidden_dim}])")
+    assert batched['text_embeddings'].shape == (batch_size, max_seq_len, hidden_dim)
+
+    print(f"  attention_masks: {batched['attention_masks'].shape} (expected: [{batch_size}, {max_seq_len}])")
+    assert batched['attention_masks'].shape == (batch_size, max_seq_len)
+
+    print(f"  pooled_text_embeddings: {batched['pooled_text_embeddings'].shape} (expected: [{batch_size}, {hidden_dim}])")
+    assert batched['pooled_text_embeddings'].shape == (batch_size, hidden_dim)
+
+    print(f"  resolution_bucket_ids: {batched['resolution_bucket_ids'].shape} (expected: [{batch_size}])")
+    assert batched['resolution_bucket_ids'].shape == (batch_size,)
+
+    print(f"  captions: {len(batched['captions'])} strings (expected: {batch_size})")
+    assert len(batched['captions']) == batch_size
+
+    # Verify padding behavior
+    print("\nVerifying padding behavior:")
+    for i, seq_len in enumerate(seq_lengths):
+        # Check that attention mask has correct pattern (1s followed by 0s)
+        mask = batched['attention_masks'][i]
+        actual_ones = mask[:seq_len].sum().item()
+        actual_zeros = mask[seq_len:].sum().item()
+
+        print(f"  Sample {i} (seq_len={seq_len}):")
+        print(f"    First {seq_len} mask values sum: {actual_ones} (expected: {seq_len})")
+        print(f"    Remaining {max_seq_len - seq_len} mask values sum: {actual_zeros} (expected: 0)")
+
+        assert actual_ones == seq_len, f"Expected {seq_len} ones, got {actual_ones}"
+        assert actual_zeros == 0, f"Expected 0 in padded region, got {actual_zeros}"
+
+    # Test without pooled embeddings
+    print("\nTesting without pooled embeddings:")
+    batch_no_pooled = []
+    for i, seq_len in enumerate(seq_lengths):
+        sample = {
+            "caption": f"Sample {i}",
+            "resolution_bucket_id": 2,
+            "latents": torch.randn(latent_channels, latent_h, latent_w),
+            "text_embedding": torch.randn(seq_len, hidden_dim),
+            "attention_mask": torch.ones(seq_len),
+        }
+        batch_no_pooled.append(sample)
+
+    batched_no_pooled = collate_fn(batch_no_pooled)
+    assert batched_no_pooled['pooled_text_embeddings'] is None
+    print("  ✓ pooled_text_embeddings correctly None when not provided")
+
+    print(f"\n{'='*60}")
+    print("All collate_fn tests passed!")
+    print(f"{'='*60}\n")
+
 if __name__ == '__main__':
+    # Run tests
+    test_collate_fn()
+    print()
     test_resolution_bucket_sampler()

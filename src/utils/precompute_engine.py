@@ -6,7 +6,6 @@ The :class:`PrecomputeEngine`:
 - applies optional localized augmentations, 
 - samples captions according to a curriculum schedule,
 - materializes both VAE latents and frozen text encoder embeddings.
-Results are cached to avoid recomputation across epochs, while helper functions expose the same behaviour in function form when stateful reuse is unnecessary.
 """
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -489,7 +488,6 @@ class PrecomputeEngine:
         dataset = self._pass3_text_encoding(dataset, text_batch_size)
         return dataset
 
-
 def precompute(
     dataset: Dataset,
     stage: float,
@@ -825,8 +823,6 @@ def _test_precompute_stateless():
     print(f"  Attention mask shape: {sample['attention_mask'].shape}")
     print(f"  Pooled embedding shape: {sample['pooled_embedding'].shape}")
     
-
-
 if __name__ == "__main__":
     """Tests"""
 
