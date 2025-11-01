@@ -8,6 +8,7 @@ The :class:`PrecomputeEngine`:
 - materializes both VAE latents and frozen text encoder embeddings.
 """
 
+import os
 from typing import Any, Dict, List, Optional, Tuple
 
 import random
@@ -264,13 +265,13 @@ class PrecomputeEngine:
         self.vae_path = vae_path
 
         self.resolution_buckets = resolution_buckets or {
-            1: (336, 336),
-            2: (448, 252),
-            3: (252, 448),
-            4: (388, 291),
-            5: (291, 388),
-            6: (412, 274),
-            7: (274, 412),
+            1: (384, 384),
+            2: (512, 288),
+            3: (288, 512),
+            4: (448, 336),
+            5: (336, 448),
+            6: (480, 320),
+            7: (320, 480),
         }
         self.resolution_probs = resolution_probs or [0.90, 0.10]
 
@@ -370,6 +371,7 @@ class PrecomputeEngine:
             batch_size=batch_size,
             remove_columns=columns_to_remove,
             keep_in_memory=False,
+            num_proc=os.cpu_count()-2,
             desc="Pass 1: Preprocessing"
         )
 
@@ -393,8 +395,9 @@ class PrecomputeEngine:
             bucket_ds = dataset.filter(
                 lambda batch: [bid==bucket_id for bid in batch["resolution_bucket_id"]],
                 batched=True,
-                batch_size=2560,
+                batch_size=256,
                 keep_in_memory=False,
+                num_proc=os.cpu_count()-2,
                 desc=f"Filtering bucket {bucket_id}"
             )
 
@@ -748,12 +751,12 @@ def _test_precompute():
     from datasets import load_dataset
 
     print("Loading dataset...")
-    dataset = load_dataset("kaupane/wikiart-captions-monet")["train"].select(range(256))
+    dataset = load_dataset("kaupane/wikiart-captions-monet")["train"]
     print(f"Dataset size: {len(dataset)}\n")
 
     pooling = True
     engine = PrecomputeEngine(
-        caption_fields=["wikiart-caption", "mistral-caption"],
+        caption_fields=["mistral-caption"],
         text_encoder_path="Qwen/Qwen3-VL-2B-Instruct",
         pooling=pooling,
         vae_path="REPA-E/e2e-qwenimage-vae"
@@ -764,7 +767,7 @@ def _test_precompute():
         dataset=dataset,
         stage=0.5,
         preprocessing_batch_size=128,
-        vae_batch_size=32,
+        vae_batch_size=24,
         text_batch_size=32
     )
 
@@ -794,19 +797,19 @@ def _test_precompute_stateless():
     from datasets import load_dataset
 
     print("Loading dataset...")
-    dataset = load_dataset("kaupane/wikiart-captions-monet")["train"].select(range(256))
+    dataset = load_dataset("kaupane/wikiart-captions-monet")["train"]
     print(f"Dataset size: {len(dataset)}\n")
 
     print("Running stateless precomputation...")
     dataset = precompute(
         dataset=dataset,
         stage=0.5,
-        caption_fields=["wikiart-caption", "mistral-caption"],
+        caption_fields=["mistral-caption"],
         text_encoder_path="Qwen/Qwen3-VL-2B-Instruct",
         pooling=True,
         vae_path="REPA-E/e2e-qwenimage-vae",
         preprocessing_batch_size=128,
-        vae_batch_size=32,
+        vae_batch_size=24,
         text_batch_size=32
     )
 
