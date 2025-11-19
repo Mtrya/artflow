@@ -8,7 +8,6 @@ The :class:`PrecomputeEngine`:
 - materializes both VAE latents and frozen text encoder embeddings.
 """
 
-import os
 from typing import Any, Dict, List, Optional, Tuple
 
 import random
@@ -260,6 +259,9 @@ class PrecomputeEngine:
         cfg_drop_prob: Optional[float]=None,
     ) -> None:
         self.caption_fields = list(caption_fields)
+
+        if self.caption_fields and not text_encoder_path:
+            raise ValueError("text_encoder_path is required when caption_fields is not empty")
         self.text_encoder_path = text_encoder_path
         self.pooling = pooling
         self.vae_path = vae_path
@@ -341,16 +343,19 @@ class PrecomputeEngine:
                 else:
                     augmented_image = image.resize(resolution, Image.BICUBIC)
 
-                caption_candidates = [
-                    batch[field][idx] for field in self.caption_fields
-                ]
+                if self.caption_fields:
+                    caption_candidates = [
+                        batch[field][idx] for field in self.caption_fields
+                    ]
 
-                if self.do_caption_scheduling:
-                    sampled_caption = _sample_caption(caption_candidates, stage, min_prob, max_prob)
+                    if self.do_caption_scheduling:
+                        sampled_caption = _sample_caption(caption_candidates, stage, min_prob, max_prob)
+                    else:
+                        sampled_caption = _sample_caption(caption_candidates, 0.5, 0.0, 1.0)
+
+                    if random.random() < self.cfg_drop_prob:
+                        sampled_caption = ""
                 else:
-                    sampled_caption = _sample_caption(caption_candidates, 0.5, 0.0, 1.0)
-
-                if random.random() < self.cfg_drop_prob:
                     sampled_caption = ""
 
                 processed_images.append(augmented_image)
@@ -371,7 +376,6 @@ class PrecomputeEngine:
             batch_size=batch_size,
             remove_columns=columns_to_remove,
             keep_in_memory=False,
-            num_proc=os.cpu_count()-2,
             desc="Pass 1: Preprocessing"
         )
 
@@ -395,9 +399,8 @@ class PrecomputeEngine:
             bucket_ds = dataset.filter(
                 lambda batch: [bid==bucket_id for bid in batch["resolution_bucket_id"]],
                 batched=True,
-                batch_size=256,
+                batch_size=2560,
                 keep_in_memory=False,
-                num_proc=os.cpu_count()-2,
                 desc=f"Filtering bucket {bucket_id}"
             )
 
@@ -428,6 +431,12 @@ class PrecomputeEngine:
     
     def _pass3_text_encoding(self, dataset: Dataset, batch_size: int):
         """Pass 3: Encode text"""
+
+        # Skip text encoding if no caption fields
+        if not self.caption_fields:
+            return dataset
+        
+        # Text encoding logic when caption_fields exists
         from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
         text_encoder = Qwen3VLForConditionalGeneration.from_pretrained(
             self.text_encoder_path,
@@ -751,7 +760,7 @@ def _test_precompute():
     from datasets import load_dataset
 
     print("Loading dataset...")
-    dataset = load_dataset("kaupane/wikiart-captions-monet")["train"]
+    dataset = load_dataset("kaupane/wikiart-captions-monet")["train"].select(range(256))
     print(f"Dataset size: {len(dataset)}\n")
 
     pooling = True
@@ -767,7 +776,7 @@ def _test_precompute():
         dataset=dataset,
         stage=0.5,
         preprocessing_batch_size=128,
-        vae_batch_size=24,
+        vae_batch_size=32,
         text_batch_size=32
     )
 
@@ -797,7 +806,7 @@ def _test_precompute_stateless():
     from datasets import load_dataset
 
     print("Loading dataset...")
-    dataset = load_dataset("kaupane/wikiart-captions-monet")["train"]
+    dataset = load_dataset("kaupane/wikiart-captions-monet")["train"].select(range(256))
     print(f"Dataset size: {len(dataset)}\n")
 
     print("Running stateless precomputation...")
@@ -809,7 +818,7 @@ def _test_precompute_stateless():
         pooling=True,
         vae_path="REPA-E/e2e-qwenimage-vae",
         preprocessing_batch_size=128,
-        vae_batch_size=24,
+        vae_batch_size=32,
         text_batch_size=32
     )
 
@@ -858,13 +867,13 @@ if __name__ == "__main__":
     # Test _sample_resolution_bucket function
     _test_sample_resolution_bucket(
         resolution_buckets={
-            1: (336, 336),
-            2: (448, 252),
-            3: (252, 448),
-            4: (388, 291),
-            5: (291, 388),
-            6: (412, 274),
-            7: (274, 412),
+            1: (384, 384),
+            2: (512, 288),
+            3: (288, 512),
+            4: (448, 336),
+            5: (336, 448),
+            6: (480, 320),
+            7: (320, 480),
         },
         probs=[0.80,0.10,0.10],
         sample_count=1000
