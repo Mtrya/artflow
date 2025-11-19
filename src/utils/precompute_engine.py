@@ -9,6 +9,7 @@ The :class:`PrecomputeEngine`:
 """
 
 from typing import Any, Dict, List, Optional, Tuple
+import os
 
 import random
 import numpy as np
@@ -376,6 +377,7 @@ class PrecomputeEngine:
             batch_size=batch_size,
             remove_columns=columns_to_remove,
             keep_in_memory=False,
+            num_proc=os.cpu_count(),
             desc="Pass 1: Preprocessing"
         )
 
@@ -401,6 +403,7 @@ class PrecomputeEngine:
                 batched=True,
                 batch_size=2560,
                 keep_in_memory=False,
+                num_proc=os.cpu_count(),
                 desc=f"Filtering bucket {bucket_id}"
             )
 
@@ -760,13 +763,13 @@ def _test_precompute():
     from datasets import load_dataset
 
     print("Loading dataset...")
-    dataset = load_dataset("kaupane/wikiart-captions-monet")["train"].select(range(256))
+    dataset = load_dataset("kaupane/wikiart-captions-monet")["train"]
     print(f"Dataset size: {len(dataset)}\n")
 
     pooling = True
     engine = PrecomputeEngine(
         caption_fields=["mistral-caption"],
-        text_encoder_path="Qwen/Qwen3-VL-2B-Instruct",
+        text_encoder_path="Qwen/Qwen3-VL-4B-Instruct",
         pooling=pooling,
         vae_path="REPA-E/e2e-qwenimage-vae"
     )
@@ -776,7 +779,7 @@ def _test_precompute():
         dataset=dataset,
         stage=0.5,
         preprocessing_batch_size=128,
-        vae_batch_size=32,
+        vae_batch_size=24,
         text_batch_size=32
     )
 
@@ -818,7 +821,7 @@ def _test_precompute_stateless():
         pooling=True,
         vae_path="REPA-E/e2e-qwenimage-vae",
         preprocessing_batch_size=128,
-        vae_batch_size=32,
+        vae_batch_size=20,
         text_batch_size=32
     )
 
@@ -842,7 +845,7 @@ if __name__ == "__main__":
     _test_precompute()
 
     # Test stateless convenience function
-    _test_precompute_stateless()
+    #_test_precompute_stateless()
 
     # Visualize data augmentation effects
     _test_data_augmentation(
@@ -860,7 +863,7 @@ if __name__ == "__main__":
             "Bare trees stand in the left and right foreground, framing a misty, shadowed expanse of water and distant land under a textured, hazy sky with two small birds flying above the left trees.",
             "detailed pen and ink landscape drawing, bare winter trees with intricate branches, dense forest on the left, solitary gnarled tree on the right, calm river or marsh reflecting the sky, distant silhouettes of buildings or farms, two birds flying in the upper left sky, textured paper surface with crosshatching and stippling, warm sepia tones with dark browns and light ochre, atmospheric perspective creating depth, soft diffused light suggesting late afternoon or overcast day, melancholic and serene mood, naturalistic composition with horizon line slightly above center, vertical framing emphasizing tall trees, influenced by Japanese woodblock prints and 19th-century landscape etchings, fine-line detail throughout, minimalist and contemplative aesthetic"
         ],
-        stages_count=257,
+        stages_count=65,
         sample_count=1000
     )
 

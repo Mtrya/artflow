@@ -19,3 +19,14 @@ test*
 
 # Large files
 checkpoints/
+
+.gemini
+.github
+gha-creds-*.json
+.factory
+
+package-lock.json
+
+# Tests
+!src/tests/
+!src/tests/*.py
