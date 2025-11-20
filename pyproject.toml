@@ -17,6 +17,7 @@ dependencies = [
     "torch>=2.9.0",
     "torchvision>=0.24.0",
     "transformers>=4.57.1",
+    "wandb>=0.23.0",
 ]
 
 [[tool.uv.index]]
@@ -29,4 +30,5 @@ dev = [
     "matplotlib>=3.10.7",
     "mypy>=1.18.2",
     "ruff>=0.14.1",
+    "fvcore>=0.1.5.post20221221"
 ]

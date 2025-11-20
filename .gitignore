@@ -30,3 +30,7 @@ package-lock.json
 # Tests
 !src/tests/
 !src/tests/*.py
+
+# Checkpoints and sample images
+checkpoint*
+output/*/samples*
