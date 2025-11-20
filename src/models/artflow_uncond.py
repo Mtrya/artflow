@@ -108,8 +108,8 @@ class ArtFlowUncond(nn.Module):
 if __name__ == "__main__":
     from fvcore.nn import FlopCountAnalysis
     
-    model = ArtFlowUncond(hidden_size=320, depth=4, num_heads=4)
-    x = torch.randn(1, 16, 256, 256)
+    model = ArtFlowUncond(hidden_size=512, depth=8, num_heads=8)
+    x = torch.randn(1, 16, 128, 128)
     t = torch.randint(0, 1000, (1,))
     
     flops = FlopCountAnalysis(model, (x, t)).total()

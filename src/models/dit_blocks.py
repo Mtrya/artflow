@@ -74,7 +74,8 @@ class MSRoPE(nn.Module):
 
         # Precompute frequency tables for both spatial axes
         pos_index = torch.arange(2048) # maximum position index
-        self.register_buffer('pos_freqs', self._build_frequency_table(pos_index))
+        # Store as real to avoid safetensors issues with complex numbers
+        self.register_buffer('pos_freqs', torch.view_as_real(self._build_frequency_table(pos_index)))
 
         # LRU cache for image frequency computation
         self._cache = {}
@@ -133,7 +134,9 @@ class MSRoPE(nn.Module):
 
         # Text frequencies start after maximum image position
         max_img_pos = max(height, width)
-        txt_freqs = self.pos_freqs[max_img_pos:max_img_pos+txt_seq_len, :] # placing text tokens on a diagonal in the 2D position space
+        # View as complex for slicing
+        pos_freqs_complex = torch.view_as_complex(self.pos_freqs)
+        txt_freqs = pos_freqs_complex[max_img_pos:max_img_pos+txt_seq_len, :] # placing text tokens on a diagonal in the 2D position space
 
         return img_freqs, txt_freqs
     
@@ -145,25 +148,30 @@ class MSRoPE(nn.Module):
             height: Height of image
             width: Width of image
         Returns:
-            Frequency tensor [height*width, total_dim]
+            Frequency tensor [height*width, total_dim] (complex)
         """
         # Split precomputed frequencies by axis
+        # pos_freqs is [S, D, 2] (real)
         h_dim, w_dim = self.axes_dim
         h_freqs, w_freqs = self.pos_freqs.split([h_dim//2, w_dim//2], dim=1)
 
         # Select frequencies for the current height and width
-        h_freqs = h_freqs[:height, :]
-        w_freqs = w_freqs[:width, :]
+        h_freqs = h_freqs[:height, :] # [H, h_dim//2, 2]
+        w_freqs = w_freqs[:width, :]  # [W, w_dim//2, 2]
 
         # Broadcast to create the grid
-        h_freqs_grid = h_freqs.unsqueeze(1).expand(height, width, -1) # [height, width, h_dim//2]
-        w_freqs_grid = w_freqs.unsqueeze(0).expand(height, width, -1) # [height, width, w_dim//2]
+        # Expand to [H, W, dim, 2]
+        h_freqs_grid = h_freqs.unsqueeze(1).expand(height, width, -1, -1) # [height, width, h_dim//2, 2]
+        w_freqs_grid = w_freqs.unsqueeze(0).expand(height, width, -1, -1) # [height, width, w_dim//2, 2]
 
         # Concatenate
-        freqs = torch.cat([h_freqs_grid, w_freqs_grid], dim=-1) # [height, width, (h_dim+w_dim)//2]
+        freqs = torch.cat([h_freqs_grid, w_freqs_grid], dim=2) # [height, width, (h_dim+w_dim)//2, 2]
 
         # Flatten spatial dimensions
-        freqs = freqs.flatten(0, 1) # [height*width, (h_dim+w_dim)//2]
+        freqs = freqs.flatten(0, 1) # [height*width, (h_dim+w_dim)//2, 2]
+        
+        # Convert back to complex
+        freqs = torch.view_as_complex(freqs)
 
         return freqs
 
