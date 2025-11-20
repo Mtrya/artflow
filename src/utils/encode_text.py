@@ -56,11 +56,11 @@ def encode_text(
 if __name__ == "__main__":
 
     model = Qwen3VLForConditionalGeneration.from_pretrained(
-        "Qwen/Qwen3-VL-4B-Instruct",
+        "Qwen/Qwen3-VL-2B-Instruct",
         dtype=torch.bfloat16,
         device_map="cuda:0"
     )
-    processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-4B-Instruct")
+    processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-2B-Instruct")
 
     texts = ["Impressionism landscape by Claude Monet", "romanticism marina by Van Gogh"]
 
