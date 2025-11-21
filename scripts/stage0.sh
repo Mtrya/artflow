@@ -6,11 +6,12 @@
 # 2. Flow matching with diffusion path;
 # 3. Flow matching with optimal transport path 
 
-export PYTHONPATH=$PYTHONPATH:.
+export PYTHONPATH=.venv/bin/python
 
 # Experiment configuration
 OUTPUT_DIR="output"
 DATASET="kaupane/wikiart-captions-monet"
+export WANDB_DIR="./output"
 
 # Training hyperparameters
 RESOLUTION=128
@@ -30,8 +31,9 @@ RUN_NAME_SM_DIFFUSION="stage0_sm_diffusion"
 RUN_NAME_FM_DIFFUSION="stage0_fm_diffusion"
 RUN_NAME_FM_OT="stage0_fm_ot"
 
-echo "Starting Training: $RUN_NAME_SM_DIFFUSION"
-echo "Algorithm: sm-diffusion"
+# Evaluation parameters
+CHECKPOINT_INTERVAL=100
+EVAL_INTERVAL=20
 
 python scripts/train_stage0.py \
     --run_name "$RUN_NAME_SM_DIFFUSION" \
@@ -42,16 +44,13 @@ python scripts/train_stage0.py \
     --num_epochs "$EPOCHS" \
     --learning_rate "$LR" \
     --algorithm "sm-diffusion" \
-    --checkpoint_interval 100 \
-    --eval_interval 50 \
+    --checkpoint_interval "$CHECKPOINT_INTERVAL" \
+    --eval_interval "$EVAL_INTERVAL" \
     --mixed_precision "$PRECISION" \
     --model_hidden_size "$MODEL_HIDDEN_SIZE" \
     --model_depth "$MODEL_DEPTH" \
     --model_num_heads "$MODEL_NUM_HEADS" \
     --max_grad_norm "$MAX_GRAD_NORM"
-
-echo "Starting Training: $RUN_NAME_FM_DIFFUSION"
-echo "Algorithm: fm-diffusion"
 
 python scripts/train_stage0.py \
     --run_name "$RUN_NAME_FM_DIFFUSION" \
@@ -62,16 +61,13 @@ python scripts/train_stage0.py \
     --num_epochs "$EPOCHS" \
     --learning_rate "$LR" \
     --algorithm "fm-diffusion" \
-    --checkpoint_interval 100 \
-    --eval_interval 50 \
+    --model_hidden_size "$MODEL_HIDDEN_SIZE" \
+    --model_depth "$MODEL_DEPTH" \
     --mixed_precision "$PRECISION" \
     --model_hidden_size "$MODEL_HIDDEN_SIZE" \
     --model_depth "$MODEL_DEPTH" \
     --model_num_heads "$MODEL_NUM_HEADS" \
     --max_grad_norm "$MAX_GRAD_NORM"
-
-echo "Starting Training: $RUN_NAME_FM_OT"
-echo "Algorithm: fm-ot"
 
 python scripts/train_stage0.py \
     --run_name "$RUN_NAME_FM_OT" \
@@ -82,8 +78,8 @@ python scripts/train_stage0.py \
     --num_epochs "$EPOCHS" \
     --learning_rate "$LR" \
     --algorithm "fm-ot" \
-    --checkpoint_interval 100 \
-    --eval_interval 50 \
+    --model_hidden_size "$MODEL_HIDDEN_SIZE" \
+    --model_depth "$MODEL_DEPTH" \
     --mixed_precision "$PRECISION" \
     --model_hidden_size "$MODEL_HIDDEN_SIZE" \
     --model_depth "$MODEL_DEPTH" \

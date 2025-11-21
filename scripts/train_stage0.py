@@ -24,6 +24,7 @@ from src.models.artflow_uncond import ArtFlowUncond
 from src.flow.paths import ScoreMatchingDiffusion, FlowMatchingDiffusion, FlowMatchingOT
 from src.flow.solvers import sample_ode, ScoreMatchingODE
 from src.utils.precompute_engine import precompute
+from src.utils.evaluation import run_evaluation_stage0
 from torchvision.utils import save_image
 
 def parse_args():
@@ -40,7 +41,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--checkpoint_interval", type=int, default=20, help="Epochs between checkpoints")
     parser.add_argument("--eval_interval", type=int, default=20, help="Epochs between evaluation")
-    parser.add_argument("--num_eval_samples", type=int, default=8, help="Number of samples to generate during evaluation")
+    parser.add_argument("--num_eval_samples", type=int, default=9, help="Number of samples to generate during evaluation")
     parser.add_argument("--mixed_precision", type=str, default="bf16", choices=["no", "fp16", "bf16"], help="Mixed precision training")
     parser.add_argument("--model_hidden_size", type=int, default=512, help="Hidden size of the model")
     parser.add_argument("--model_depth", type=int, default=8, help="Depth of the model")
@@ -50,7 +51,13 @@ def parse_args():
 
 def main():
     args = parse_args()
-    accelerator = Accelerator(mixed_precision=args.mixed_precision)
+    accelerator = Accelerator(mixed_precision=args.mixed_precision, log_with="wandb")
+    if accelerator.is_main_process:
+        accelerator.init_trackers(
+            project_name="artflow", 
+            config=vars(args),
+            init_kwargs={"wandb": {"name": args.run_name}}
+        )
     set_seed(args.seed)
 
     if accelerator.is_main_process:
@@ -165,6 +172,7 @@ def main():
         avg_loss = total_loss / len(train_dataloader)
         if accelerator.is_main_process:
             print(f"Epoch {epoch+1} | Average Loss: {avg_loss:.4f}")
+            accelerator.log({"train_loss": avg_loss}, step=epoch)
             
             # Save checkpoint
             if (epoch + 1) % args.checkpoint_interval == 0:
@@ -173,51 +181,18 @@ def main():
 
             # Evaluation
             if (epoch + 1) % args.eval_interval == 0:
-                print("Running evaluation...")
-                os.makedirs(os.path.join(args.output_dir, f"{args.run_name}"), exist_ok=True)
-                model.eval()
-                with torch.no_grad():
-                    sample_z0 = torch.randn(args.num_eval_samples, 16, args.resolution // 8, args.resolution // 8, device=accelerator.device)
-                    
-                    # Define model wrapper for solver
-                    def model_fn(x, t):
-                        if isinstance(t, float):
-                            t_tensor = torch.tensor(t, device=x.device).expand(x.shape[0])
-                        else:
-                            t_tensor = t
-                        return model(x, t_tensor)
-                    
-                    if args.algorithm == "fm-ot":
-                        samples = sample_ode(model_fn, sample_z0, steps=50, t_start=0.0, t_end=1.0)
-                    elif args.algorithm == "sm-diffusion":
-                        # Use ScoreMatchingODE solver which expects score output
-                        solver = ScoreMatchingODE(beta_min=algorithm.beta_min, beta_max=algorithm.beta_max)
-                        samples = sample_ode(model_fn, sample_z0, steps=50, t_start=1.0, t_end=0.0, solver_instance=solver)
-                    else:
-                        samples = sample_ode(model_fn, sample_z0, steps=50, t_start=1.0, t_end=0.0)
-                    
-                    # Decode samples (VAE)
-                    from diffusers import AutoencoderKLQwenImage
-                    vae = AutoencoderKLQwenImage.from_pretrained(
-                        args.vae_path, 
-                        torch_dtype=torch.bfloat16,
-                        local_files_only=True
-                    ).to(accelerator.device)
+                run_evaluation_stage0(
+                    accelerator=accelerator,
+                    model=model,
+                    args=args,
+                    epoch=epoch,
+                    train_dataloader=train_dataloader,
+                    algorithm=algorithm,
+                    sample_ode_fn=sample_ode,
+                    ScoreMatchingODE_cls=ScoreMatchingODE
+                )
 
-                    samples = samples.to(dtype=torch.bfloat16)
-                    # VAE expects [B, C, F, H, W], unsqueeze temporal dim
-                    samples = samples.unsqueeze(2)
-                    images = vae.decode(samples).sample
-                    images = images.squeeze(2)
-                    
-                    # Save images
-                    save_path = os.path.join(args.output_dir, f"{args.run_name}/samples_epoch_{epoch+1:03d}.png")
-                    save_image(images, save_path, normalize=True, value_range=(-1, 1))
-                    print(f"Saved samples to {save_path}")
-                    
-                    del vae
-                    torch.cuda.empty_cache()
-
+    accelerator.end_training()
     print("Training finished.")
 
 if __name__ == "__main__":

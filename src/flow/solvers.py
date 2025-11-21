@@ -3,7 +3,7 @@ ODE and SDE solvers for sampling from flow matching and diffusion models.
 """
 
 from abc import ABC, abstractmethod
-from typing import Callable, Optional, Tuple
+from typing import Callable, Optional, Tuple, Union, List
 import torch
 
 class Solver(ABC):
@@ -11,6 +11,11 @@ class Solver(ABC):
     @abstractmethod
     def step(self, x: torch.Tensor, t: float, dt: float, model_fn: Callable) -> torch.Tensor:
         pass
+
+# ... (skipping classes for brevity in replacement, but I need to be careful with replace_file_content)
+# Actually, I should just replace the imports and the function signature separately or use multi_replace.
+# Let's use multi_replace to be safe and clean.
+
 
 class Euler(Solver):
     """Euler method for ODEs."""
@@ -116,8 +121,9 @@ def sample_ode(
     solver_instance: Optional[Solver] = None,
     t_start: float = 0.0,
     t_end: float = 1.0,
-    device: str = "cuda"
-) -> torch.Tensor:
+    device: str = "cuda",
+    return_intermediates: bool = False
+) -> Union[torch.Tensor, Tuple[torch.Tensor, List[torch.Tensor]]]:
     """Sample using ODE solver."""
     if solver_instance is not None:
         s = solver_instance
@@ -132,9 +138,17 @@ def sample_ode(
     dt = (t_end - t_start) / steps
     t = t_start
     
+    intermediates = []
+    if return_intermediates:
+        intermediates.append(x.cpu())
+    
     for _ in range(steps):
         x = s.step(x, t, dt, model_fn)
         t += dt
+        if return_intermediates:
+            intermediates.append(x.cpu())
         
+    if return_intermediates:
+        return x, intermediates
     return x
 
