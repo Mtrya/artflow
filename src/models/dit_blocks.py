@@ -178,16 +178,17 @@ class MSRoPE(nn.Module):
 class FeedForward(nn.Module):
     def __init__(self, dim: int, hidden_dim: int, dropout: float = 0.0):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(dim, hidden_dim),
-            nn.GELU(approximate="tanh"),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, dim),
-            nn.Dropout(dropout)
-        )
+        self.up_proj = nn.Linear(dim, hidden_dim * 2)
+        self.down_proj = nn.Linear(hidden_dim, dim)
+        self.dropout = nn.Dropout(dropout)
+        self.dropout_out = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
+        x_gated, x_linear = self.up_proj(x).chunk(2, dim=-1)
+        x = F.silu(x_gated) * x_linear
+        x = self.dropout(x)
+        x = self.down_proj(x)
+        return self.dropout_out(x)
 
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)

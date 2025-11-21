@@ -25,7 +25,8 @@ class ArtFlowHybrid(nn.Module):
         double_depth: int = 6,
         single_depth: int = 12,
         num_heads: int = 14,
-        mlp_ratio: float = 4.0,
+        double_mlp_ratio: float = 2.67,
+        single_mlp_ratio: float = 4.0,
         txt_in_features: int = 2048,
     ):
         super().__init__()
@@ -53,12 +54,12 @@ class ArtFlowHybrid(nn.Module):
         rope_axes_dim = [head_dim // 2, head_dim // 2]
 
         self.double_blocks = nn.ModuleList([
-            DoubleStreamDiTBlock(hidden_size, num_heads, c_dim=hidden_size, mlp_ratio=mlp_ratio, rope_axes_dim=rope_axes_dim)
+            DoubleStreamDiTBlock(hidden_size, num_heads, c_dim=hidden_size, mlp_ratio=double_mlp_ratio, rope_axes_dim=rope_axes_dim)
             for _ in range(double_depth)
         ])
         
         self.single_blocks = nn.ModuleList([
-            SingleStreamDiTBlock(hidden_size, num_heads, c_dim=hidden_size, mlp_ratio=mlp_ratio, rope_axes_dim=rope_axes_dim)
+            SingleStreamDiTBlock(hidden_size, num_heads, c_dim=hidden_size, mlp_ratio=single_mlp_ratio, rope_axes_dim=rope_axes_dim)
             for _ in range(single_depth)
         ])
         
@@ -121,7 +122,7 @@ class ArtFlowHybrid(nn.Module):
 if __name__ == "__main__":
     from fvcore.nn import FlopCountAnalysis
     
-    model = ArtFlowHybrid(hidden_size=1120, double_depth=6, single_depth=12, num_heads=14, txt_in_features=2048)
+    model = ArtFlowHybrid(hidden_size=1120, double_depth=6, single_depth=12, num_heads=14, double_mlp_ratio=2.8, txt_in_features=2048)
     x = torch.randn(1, 16, 256, 256)
     t = torch.randint(0, 1000, (1,))
     txt = torch.randn(1, 77, 2048)

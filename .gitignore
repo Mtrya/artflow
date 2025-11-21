@@ -24,6 +24,7 @@ checkpoints/
 .github
 gha-creds-*.json
 .factory
+.agent
 
 package-lock.json
 
@@ -33,4 +34,5 @@ package-lock.json
 
 # Checkpoints and sample images
 checkpoint*
-output/*/samples*
+output/*/*.png
+wandb

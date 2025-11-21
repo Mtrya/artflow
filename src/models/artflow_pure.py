@@ -23,7 +23,7 @@ class ArtFlowPure(nn.Module):
         hidden_size: int = 1152,
         depth: int = 28,
         num_heads: int = 16,
-        mlp_ratio: float = 4.0,
+        mlp_ratio: float = 2.67,
         txt_in_features: int = 2048
     ):
         super().__init__()
