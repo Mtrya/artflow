@@ -9,9 +9,7 @@ import torch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from models.artflow_uncond import ArtFlowUncond
-from models.artflow_pure import ArtFlowPure
-from models.artflow_fused import ArtFlowFused
-from models.artflow_hybrid import ArtFlowHybrid
+from models.artflow import ArtFlow
 
 
 def print_test_header(test_name):
@@ -34,19 +32,18 @@ def test_artflow_uncond():
     # Setup parameters
     batch_size = 2
     in_channels = 4
-    input_size = 32
     patch_size = 2
     hidden_size = 32
     num_heads = 4
     depth = 2
     
     # Create inputs
-    x = torch.randn(batch_size, in_channels, input_size, input_size)
+    H, W = 32, 32
+    x = torch.randn(batch_size, in_channels, H, W)
     t = torch.randint(0, 1000, (batch_size,))
     
     # Initialize model
     model = ArtFlowUncond(
-        input_size=input_size,
         patch_size=patch_size,
         in_channels=in_channels,
         hidden_size=hidden_size,
@@ -69,13 +66,12 @@ def test_artflow_uncond():
 
 
 def test_artflow_pure():
-    """Test ArtFlowPure model"""
-    print_test_header("ArtFlowPure")
+    """Test ArtFlow with Pure conditioning (timestep only)"""
+    print_test_header("ArtFlow Pure")
     
     # Setup parameters
     batch_size = 2
     in_channels = 4
-    input_size = 32
     patch_size = 2
     hidden_size = 32
     num_heads = 4
@@ -84,19 +80,21 @@ def test_artflow_pure():
     txt_seq_len = 10
     
     # Create inputs
-    x = torch.randn(batch_size, in_channels, input_size, input_size)
+    H, W = 32, 32
+    x = torch.randn(batch_size, in_channels, H, W)
     t = torch.randint(0, 1000, (batch_size,))
     txt = torch.randn(batch_size, txt_seq_len, txt_in_features)
     
     # Initialize model
-    model = ArtFlowPure(
-        input_size=input_size,
+    model = ArtFlow(
         patch_size=patch_size,
         in_channels=in_channels,
         hidden_size=hidden_size,
-        depth=depth,
         num_heads=num_heads,
-        txt_in_features=txt_in_features
+        txt_in_features=txt_in_features,
+        conditioning_scheme="pure",
+        double_stream_depth=depth,
+        single_stream_depth=0
     )
     
     # Forward pass
@@ -114,13 +112,12 @@ def test_artflow_pure():
 
 
 def test_artflow_fused():
-    """Test ArtFlowFused model"""
-    print_test_header("ArtFlowFused")
+    """Test ArtFlow with Fused conditioning (timestep + pooled text)"""
+    print_test_header("ArtFlow Fused")
     
     # Setup parameters
     batch_size = 2
     in_channels = 4
-    input_size = 32
     patch_size = 2
     hidden_size = 32
     num_heads = 4
@@ -129,20 +126,22 @@ def test_artflow_fused():
     txt_seq_len = 10
     
     # Create inputs
-    x = torch.randn(batch_size, in_channels, input_size, input_size)
+    H, W = 32, 32
+    x = torch.randn(batch_size, in_channels, H, W)
     t = torch.randint(0, 1000, (batch_size,))
     txt = torch.randn(batch_size, txt_seq_len, txt_in_features)
     txt_pooled = torch.randn(batch_size, txt_in_features)
     
     # Initialize model
-    model = ArtFlowFused(
-        input_size=input_size,
+    model = ArtFlow(
         patch_size=patch_size,
         in_channels=in_channels,
         hidden_size=hidden_size,
-        depth=depth,
         num_heads=num_heads,
-        txt_in_features=txt_in_features
+        txt_in_features=txt_in_features,
+        conditioning_scheme="fused",
+        double_stream_depth=depth,
+        single_stream_depth=0
     )
     
     # Forward pass
@@ -160,42 +159,40 @@ def test_artflow_fused():
 
 
 def test_artflow_hybrid():
-    """Test ArtFlowHybrid model"""
-    print_test_header("ArtFlowHybrid")
+    """Test ArtFlow with Hybrid architecture (double + single stream)"""
+    print_test_header("ArtFlow Hybrid")
     
     # Setup parameters
     batch_size = 2
     in_channels = 4
-    input_size = 32
     patch_size = 2
     hidden_size = 32
     num_heads = 4
-    # Hybrid specific depths
     double_depth = 1
     single_depth = 1
     txt_in_features = 64
     txt_seq_len = 10
     
     # Create inputs
-    x = torch.randn(batch_size, in_channels, input_size, input_size)
+    H, W = 32, 32
+    x = torch.randn(batch_size, in_channels, H, W)
     t = torch.randint(0, 1000, (batch_size,))
     txt = torch.randn(batch_size, txt_seq_len, txt_in_features)
-    txt_pooled = torch.randn(batch_size, txt_in_features)
     
     # Initialize model
-    model = ArtFlowHybrid(
-        input_size=input_size,
+    model = ArtFlow(
         patch_size=patch_size,
         in_channels=in_channels,
         hidden_size=hidden_size,
-        double_depth=double_depth,
-        single_depth=single_depth,
         num_heads=num_heads,
-        txt_in_features=txt_in_features
+        txt_in_features=txt_in_features,
+        conditioning_scheme="pure",
+        double_stream_depth=double_depth,
+        single_stream_depth=single_depth
     )
     
     # Forward pass
-    out = model(x, t, txt, txt_pooled)
+    out = model(x, t, txt)
     
     # Check shape
     shape_correct = out.shape == x.shape
@@ -208,6 +205,94 @@ def test_artflow_hybrid():
     return shape_correct and non_zero
 
 
+def test_modulation_strategies():
+    """Test different modulation sharing strategies"""
+    print_test_header("Modulation Strategies")
+    
+    # Setup parameters
+    batch_size = 2
+    in_channels = 4
+    patch_size = 2
+    hidden_size = 32
+    num_heads = 4
+    depth = 2
+    txt_in_features = 64
+    txt_seq_len = 10
+    
+    # Create inputs
+    H, W = 32, 32
+    x = torch.randn(batch_size, in_channels, H, W)
+    t = torch.randint(0, 1000, (batch_size,))
+    txt = torch.randn(batch_size, txt_seq_len, txt_in_features)
+    
+    strategies = ["none", "stream", "layer", "all"]
+    all_passed = True
+    
+    for strategy in strategies:
+        model = ArtFlow(
+            patch_size=patch_size,
+            in_channels=in_channels,
+            hidden_size=hidden_size,
+            num_heads=num_heads,
+            txt_in_features=txt_in_features,
+            conditioning_scheme="pure",
+            double_stream_depth=depth,
+            single_stream_depth=0,
+            modulation_share=strategy
+        )
+        
+        out = model(x, t, txt)
+        shape_correct = out.shape == x.shape
+        print_test_result(shape_correct, f"Modulation '{strategy}': Output shape {out.shape}")
+        all_passed = all_passed and shape_correct
+    
+    return all_passed
+
+
+def test_ffn_types():
+    """Test different FFN types"""
+    print_test_header("FFN Types")
+    
+    # Setup parameters
+    batch_size = 2
+    in_channels = 4
+    patch_size = 2
+    hidden_size = 32
+    num_heads = 4
+    depth = 2
+    txt_in_features = 64
+    txt_seq_len = 10
+    
+    # Create inputs
+    H, W = 32, 32
+    x = torch.randn(batch_size, in_channels, H, W)
+    t = torch.randint(0, 1000, (batch_size,))
+    txt = torch.randn(batch_size, txt_seq_len, txt_in_features)
+    
+    ffn_types = ["gated", "standard"]
+    all_passed = True
+    
+    for ffn_type in ffn_types:
+        model = ArtFlow(
+            patch_size=patch_size,
+            in_channels=in_channels,
+            hidden_size=hidden_size,
+            num_heads=num_heads,
+            txt_in_features=txt_in_features,
+            conditioning_scheme="pure",
+            double_stream_depth=depth,
+            single_stream_depth=0,
+            ffn_type=ffn_type
+        )
+        
+        out = model(x, t, txt)
+        shape_correct = out.shape == x.shape
+        print_test_result(shape_correct, f"FFN '{ffn_type}': Output shape {out.shape}")
+        all_passed = all_passed and shape_correct
+    
+    return all_passed
+
+
 def run_all_tests():
     """Run all tests and print summary"""
     print("\n" + "="*60)
@@ -218,9 +303,11 @@ def run_all_tests():
     
     # Run all tests
     results['ArtFlowUncond'] = test_artflow_uncond()
-    results['ArtFlowPure'] = test_artflow_pure()
-    results['ArtFlowFused'] = test_artflow_fused()
-    results['ArtFlowHybrid'] = test_artflow_hybrid()
+    results['ArtFlow Pure'] = test_artflow_pure()
+    results['ArtFlow Fused'] = test_artflow_fused()
+    results['ArtFlow Hybrid'] = test_artflow_hybrid()
+    results['Modulation Strategies'] = test_modulation_strategies()
+    results['FFN Types'] = test_ffn_types()
     
     # Print summary
     print("\n" + "="*60)

@@ -175,7 +175,7 @@ class MSRoPE(nn.Module):
 
         return freqs
 
-class FeedForward(nn.Module):
+class GatedFeedForward(nn.Module):
     def __init__(self, dim: int, hidden_dim: int, dropout: float = 0.0):
         super().__init__()
         self.up_proj = nn.Linear(dim, hidden_dim * 2)
@@ -190,99 +190,24 @@ class FeedForward(nn.Module):
         x = self.down_proj(x)
         return self.dropout_out(x)
 
+class StandardFeedForward(nn.Module):
+    def __init__(self, dim: int, hidden_dim: int, dropout: float = 0.0):
+        super().__init__()
+        self.proj_in = nn.Linear(dim, hidden_dim)
+        self.proj_out = nn.Linear(hidden_dim, dim)
+        self.act = nn.GELU(approximate="tanh")
+        self.dropout = nn.Dropout(dropout)
+        self.dropout_out = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.proj_in(x)
+        x = self.act(x)
+        x = self.dropout(x)
+        x = self.proj_out(x)
+        return self.dropout_out(x)
+
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
-
-class SingleStreamAttention(nn.Module):
-    def __init__(self, dim: int, num_heads: int, qkv_bias: bool = True, rope_theta: int = 10000, rope_axes_dim: list = [64, 64]):
-        super().__init__()
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.scale = self.head_dim ** -0.5
-
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        
-        self.q_norm = nn.RMSNorm(self.head_dim, eps=1e-6)
-        self.k_norm = nn.RMSNorm(self.head_dim, eps=1e-6)
-
-        self.rope = MSRoPE(theta=rope_theta, axes_dim=rope_axes_dim)
-        
-    def forward(self, x: torch.Tensor, freqs: torch.Tensor, attention_mask: Optional[torch.Tensor]=None) -> torch.Tensor:
-        B, S, C = x.shape
-        
-        qkv = self.qkv(x).reshape(B, S, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv.unbind(0) # [B, H, S, D]
-        
-        q = self.q_norm(q)
-        k = self.k_norm(k)
-        
-        # Apply RoPE
-        q = apply_rotary_emb(q.transpose(1, 2), freqs).transpose(1, 2)
-        k = apply_rotary_emb(k.transpose(1, 2), freqs).transpose(1, 2)
-        
-        # Attention
-        x = F.scaled_dot_product_attention(q, k, v, attn_mask=attention_mask, dropout_p=0.0)
-        
-        x = x.transpose(1, 2).reshape(B, S, C)
-        
-        return x
-
-class SingleStreamDiTBlock(nn.Module):
-    def __init__(self, dim: int, num_heads: int, c_dim: int, mlp_ratio: float = 4.0, qkv_bias: bool = True, rope_theta: int = 10000, rope_axes_dim: list = [64, 64]):
-        super().__init__()
-        self.dim = dim
-        self.num_heads = num_heads
-        self.mlp_hidden_dim = int(dim * mlp_ratio)
-        
-        self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(c_dim, 3 * dim, bias=True)
-        )
-        
-        self.norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
-        self.attn = SingleStreamAttention(dim, num_heads, qkv_bias, rope_theta, rope_axes_dim)
-        
-        self.proj_mlp = nn.Linear(dim, self.mlp_hidden_dim)
-        self.act_mlp = nn.GELU(approximate="tanh")
-        self.proj_out = nn.Linear(dim + self.mlp_hidden_dim, dim)
-
-    def forward(self, img_tokens: torch.Tensor, txt_tokens: torch.Tensor, c: torch.Tensor, img_hw: Tuple[int, int], txt_seq_len: int, txt_attention_mask: Optional[torch.Tensor]=None) -> Tuple[torch.Tensor, torch.Tensor]:
-        B, S_img, C = img_tokens.shape
-        _, S_txt, _ = txt_tokens.shape
-        
-        x = torch.cat([img_tokens, txt_tokens], dim=1)
-        
-        # Prepare RoPE frequencies
-        img_freqs, txt_freqs = self.attn.rope(img_hw, txt_seq_len, x.device)
-        freqs = torch.cat([img_freqs, txt_freqs], dim=0)
-        
-        # Modulation
-        shift_msa, scale_msa, gate_msa = self.adaLN_modulation(c).chunk(3, dim=1)
-        norm_x = modulate(self.norm(x), shift_msa, scale_msa)
-        
-        # Prepare attention mask
-        attn_mask = None
-        if txt_attention_mask is not None:
-            img_mask = torch.ones(B, S_img, device=txt_attention_mask.device, dtype=txt_attention_mask.dtype)
-            full_mask = torch.cat([img_mask, txt_attention_mask], dim=1)
-            attn_mask = (full_mask == 0).unsqueeze(1).unsqueeze(2)
-            attn_mask = attn_mask.to(dtype=torch.bool)
-
-        # Attention
-        attn_out = self.attn(norm_x, freqs, attn_mask)
-        
-        # MLP
-        mlp_out = self.act_mlp(self.proj_mlp(norm_x))
-        
-        # Combine
-        hidden = torch.cat([attn_out, mlp_out], dim=-1)
-        out = gate_msa.unsqueeze(1) * self.proj_out(hidden)
-        x = x + out
-        
-        img_tokens = x[:, :S_img, :]
-        txt_tokens = x[:, S_img:, :]
-        
-        return img_tokens, txt_tokens
 
 class DoubleStreamAttention(nn.Module):
     def __init__(self, dim: int, num_heads: int, qkv_bias: bool = True, rope_theta: int = 10000, rope_axes_dim: list = [64, 64]):
@@ -370,21 +295,44 @@ class DoubleStreamAttention(nn.Module):
         return x_img, x_txt
 
 class DoubleStreamDiTBlock(nn.Module):
-    def __init__(self, dim: int, num_heads: int, c_dim: int, mlp_ratio: float = 4.0, qkv_bias: bool = True, rope_theta: int = 10000, rope_axes_dim: list = [64, 64]):
+    def __init__(self, dim: int, num_heads: int, c_dim: int, mlp_ratio: float = 4.0, qkv_bias: bool = True, rope_theta: int = 10000, rope_axes_dim: list = [64, 64], modulation_share: str = "none", ffn_type: str = "gated"):
         super().__init__()
         self.dim = dim
         self.num_heads = num_heads
         self.mlp_ratio = mlp_ratio
+        self.modulation_share = modulation_share
         
         # Modulation
-        self.adaLN_modulation_img = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(c_dim, 6 * dim, bias=True)
-        )
-        self.adaLN_modulation_txt = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(c_dim, 6 * dim, bias=True)
-        )
+        if modulation_share == "none":
+            # Separate Image/Text, Separate MSA/MLP -> 12 * dim
+            self.modulation_img = nn.Sequential(
+                nn.SiLU(),
+                nn.Linear(c_dim, 6 * dim, bias=True)
+            )
+            self.modulation_txt = nn.Sequential(
+                nn.SiLU(),
+                nn.Linear(c_dim, 6 * dim, bias=True)
+            )
+        elif modulation_share == "stream":
+            # Share Image/Text, Separate MSA/MLP -> 6 * dim (broadcast across streams)
+            self.modulation = nn.Sequential(
+                nn.SiLU(),
+                nn.Linear(c_dim, 6 * dim, bias=True)
+            )
+        elif modulation_share == "layer":
+            # Separate Image/Text, Share MSA/MLP -> 6 * dim (3 for img, 3 for txt)
+            self.modulation = nn.Sequential(
+                nn.SiLU(),
+                nn.Linear(c_dim, 6 * dim, bias=True)
+            )
+        elif modulation_share == "all":
+            # Share Image/Text, Share MSA/MLP -> 3 * dim (broadcast everything)
+            self.modulation = nn.Sequential(
+                nn.SiLU(),
+                nn.Linear(c_dim, 3 * dim, bias=True)
+            )
+        else:
+            raise ValueError(f"Unknown modulation_share strategy: {modulation_share}")
         
         # Attention
         self.norm1_img = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
@@ -395,14 +343,49 @@ class DoubleStreamDiTBlock(nn.Module):
         self.norm2_img = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
         self.norm2_txt = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
         mlp_hidden_dim = int(dim * mlp_ratio)
-        self.mlp_img = FeedForward(dim, mlp_hidden_dim)
-        self.mlp_txt = FeedForward(dim, mlp_hidden_dim)
+        
+        if ffn_type == "gated":
+            self.mlp_img = GatedFeedForward(dim, mlp_hidden_dim)
+            self.mlp_txt = GatedFeedForward(dim, mlp_hidden_dim)
+        elif ffn_type == "standard":
+            self.mlp_img = StandardFeedForward(dim, mlp_hidden_dim)
+            self.mlp_txt = StandardFeedForward(dim, mlp_hidden_dim)
+        else:
+            raise ValueError(f"Unknown ffn_type: {ffn_type}")
 
     def forward(self, img_tokens: torch.Tensor, txt_tokens: torch.Tensor, c: torch.Tensor, img_hw: Tuple[int, int], txt_seq_len: int, txt_attention_mask: Optional[torch.Tensor]=None) -> Tuple[torch.Tensor, torch.Tensor]:
         # Modulation
         # c: [B, c_dim]
-        shift_msa_img, scale_msa_img, gate_msa_img, shift_mlp_img, scale_mlp_img, gate_mlp_img = self.adaLN_modulation_img(c).chunk(6, dim=1)
-        shift_msa_txt, scale_msa_txt, gate_msa_txt, shift_mlp_txt, scale_mlp_txt, gate_mlp_txt = self.adaLN_modulation_txt(c).chunk(6, dim=1)
+        if self.modulation_share == "none":
+            shift_msa_img, scale_msa_img, gate_msa_img, shift_mlp_img, scale_mlp_img, gate_mlp_img = self.modulation_img(c).chunk(6, dim=1)
+            shift_msa_txt, scale_msa_txt, gate_msa_txt, shift_mlp_txt, scale_mlp_txt, gate_mlp_txt = self.modulation_txt(c).chunk(6, dim=1)
+        elif self.modulation_share == "stream":
+            params = self.modulation(c)
+            shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = params.chunk(6, dim=1)
+            # Broadcast to both streams
+            shift_msa_img = shift_msa_txt = shift_msa
+            scale_msa_img = scale_msa_txt = scale_msa
+            gate_msa_img = gate_msa_txt = gate_msa
+            shift_mlp_img = shift_mlp_txt = shift_mlp
+            scale_mlp_img = scale_mlp_txt = scale_mlp
+            gate_mlp_img = gate_mlp_txt = gate_mlp
+        elif self.modulation_share == "layer":
+            params = self.modulation(c)
+            shift_img, scale_img, gate_img, shift_txt, scale_txt, gate_txt = params.chunk(6, dim=1)
+            # Broadcast to MSA and MLP
+            shift_msa_img = shift_mlp_img = shift_img
+            scale_msa_img = scale_mlp_img = scale_img
+            gate_msa_img = gate_mlp_img = gate_img
+            shift_msa_txt = shift_mlp_txt = shift_txt
+            scale_msa_txt = scale_mlp_txt = scale_txt
+            gate_msa_txt = gate_mlp_txt = gate_txt
+        elif self.modulation_share == "all":
+            params = self.modulation(c)
+            shift, scale, gate = params.chunk(3, dim=1)
+            # Broadcast to everything
+            shift_msa_img = shift_mlp_img = shift_msa_txt = shift_mlp_txt = shift
+            scale_msa_img = scale_mlp_img = scale_msa_txt = scale_mlp_txt = scale
+            gate_msa_img = gate_mlp_img = gate_msa_txt = gate_mlp_txt = gate
         
         # 1. Attention Block
         img_norm = modulate(self.norm1_img(img_tokens), shift_msa_img, scale_msa_img)
@@ -425,6 +408,102 @@ class DoubleStreamDiTBlock(nn.Module):
         
         img_tokens = img_tokens + gate_mlp_img.unsqueeze(1) * self.mlp_img(img_norm)
         txt_tokens = txt_tokens + gate_mlp_txt.unsqueeze(1) * self.mlp_txt(txt_norm)
+        
+        return img_tokens, txt_tokens
+
+class SingleStreamAttention(nn.Module):
+    def __init__(self, dim: int, num_heads: int, qkv_bias: bool = True, rope_theta: int = 10000, rope_axes_dim: list = [64, 64]):
+        super().__init__()
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.scale = self.head_dim ** -0.5
+
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        
+        self.q_norm = nn.RMSNorm(self.head_dim, eps=1e-6)
+        self.k_norm = nn.RMSNorm(self.head_dim, eps=1e-6)
+
+        self.rope = MSRoPE(theta=rope_theta, axes_dim=rope_axes_dim)
+        
+    def forward(self, x: torch.Tensor, freqs: torch.Tensor, attention_mask: Optional[torch.Tensor]=None) -> torch.Tensor:
+        B, S, C = x.shape
+        
+        qkv = self.qkv(x).reshape(B, S, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv.unbind(0) # [B, H, S, D]
+        
+        q = self.q_norm(q)
+        k = self.k_norm(k)
+        
+        # Apply RoPE
+        q = apply_rotary_emb(q.transpose(1, 2), freqs).transpose(1, 2)
+        k = apply_rotary_emb(k.transpose(1, 2), freqs).transpose(1, 2)
+        
+        # Attention
+        x = F.scaled_dot_product_attention(q, k, v, attn_mask=attention_mask, dropout_p=0.0)
+        
+        x = x.transpose(1, 2).reshape(B, S, C)
+        
+        return x
+
+class SingleStreamDiTBlock(nn.Module):
+    def __init__(self, dim: int, num_heads: int, c_dim: int, mlp_ratio: float = 4.0, qkv_bias: bool = True, rope_theta: int = 10000, rope_axes_dim: list = [64, 64], ffn_type: str = "gated"):
+        super().__init__()
+        self.dim = dim
+        self.num_heads = num_heads
+        self.mlp_hidden_dim = int(dim * mlp_ratio)
+        
+        self.modulation = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(c_dim, 3 * dim, bias=True)
+        )
+        
+        self.norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
+        self.attn = SingleStreamAttention(dim, num_heads, qkv_bias, rope_theta, rope_axes_dim)
+        
+        if ffn_type == "gated":
+            self.mlp = GatedFeedForward(dim, self.mlp_hidden_dim)
+        elif ffn_type == "standard":
+            self.mlp = StandardFeedForward(dim, self.mlp_hidden_dim)
+        else:
+            raise ValueError(f"Unknown ffn_type: {ffn_type}")
+            
+        self.proj_out = nn.Linear(dim + dim, dim)
+
+    def forward(self, img_tokens: torch.Tensor, txt_tokens: torch.Tensor, c: torch.Tensor, img_hw: Tuple[int, int], txt_seq_len: int, txt_attention_mask: Optional[torch.Tensor]=None) -> Tuple[torch.Tensor, torch.Tensor]:
+        B, S_img, C = img_tokens.shape
+        _, S_txt, _ = txt_tokens.shape
+        
+        x = torch.cat([img_tokens, txt_tokens], dim=1)
+        
+        # Prepare RoPE frequencies
+        img_freqs, txt_freqs = self.attn.rope(img_hw, txt_seq_len, x.device)
+        freqs = torch.cat([img_freqs, txt_freqs], dim=0)
+        
+        # Modulation
+        shift_msa, scale_msa, gate_msa = self.modulation(c).chunk(3, dim=1)
+        norm_x = modulate(self.norm(x), shift_msa, scale_msa)
+        
+        # Prepare attention mask
+        attn_mask = None
+        if txt_attention_mask is not None:
+            img_mask = torch.ones(B, S_img, device=txt_attention_mask.device, dtype=txt_attention_mask.dtype)
+            full_mask = torch.cat([img_mask, txt_attention_mask], dim=1)
+            attn_mask = (full_mask == 0).unsqueeze(1).unsqueeze(2)
+            attn_mask = attn_mask.to(dtype=torch.bool)
+
+        # Attention
+        attn_out = self.attn(norm_x, freqs, attn_mask)
+        
+        # MLP
+        mlp_out = self.mlp(norm_x)
+        
+        # Combine
+        hidden = torch.cat([attn_out, mlp_out], dim=-1)
+        out = gate_msa.unsqueeze(1) * self.proj_out(hidden)
+        x = x + out
+        
+        img_tokens = x[:, :S_img, :]
+        txt_tokens = x[:, S_img:, :]
         
         return img_tokens, txt_tokens
 
@@ -473,7 +552,7 @@ class UnconditionalDiTBlock(nn.Module):
         self.num_heads = num_heads
         
         # Modulation: 6 parameters (shift, scale, gate for both attn and mlp)
-        self.adaLN_modulation = nn.Sequential(
+        self.modulation = nn.Sequential(
             nn.SiLU(),
             nn.Linear(c_dim, 6 * dim, bias=True)
         )
@@ -482,12 +561,13 @@ class UnconditionalDiTBlock(nn.Module):
         self.attn = UnconditionalAttention(dim, num_heads, qkv_bias, rope_theta, rope_axes_dim)
         
         self.norm2 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
+        self.norm2 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
         mlp_hidden_dim = int(dim * mlp_ratio)
-        self.mlp = FeedForward(dim, mlp_hidden_dim)
+        self.mlp = GatedFeedForward(dim, mlp_hidden_dim)
 
     def forward(self, x: torch.Tensor, c: torch.Tensor, img_hw: Tuple[int, int]) -> torch.Tensor:
         # c: [B, c_dim]
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=1)
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.modulation(c).chunk(6, dim=1)
         
         # 1. Attention Block
         norm_x = modulate(self.norm1(x), shift_msa, scale_msa)
@@ -545,4 +625,4 @@ if __name__ == "__main__":
     print(f"{'Single Stream':<25} | {params_single:<15,d} | {flops_single:<15.2e}")
     print(f"{'Double Stream':<25} | {params_double:<15,d} | {flops_double:<15.2e}")
     print("-" * 60)
-
+    
