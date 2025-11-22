@@ -14,7 +14,7 @@ DATASET="kaupane/wikiart-captions-monet"
 export WANDB_DIR="./output"
 
 # Training hyperparameters
-RESOLUTION=128
+RESOLUTION=256
 BATCH_SIZE=32
 EPOCHS=500  # ~20k steps for 1.3k images
 LR=1e-4
@@ -34,6 +34,7 @@ RUN_NAME_FM_OT="stage0_fm_ot"
 # Evaluation parameters
 CHECKPOINT_INTERVAL=100
 EVAL_INTERVAL=20
+NUM_EVAL_SAMPLES=16
 
 python scripts/train_stage0.py \
     --run_name "$RUN_NAME_SM_DIFFUSION" \
@@ -46,6 +47,7 @@ python scripts/train_stage0.py \
     --algorithm "sm-diffusion" \
     --checkpoint_interval "$CHECKPOINT_INTERVAL" \
     --eval_interval "$EVAL_INTERVAL" \
+    --num_eval_samples "$NUM_EVAL_SAMPLES" \
     --mixed_precision "$PRECISION" \
     --model_hidden_size "$MODEL_HIDDEN_SIZE" \
     --model_depth "$MODEL_DEPTH" \
@@ -61,8 +63,9 @@ python scripts/train_stage0.py \
     --num_epochs "$EPOCHS" \
     --learning_rate "$LR" \
     --algorithm "fm-diffusion" \
-    --model_hidden_size "$MODEL_HIDDEN_SIZE" \
-    --model_depth "$MODEL_DEPTH" \
+    --checkpoint_interval "$CHECKPOINT_INTERVAL" \
+    --eval_interval "$EVAL_INTERVAL" \
+    --num_eval_samples "$NUM_EVAL_SAMPLES" \
     --mixed_precision "$PRECISION" \
     --model_hidden_size "$MODEL_HIDDEN_SIZE" \
     --model_depth "$MODEL_DEPTH" \
@@ -78,8 +81,9 @@ python scripts/train_stage0.py \
     --num_epochs "$EPOCHS" \
     --learning_rate "$LR" \
     --algorithm "fm-ot" \
-    --model_hidden_size "$MODEL_HIDDEN_SIZE" \
-    --model_depth "$MODEL_DEPTH" \
+    --checkpoint_interval "$CHECKPOINT_INTERVAL" \
+    --eval_interval "$EVAL_INTERVAL" \
+    --num_eval_samples "$NUM_EVAL_SAMPLES" \
     --mixed_precision "$PRECISION" \
     --model_hidden_size "$MODEL_HIDDEN_SIZE" \
     --model_depth "$MODEL_DEPTH" \

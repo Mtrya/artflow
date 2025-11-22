@@ -3,7 +3,6 @@
 This module centralizes the image-and-text pre-processing logic required by the training pipeline.
 The :class:`PrecomputeEngine`:
 - resizes images into resolution bins,
-- applies optional localized augmentations, 
 - samples captions according to a curriculum schedule,
 - materializes both VAE latents and frozen text encoder embeddings.
 """
@@ -15,8 +14,7 @@ import random
 import numpy as np
 import torch
 from datasets import Dataset, concatenate_datasets
-from PIL import Image, ImageFilter
-from torchvision.transforms import ColorJitter
+from PIL import Image
 try:
     from encode_text import encode_text
     from vae_codec import encode_image
@@ -99,150 +97,26 @@ def _sample_resolution_bucket(
     width: int,
     height: int,
     resolution_buckets: Dict[int, Tuple[int, int]],
-    probs: List[float],
-) -> Tuple[int, int]:
-    """Sample a resolution target that roughly matches the original aspect ratio."""
+) -> Tuple[int, Tuple[int, int]]:
+    """Return the closest resolution bucket to the original aspect ratio."""
+
+    if not resolution_buckets:
+        raise ValueError("resolution_buckets must contain at least one entry")
+    if width <= 0 or height <= 0:
+        raise ValueError("Image width and height must be positive")
 
     original_aspect = width / height
     distances = {
         bucket_id: abs((w / h) - original_aspect)
         for bucket_id, (w, h) in resolution_buckets.items()
+        if h > 0
     }
 
-    sorted_bucket_ids = sorted(distances, key=distances.__getitem__)
-    if not sorted_bucket_ids:
-        raise ValueError("resolution_buckets must contain at least one entry")
+    if not distances:
+        raise ValueError("resolution_buckets contain invalid entries")
 
-    candidate_count = min(len(sorted_bucket_ids), len(probs))
-    if candidate_count == 0:
-        raise ValueError("probs must contain at least one float")
-    else:
-        weights = [float(p) for p in probs[:candidate_count]]
-        total_weight = sum(weights)
-        if total_weight <= 0.0:
-            probabilities = [1.0 / candidate_count] * candidate_count
-        else:
-            probabilities = [w / total_weight for w in weights]
-        sampled_bucket_id = random.choices(sorted_bucket_ids[:candidate_count], weights=probabilities, k=1)[0]
-
-    return resolution_buckets[sampled_bucket_id]
-
-def _sample_local_mask(
-    size: Tuple[int, int],
-    area_scale_range: Tuple[float, float],
-    aspect_ratio_range: Tuple[float, float],
-    blur_radius: float,
-    rng: random.Random
-) -> np.ndarray:
-    """Generate a soft-edged binary mask that selects a random sub-region.
-
-    Args:
-        size: Target image size as (width, height) in pixels.
-        area_scale_range: Min and max fraction of the image area to cover.
-        aspect_ratio_range: Lower and upper bounds for region aspect ratio (w / h).
-        blur_radius: Gaussian blur radius applied to soften mask edges.
-        rng: Random source used for reproducible sampling.
-
-    Returns:
-        A float32 mask of shape (H, W, 1) with values in [0, 1].
-    """
-    width, height = size
-    min_scale, max_scale = area_scale_range
-    if max_scale < min_scale:
-        min_scale, max_scale = max_scale, min_scale
-
-    min_scale = float(np.clip(min_scale, 0.0, 1.0))
-    max_scale = float(np.clip(max_scale, min_scale, 1.0))
-    if max_scale <= 0.0 or width == 0 or height == 0:
-        return np.zeros((height, width, 1), dtype=np.float32)
-
-    min_ar, max_ar = aspect_ratio_range
-    if max_ar < min_ar:
-        min_ar, max_ar = max_ar, min_ar
-
-    min_ar = max(min_ar, 1e-3)
-    max_ar = max(max_ar, min_ar)
-
-    total_area = float(width * height)
-    target_area = float(rng.uniform(min_scale, max_scale) * total_area)
-    aspect_ratio = float(rng.uniform(min_ar, max_ar))
-
-    mask_width = int(round((target_area * aspect_ratio) ** 0.5))
-    mask_height = int(round((target_area / aspect_ratio) ** 0.5))
-    mask_width = max(1, min(mask_width, width))
-    mask_height = max(1, min(mask_height, height))
-
-    if mask_width == width and mask_height == height:
-        return np.ones((height, width, 1), dtype=np.float32)
-
-    x_max = width - mask_width
-    y_max = height - mask_height
-    x0 = rng.randint(0, x_max) if x_max > 0 else 0
-    y0 = rng.randint(0, y_max) if y_max > 0 else 0
-
-    mask = np.zeros((height, width), dtype=np.float32)
-    mask[y0:y0 + mask_height, x0:x0 + mask_width] = 1.0
-
-    if blur_radius > 0.0:
-        mask_img = Image.fromarray((mask * 255.0).astype(np.uint8))
-        mask_img = mask_img.filter(ImageFilter.GaussianBlur(radius=float(blur_radius)))
-        mask = np.asarray(mask_img, dtype=np.float32) / 255.0
-
-    return mask[..., None]
-
-def _apply_data_augmentations(
-    image: Image.Image,
-    target_resolution: Tuple[int, int],
-    augmentation_args: Dict[str, Any]
-) -> Image.Image:
-    """Resize and optionally perturb an image using localized augmentations.
-
-    Args:
-        image: Pillow image to transform.
-        target_resolution: Spatial resolution (width, height) to resize into.
-        augmentation_args: Keyword arguments controlling noise, blur, and jitter behaviour.
-
-    Returns:
-        The augmented Pillow image at the requested resolution.
-    """
-    resized = image.resize(target_resolution, Image.BICUBIC)
-
-    local_rng = random.Random(random.getrandbits(64))
-    np_rng = np.random.default_rng(local_rng.getrandbits(63))
-
-    area_scale_range = augmentation_args["area_scale_range"]
-    aspect_ratio_range = augmentation_args["aspect_ratio_range"]
-    mask_blur_radius = float(augmentation_args["mask_blur_radius"])
-    image_array = np.asarray(resized, dtype=np.float32) / 255.0
-
-    gaussian_prob = float(augmentation_args["gaussian_prob"])
-    if local_rng.random() < gaussian_prob:
-        sigma_min, sigma_max = augmentation_args["gaussian_sigma_range"]
-        sigma = float(local_rng.uniform(sigma_min, sigma_max))
-        blurred = resized.filter(ImageFilter.GaussianBlur(radius=sigma))
-        blurred_array = np.asarray(blurred, dtype=np.float32) / 255.0
-        mask = _sample_local_mask(resized.size, area_scale_range, aspect_ratio_range, mask_blur_radius, local_rng)
-        image_array = mask * blurred_array + (1.0 - mask) * image_array
-
-    noise_prob = float(augmentation_args["noise_prob"])
-    if local_rng.random() < noise_prob:
-        std_min, std_max = augmentation_args["noise_std_range"]
-        noise_std = float(local_rng.uniform(std_min, std_max)) / 255.0
-        mask = _sample_local_mask(resized.size, area_scale_range, aspect_ratio_range, mask_blur_radius, local_rng)
-        noise = np_rng.normal(0.0, noise_std, size=image_array.shape).astype(np.float32)
-        image_array = np.clip(image_array + mask * noise, 0.0, 1.0)
-
-    color_prob = float(augmentation_args["color_jitter_prob"])
-    if local_rng.random() < color_prob:
-        jitter_params = augmentation_args["color_jitter_params"]
-        jitter = ColorJitter(**jitter_params)
-        jittered = jitter(resized)
-        jittered_array = np.asarray(jittered, dtype=np.float32) / 255.0
-        mask = _sample_local_mask(resized.size, area_scale_range, aspect_ratio_range, mask_blur_radius, local_rng)
-        image_array = mask * jittered_array + (1.0 - mask) * image_array
-
-    output = (image_array * 255.0).round().astype(np.uint8)
-    return Image.fromarray(output)
+    closest_bucket_id = min(distances, key=distances.__getitem__)
+    return closest_bucket_id, resolution_buckets[closest_bucket_id]
 
 class PrecomputeEngine:
     def __init__(
@@ -252,11 +126,8 @@ class PrecomputeEngine:
         pooling: bool,
         vae_path: str,
         resolution_buckets: Optional[Dict[int, Tuple[int, int]]]=None,
-        resolution_probs: Optional[List[float]]=None,
         do_caption_scheduling: Optional[bool]=None,
         caption_scheduling_args: Optional[Dict[str, Any]]=None,
-        do_data_augmentation: Optional[bool]=None,
-        data_augmentation_args: Optional[Dict[str, Any]]=None,
         cfg_drop_prob: Optional[float]=None,
     ) -> None:
         self.caption_fields = list(caption_fields)
@@ -276,7 +147,6 @@ class PrecomputeEngine:
             6: (480, 320),
             7: (320, 480),
         }
-        self.resolution_probs = resolution_probs or [0.90, 0.10]
 
         self.do_caption_scheduling = do_caption_scheduling or True
         self.caption_scheduling_args = caption_scheduling_args or {
@@ -284,29 +154,7 @@ class PrecomputeEngine:
             "max_prob": 0.80
         }
 
-        self.do_data_augmentation = do_data_augmentation or True
-        self.data_augmentation_args = data_augmentation_args or {
-            "gaussian_prob": 0.3,
-            "gaussian_sigma_range": (0.5, 1.5),
-            "noise_prob": 0.3,
-            "noise_std_range": (2.0, 6.0),
-            "color_jitter_prob": 0.3,
-            "color_jitter_params": {
-                "brightness": 0.05,
-                "contrast": 0.05,
-                "saturation": 0.05,
-                "hue": 0.02,
-            },
-            "area_scale_range": (0.08, 0.2),
-            "aspect_ratio_range": (0.75, 1.33),
-            "mask_blur_radius": 3.0,
-        }
-
         self.cfg_drop_prob = cfg_drop_prob or 0.1
-
-        self.size_to_bucket = {
-            tuple(size): bucket_id for bucket_id, size in self.resolution_buckets.items()
-        }
 
     def _pass1_preprocessing(
         self,
@@ -314,7 +162,7 @@ class PrecomputeEngine:
         stage: float,
         batch_size: int
     ) -> Dataset:
-        """Pass 1: Sample resolutions, apply augmentations, sample captions."""
+        """Pass 1: Assign resolution buckets and sample captions."""
 
         min_prob = float(self.caption_scheduling_args["min_prob"])
         max_prob = float(self.caption_scheduling_args["max_prob"])
@@ -331,18 +179,11 @@ class PrecomputeEngine:
                 image = images[idx]
                 width, height = image.size
 
-                resolution = _sample_resolution_bucket(
-                    width, height, self.resolution_buckets, self.resolution_probs
+                bucket_id, resolution = _sample_resolution_bucket(
+                    width, height, self.resolution_buckets
                 )
 
-                bucket_id = self.size_to_bucket[tuple(resolution)]
-
-                if self.do_data_augmentation:
-                    augmented_image = _apply_data_augmentations(
-                        image, resolution, self.data_augmentation_args
-                    )
-                else:
-                    augmented_image = image.resize(resolution, Image.BICUBIC)
+                resized_image = image.resize(resolution, Image.BICUBIC)
 
                 if self.caption_fields:
                     caption_candidates = [
@@ -359,7 +200,7 @@ class PrecomputeEngine:
                 else:
                     sampled_caption = ""
 
-                processed_images.append(augmented_image)
+                processed_images.append(resized_image)
                 bucket_ids.append(bucket_id)
                 captions.append(sampled_caption)
 
@@ -511,11 +352,8 @@ def precompute(
     pooling: bool,
     vae_path: str,
     resolution_buckets: Optional[Dict[int, Tuple[int, int]]] = None,
-    resolution_probs: Optional[List[float]] = None,
     do_caption_scheduling: Optional[bool] = None,
     caption_scheduling_args: Optional[Dict[str, Any]] = None,
-    do_data_augmentation: Optional[bool] = None,
-    data_augmentation_args: Optional[Dict[str, Any]] = None,
     cfg_drop_prob: Optional[float] = None,
     preprocessing_batch_size: int = 128,
     vae_batch_size: int = 32,
@@ -533,11 +371,8 @@ def precompute(
         pooling: Whether to return pooled text embeddings.
         vae_path: Path to Qwen-Image VAE.
         resolution_buckets: Optional resolution bucket definitions.
-        resolution_probs: Optional sampling probabilities for buckets.
         do_caption_scheduling: Whether to use caption curriculum scheduling.
         caption_scheduling_args: Arguments for caption scheduling.
-        do_data_augmentation: Whether to apply data augmentation.
-        data_augmentation_args: Arguments for data augmentation.
         cfg_drop_prob: Probability of dropping captions for classifier-free guidance.
         preprocessing_batch_size: Batch size for pass 1.
         vae_batch_size: Batch size for pass 2.
@@ -552,11 +387,8 @@ def precompute(
         pooling=pooling,
         vae_path=vae_path,
         resolution_buckets=resolution_buckets,
-        resolution_probs=resolution_probs,
         do_caption_scheduling=do_caption_scheduling,
         caption_scheduling_args=caption_scheduling_args,
-        do_data_augmentation=do_data_augmentation,
-        data_augmentation_args=data_augmentation_args,
         cfg_drop_prob=cfg_drop_prob,
     )
     return engine.run(
@@ -567,75 +399,6 @@ def precompute(
         text_batch_size=text_batch_size,
     )
 
-
-def _test_data_augmentation(
-    image_path: str = "./test_image.png",
-    output_path: str = "./test_augmentation.png",
-    num_samples: int = 25,
-    target_resolution: Tuple[int, int] = (336, 336),
-    augmentation_args: Optional[Dict[str, Any]] = None
-) -> None:
-    """Visualize the effect of data augmentation by applying it multiple times to the same image."""
-    from PIL import Image
-    import numpy as np
-    
-    # Load the test image
-    original_image = Image.open(image_path).convert("RGB")
-    print(f"Loaded image from {image_path}, size: {original_image.size}")
-    
-    # Set default augmentation parameters if not provided
-    if augmentation_args is None:
-        augmentation_args = {
-            "gaussian_prob": 0.3,
-            "gaussian_sigma_range": (0.5, 1.2),
-            "noise_prob": 0.3,
-            "noise_std_range": (2.0, 4.8),
-            "color_jitter_prob": 0.3,
-            "color_jitter_params": {
-                "brightness": 0.05,
-                "contrast": 0.05,
-                "saturation": 0.05,
-                "hue": 0.01,
-            },
-            "area_scale_range": (0.08, 0.2),
-            "aspect_ratio_range": (0.75, 1.33),
-            "mask_blur_radius": 3.0,
-        }
-    
-    # Apply data augmentation multiple times
-    augmented_images = []
-    for i in range(num_samples):
-        augmented_img = _apply_data_augmentations(
-            original_image,
-            target_resolution,
-            augmentation_args=augmentation_args
-        )
-        augmented_images.append(augmented_img)
-        print(f"Applied augmentation {i+1}/{num_samples}")
-    
-    # Calculate grid dimensions for the combined image
-    # Use a square grid layout
-    grid_cols = int(np.ceil(np.sqrt(num_samples)))
-    grid_rows = int(np.ceil(num_samples / grid_cols))
-    
-    # Assuming all images are the same size after augmentation
-    img_width, img_height = target_resolution
-    
-    # Create a large image to hold all augmented images in a grid
-    combined_img = Image.new("RGB", (grid_cols * img_width, grid_rows * img_height), "black")
-    
-    # Paste each augmented image into the combined image
-    for idx, img in enumerate(augmented_images):
-        row = idx // grid_cols
-        col = idx % grid_cols
-        x = col * img_width
-        y = row * img_height
-        combined_img.paste(img, (x, y))
-    
-    # Save the combined visualization
-    combined_img.save(output_path)
-    print(f"Saved augmentation visualization to {output_path}")
-    print(f"Grid layout: {grid_rows} rows x {grid_cols} columns")
 
 def _test_sample_caption(
     output_path: str="./test_sample_caption.png",
@@ -702,7 +465,6 @@ def _test_sample_caption(
 
 def _test_sample_resolution_bucket(
     resolution_buckets=None,
-    probs=None,
     test_images=None,
     sample_count=500
 ):
@@ -717,13 +479,8 @@ def _test_sample_resolution_bucket(
             5: (291, 388),  # 3:4 portrait
         }
     
-    # Test probabilities
-    if probs is None:
-        probs = [0.90, 0.10]
-    
     print("Testing _sample_resolution_bucket function...")
     print(f"Resolution buckets: {resolution_buckets}")
-    print(f"Probabilities: {probs}")
     
     # Test with different image sizes
     if test_images is None:
@@ -741,13 +498,8 @@ def _test_sample_resolution_bucket(
         
         # Sample multiple times
         for _ in range(sample_count):
-            bucket_width, bucket_height = _sample_resolution_bucket(width, height, resolution_buckets, probs)
+            bucket_id, (bucket_width, bucket_height) = _sample_resolution_bucket(width, height, resolution_buckets)
             # Find the bucket_id for this resolution
-            bucket_id = None
-            for bid, (w, h) in resolution_buckets.items():
-                if w == bucket_width and h == bucket_height:
-                    bucket_id = bid
-                    break
             if bucket_id is not None:
                 counts[bucket_id] += 1
         
@@ -769,7 +521,7 @@ def _test_precompute():
     pooling = True
     engine = PrecomputeEngine(
         caption_fields=["mistral-caption"],
-        text_encoder_path="Qwen/Qwen3-VL-4B-Instruct",
+        text_encoder_path="Qwen/Qwen3-VL-2B-Instruct",
         pooling=pooling,
         vae_path="REPA-E/e2e-qwenimage-vae"
     )
@@ -847,13 +599,6 @@ if __name__ == "__main__":
     # Test stateless convenience function
     #_test_precompute_stateless()
 
-    # Visualize data augmentation effects
-    _test_data_augmentation(
-        image_path="./test_image.png",
-        output_path="./test_augmentation.png",
-        num_samples=9
-    )
-
     # Test _sample_caption function
     _test_sample_caption(
         output_path="./test_sample_caption.png",
@@ -878,6 +623,5 @@ if __name__ == "__main__":
             6: (480, 320),
             7: (320, 480),
         },
-        probs=[0.80,0.10,0.10],
         sample_count=1000
     )

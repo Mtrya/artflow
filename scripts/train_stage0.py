@@ -84,9 +84,7 @@ def main():
         pooling=False,
         vae_path=args.vae_path,
         resolution_buckets={1: (args.resolution, args.resolution)}, # Fixed resolution
-        resolution_probs=[1.0],
         do_caption_scheduling=False,
-        do_data_augmentation=False,
         preprocessing_batch_size=32,
         vae_batch_size=16,
         text_batch_size=1

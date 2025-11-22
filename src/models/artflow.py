@@ -29,15 +29,14 @@ class ArtFlow(nn.Module):
         self,
         patch_size: int = 2,
         in_channels: int = 16,
-        hidden_size: int = 1152,
-        num_heads: int = 16,
         txt_in_features: int = 2048,
         # Configuration
-        conditioning_scheme: str = "pure",
+        hidden_size: int = 1152,
+        num_heads: int = 16,
         double_stream_depth: int = 28,
         single_stream_depth: int = 0,
-        double_stream_mlp_ratio: float = 2.67,
-        single_stream_mlp_ratio: float = 4.0,
+        mlp_ratio: float = 2.67,
+        conditioning_scheme: str = "pure",
         qkv_bias: bool = True,
         modulation_share: str = "none",
         ffn_type: str = "gated",
@@ -89,7 +88,7 @@ class ArtFlow(nn.Module):
                     dim=hidden_size,
                     num_heads=num_heads,
                     c_dim=hidden_size,
-                    mlp_ratio=double_stream_mlp_ratio,
+                    mlp_ratio=mlp_ratio,
                     qkv_bias=qkv_bias,
                     rope_axes_dim=rope_axes_dim,
                     modulation_share=modulation_share,
@@ -104,7 +103,7 @@ class ArtFlow(nn.Module):
                     dim=hidden_size,
                     num_heads=num_heads,
                     c_dim=hidden_size,
-                    mlp_ratio=single_stream_mlp_ratio,
+                    mlp_ratio=mlp_ratio,
                     qkv_bias=qkv_bias,
                     rope_axes_dim=rope_axes_dim,
                     ffn_type=ffn_type
@@ -200,81 +199,26 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Failed: {e}")
             return False
-
-    # Base config
+    
     base_config = {
-        "hidden_size": 320,
-        "num_heads": 4,
-        "depth": 4, # Total depth
-    }
-    
-    # 1. ArtFlow Pure (Baseline)
-    pure_config = {
-        "hidden_size": 320, "num_heads": 4,
-        "conditioning_scheme": "pure",
-        "double_stream_depth": 4,
+        "hidden_size": 512, 
+        "num_heads": 8,
+        "double_stream_depth": 8,
         "single_stream_depth": 0,
+        "conditioning_scheme": "pure",
         "modulation_share": "none"
     }
-    test_variant("ArtFlow Pure", pure_config)
-    
-    # 2. ArtFlow Fused
-    fused_config = {
-        "hidden_size": 320, "num_heads": 4,
-        "conditioning_scheme": "fused",
-        "double_stream_depth": 4,
-        "single_stream_depth": 0,
-        "modulation_share": "none"
-    }
-    test_variant("ArtFlow Fused", fused_config)
-    
-    # 3. ArtFlow Hybrid
-    hybrid_config = {
-        "hidden_size": 320, "num_heads": 4,
-        "conditioning_scheme": "pure",
-        "double_stream_depth": 2,
-        "single_stream_depth": 2,
-        "modulation_share": "none"
-    }
-    test_variant("ArtFlow Hybrid", hybrid_config)
-    
-    # 4. Shared Modulation (Stream)
-    shared_config = {
-        "hidden_size": 320, "num_heads": 4,
-        "conditioning_scheme": "pure",
-        "double_stream_depth": 4,
-        "single_stream_depth": 0,
-        "modulation_share": "stream"
-    }
-    test_variant("Shared Modulation (Stream)", shared_config)
-    
-    # 5. Joint Modulation (Layer)
-    layer_config = {
-        "hidden_size": 320, "num_heads": 4,
-        "conditioning_scheme": "pure",
-        "double_stream_depth": 4,
-        "single_stream_depth": 0,
-        "modulation_share": "layer"
-    }
-    test_variant("Shared Modulation (Layer)", layer_config)
+    test_variant("Base", base_config)
 
-    # 6. All Modulation (All)
-    all_config = {
-        "hidden_size": 320, "num_heads": 4,
-        "conditioning_scheme": "pure",
-        "double_stream_depth": 4,
-        "single_stream_depth": 0,
-        "modulation_share": "all"
-    }
-    test_variant("Shared Modulation (All)", all_config)
-    
-    # 7. GeLU FFN
-    gelu_config = {
-        "hidden_size": 320, "num_heads": 4,
-        "conditioning_scheme": "pure",
-        "double_stream_depth": 4,
-        "single_stream_depth": 0,
-        "modulation_share": "none",
+    p490m_config = {
+        "hidden_size": 1008, 
+        "num_heads": 14,
+        "double_stream_depth": 8,
+        "single_stream_depth": 16,
+        "conditioning_scheme": "fused",
+        "modulation_share": "all",
+        "qkv_bias": False,
+        "mlp_ratio": 2.698,
         "ffn_type": "gated"
     }
-    test_variant("GeLU FFN", gelu_config)
+    test_variant("P490M", p490m_config)
