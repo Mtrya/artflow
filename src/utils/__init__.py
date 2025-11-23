@@ -7,7 +7,7 @@ from .encode_text import encode_text
 from .vae_codec import encode_image, decode_latents
 
 # Precomputation engine
-from .precompute_engine import PrecomputeEngine, precompute
+from .precompute_engine import precompute, sample_caption
 
 __all__ = [
     # Text encoding
@@ -16,6 +16,6 @@ __all__ = [
     "encode_image",
     "decode_latents",
     # Precomputation
-    "PrecomputeEngine",
-    "precompute"
+    "precompute",
+    "sample_caption"
 ]

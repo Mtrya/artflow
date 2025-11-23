@@ -29,10 +29,14 @@ gha-creds-*.json
 package-lock.json
 
 # Tests
-!src/tests/
-!src/tests/*.py
+!tests/
+!tests/*.py
 
 # Checkpoints and sample images
 checkpoint*
 output/*/*.png
 wandb
+swanlog
+
+precomputed_dataset
+output

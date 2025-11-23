@@ -1,32 +1,50 @@
-"""Utilities for caching dataset encodings ahead of each training epoch.
+"""Utilities for stateless dataset precomputation.
 
-This module centralizes the image-and-text pre-processing logic required by the training pipeline.
-The :class:`PrecomputeEngine`:
-- resizes images into resolution bins,
-- samples captions according to a curriculum schedule,
-- materializes both VAE latents and frozen text encoder embeddings.
+This module provides functions to:
+- Precompute image latents using a VAE.
+- Sample and clean captions on-the-fly.
+- Handle resolution bucketing and resizing.
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Callable, Union
 import os
-
+import re
 import random
+import io
+import requests
+import concurrent.futures
 import numpy as np
 import torch
-from datasets import Dataset, concatenate_datasets
+from datasets import Dataset
 from PIL import Image
 try:
-    from encode_text import encode_text
     from vae_codec import encode_image
 except ImportError:
-    from .encode_text import encode_text
     from .vae_codec import encode_image
 
 def _estimate_token_counts(texts: List[str]) -> List[int]:
     """Approximate token counts assuming ~1.3 tokens per word for English prose."""
     return [int(len(text.split()) * 1.3) for text in texts]
 
-def _sample_caption(captions: List[str], stage: float, min_prob, max_prob) -> str:
+def clean_caption(text: str) -> str:
+    """
+    Remove triple quotes and other wrapper artifacts from the caption.
+    Removes both outer and inner triple quotes.
+    
+    Args:
+        text: The input caption string.
+        
+    Returns:
+        The cleaned caption string.
+    """
+    if not isinstance(text, str):
+        return ""
+        
+    text = text.replace('"""', '').replace("'''", '')
+    
+    return text.strip()
+
+def sample_caption(captions: List[str], stage: float, min_prob: float = 0.15, max_prob: float = 0.80) -> str:
     """
     Sample a caption using stage-controlled symmetric preference scores.
 
@@ -38,8 +56,8 @@ def _sample_caption(captions: List[str], stage: float, min_prob, max_prob) -> st
     - stage=1.0: Strongly favor long captions (above-mean length)
 
     Args:
-        stage: Training stage in [0, 1] that interpolates between short- and long-caption preferences.
         captions: Available captions to choose from.
+        stage: Training stage in [0, 1] that interpolates between short- and long-caption preferences.
         min_prob: Minimum probability assigned to any caption after clipping.
         max_prob: Maximum probability assigned to any caption after clipping.
 
@@ -50,7 +68,7 @@ def _sample_caption(captions: List[str], stage: float, min_prob, max_prob) -> st
         ValueError: If no captions are provided.
     """
     if not captions:
-        raise ValueError("_sample_caption requires at least one caption")
+        raise ValueError("sample_caption requires at least one caption")
 
     token_counts = _estimate_token_counts(captions)
     total_tokens = sum(token_counts)
@@ -61,15 +79,9 @@ def _sample_caption(captions: List[str], stage: float, min_prob, max_prob) -> st
         # Compute deviation from mean token count (symmetric around 0)
         mean_tokens = total_tokens / len(captions)
         deviations = [(count - mean_tokens) / mean_tokens for count in token_counts]
-
-        # Stage controls preference direction with symmetric push/pull
-        # preference_strength controls how aggressive the curriculum is
         preference_strength = 2.0
         alpha = float(np.clip(stage, 0.0, 1.0))
 
-        # At stage=0.5, (alpha - 0.5) = 0 → all scores equal → uniform
-        # At stage=0.0, negative deviations (short) get boosted
-        # At stage=1.0, positive deviations (long) get boosted
         scores = [1.0 + preference_strength * (alpha - 0.5) * dev for dev in deviations]
 
         # Ensure positive scores
@@ -93,11 +105,7 @@ def _sample_caption(captions: List[str], stage: float, min_prob, max_prob) -> st
 
     return captions[sampled_idx]
 
-def _sample_resolution_bucket(
-    width: int,
-    height: int,
-    resolution_buckets: Dict[int, Tuple[int, int]],
-) -> Tuple[int, Tuple[int, int]]:
+def _get_resolution_bucket(width: int, height: int, resolution_buckets: Dict[int, Tuple[int, int]]) -> Tuple[int, Tuple[int, int]]:
     """Return the closest resolution bucket to the original aspect ratio."""
 
     if not resolution_buckets:
@@ -118,510 +126,192 @@ def _sample_resolution_bucket(
     closest_bucket_id = min(distances, key=distances.__getitem__)
     return closest_bucket_id, resolution_buckets[closest_bucket_id]
 
-class PrecomputeEngine:
-    def __init__(
-        self,
-        caption_fields: List[str],
-        text_encoder_path: str,
-        pooling: bool,
-        vae_path: str,
-        resolution_buckets: Optional[Dict[int, Tuple[int, int]]]=None,
-        do_caption_scheduling: Optional[bool]=None,
-        caption_scheduling_args: Optional[Dict[str, Any]]=None,
-        cfg_drop_prob: Optional[float]=None,
-    ) -> None:
-        self.caption_fields = list(caption_fields)
-
-        if self.caption_fields and not text_encoder_path:
-            raise ValueError("text_encoder_path is required when caption_fields is not empty")
-        self.text_encoder_path = text_encoder_path
-        self.pooling = pooling
-        self.vae_path = vae_path
-
-        self.resolution_buckets = resolution_buckets or {
-            1: (384, 384),
-            2: (512, 288),
-            3: (288, 512),
-            4: (448, 336),
-            5: (336, 448),
-            6: (480, 320),
-            7: (320, 480),
-        }
-
-        self.do_caption_scheduling = do_caption_scheduling or True
-        self.caption_scheduling_args = caption_scheduling_args or {
-            "min_prob": 0.15,
-            "max_prob": 0.80
-        }
-
-        self.cfg_drop_prob = cfg_drop_prob or 0.1
-
-    def _pass1_preprocessing(
-        self,
-        dataset: Dataset,
-        stage: float,
-        batch_size: int
-    ) -> Dataset:
-        """Pass 1: Assign resolution buckets and sample captions."""
-
-        min_prob = float(self.caption_scheduling_args["min_prob"])
-        max_prob = float(self.caption_scheduling_args["max_prob"])
-
-        def _process(batch: Dict) -> Dict:
-            images = batch["image"]
-            batch_size = len(images)
-
-            processed_images: List[Image.Image] = []
-            bucket_ids: List[int] = []
-            captions: List[str] = []
-
-            for idx in range(batch_size):
-                image = images[idx]
-                width, height = image.size
-
-                bucket_id, resolution = _sample_resolution_bucket(
-                    width, height, self.resolution_buckets
-                )
-
-                resized_image = image.resize(resolution, Image.BICUBIC)
-
-                if self.caption_fields:
-                    caption_candidates = [
-                        batch[field][idx] for field in self.caption_fields
-                    ]
-
-                    if self.do_caption_scheduling:
-                        sampled_caption = _sample_caption(caption_candidates, stage, min_prob, max_prob)
-                    else:
-                        sampled_caption = _sample_caption(caption_candidates, 0.5, 0.0, 1.0)
-
-                    if random.random() < self.cfg_drop_prob:
-                        sampled_caption = ""
-                else:
-                    sampled_caption = ""
-
-                processed_images.append(resized_image)
-                bucket_ids.append(bucket_id)
-                captions.append(sampled_caption)
-
-            return {
-                "image": processed_images,
-                "caption": captions,
-                "resolution_bucket_id": bucket_ids
-            }
-        
-        columns_to_keep = {"image", "caption", "resolution_bucket_id"}
-        columns_to_remove = [col for col in dataset.column_names if col not in columns_to_keep]
-        return dataset.map(
-            _process,
-            batched=True,
-            batch_size=batch_size,
-            remove_columns=columns_to_remove,
-            keep_in_memory=False,
-            num_proc=os.cpu_count(),
-            desc="Pass 1: Preprocessing"
-        )
-
-    def _pass2_vae_encoding(
-        self,
-        dataset: Dataset,
-        batch_size: int
-    ) -> Dataset:
-        """Pass 2: Encode images bucket-by-bucket for efficient encoding."""
-        bucket_ids = set(dataset['resolution_bucket_id'])
-        encoded_datasets = []
-
-        from diffusers import AutoencoderKLQwenImage
-        vae = AutoencoderKLQwenImage.from_pretrained(
-            self.vae_path,
-            torch_dtype=torch.bfloat16,
-            device_map="cuda:0"
-        )
-
-        for bucket_id in bucket_ids:
-            bucket_ds = dataset.filter(
-                lambda batch: [bid==bucket_id for bid in batch["resolution_bucket_id"]],
-                batched=True,
-                batch_size=2560,
-                keep_in_memory=False,
-                num_proc=os.cpu_count(),
-                desc=f"Filtering bucket {bucket_id}"
-            )
-
-            def _encode(batch):
-                images = batch["image"]
-                latents_batch = encode_image(images, vae).detach().cpu()
-
-                return {
-                    'latents': [latents_batch[i] for i in range(len(images))],
-                    'caption': batch['caption'],
-                    'resolution_bucket_id': batch['resolution_bucket_id'],
-                }
-            
-            columns_to_keep = {"caption", "resolution_bucket_id", "latents"}
-            columns_to_remove = [col for col in dataset.column_names if col not in columns_to_keep]
-            encoded_bucket = bucket_ds.map(
-                _encode,
-                batched=True,
-                batch_size=batch_size,
-                keep_in_memory=False,
-                remove_columns=columns_to_remove,
-                desc=f"Encoding bucket {bucket_id}"
-            )
-
-            encoded_datasets.append(encoded_bucket)
-
-        return concatenate_datasets(encoded_datasets)
+def _fetch_image(image_data: Union[str, Image.Image]) -> Optional[Image.Image]:
+    """
+    Fetch image from URL or return PIL Image.
+    Returns None if fetching fails.
+    """
+    if isinstance(image_data, Image.Image):
+        return image_data
     
-    def _pass3_text_encoding(self, dataset: Dataset, batch_size: int):
-        """Pass 3: Encode text"""
-
-        # Skip text encoding if no caption fields
-        if not self.caption_fields:
-            return dataset
-        
-        # Text encoding logic when caption_fields exists
-        from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
-        text_encoder = Qwen3VLForConditionalGeneration.from_pretrained(
-            self.text_encoder_path,
-            dtype=torch.bfloat16,
-            device_map="cuda:0",
-            low_cpu_mem_usage=True
-        )
-        processor=AutoProcessor.from_pretrained(self.text_encoder_path)
-
-        def _encode(batch):
-            captions = batch["caption"]
-
-            embeddings, masks, pooled = encode_text(
-                captions, text_encoder, processor, self.pooling
-            )
-
-            if self.pooling:
-                return {
-                    "latents": batch["latents"],
-                    "text_embedding": embeddings,
-                    "attention_mask": masks,
-                    "pooled_embedding": pooled
-                }
-            else:
-                return {
-                    "latents": batch["latents"],
-                    "text_embedding": embeddings,
-                    "attention_mask": masks
-                }
-
-        return dataset.map(
-            _encode,
-            batched=True,
-            batch_size=batch_size,
-            keep_in_memory=False,
-            desc="Pass 3: Text encoding"
-        )
-
-    def run(
-        self,
-        dataset: Dataset,
-        stage: float,
-        preprocessing_batch_size: int = 128,
-        vae_batch_size: int = 32,
-        text_batch_size: int = 4,
-    ) -> Dataset:
-        """Run all three precomputation passes in sequence.
-
-        Args:
-            dataset: Input dataset with image and caption fields.
-            stage: Training stage in [0, 1] for caption curriculum scheduling.
-            preprocessing_batch_size: Batch size for pass 1 (preprocessing).
-            vae_batch_size: Batch size for pass 2 (VAE encoding).
-            text_batch_size: Batch size for pass 3 (text encoding).
-
-        Returns:
-            Fully precomputed dataset ready for training.
-        """
-        dataset = self._pass1_preprocessing(dataset, stage, preprocessing_batch_size)
-        dataset = self._pass2_vae_encoding(dataset, vae_batch_size)
-        dataset = self._pass3_text_encoding(dataset, text_batch_size)
-        return dataset
+    if isinstance(image_data, str):
+        if image_data.startswith('http'):
+            try:
+                response = requests.get(image_data, timeout=30)
+                response.raise_for_status()
+                image = Image.open(io.BytesIO(response.content))
+                image.load() # Verify it's a valid image
+                return image.convert("RGB")
+            except Exception as e:
+                print(f"Failed to fetch image from {image_data}: {e}")
+                return None
+        elif os.path.exists(image_data):
+            try:
+                image = Image.open(image_data)
+                image.load()
+                return image.convert("RGB")
+            except Exception as e:
+                print(f"Failed to load image from {image_data}: {e}")
+                return None
+            
+    return None
 
 def precompute(
     dataset: Dataset,
-    stage: float,
+    image_field: str,
     caption_fields: List[str],
-    text_encoder_path: str,
-    pooling: bool,
     vae_path: str,
-    resolution_buckets: Optional[Dict[int, Tuple[int, int]]] = None,
-    do_caption_scheduling: Optional[bool] = None,
-    caption_scheduling_args: Optional[Dict[str, Any]] = None,
-    cfg_drop_prob: Optional[float] = None,
-    preprocessing_batch_size: int = 128,
-    vae_batch_size: int = 32,
-    text_batch_size: int = 4,
+    resolution_buckets: Dict[int, Tuple[int, int]],
+    text_fn: Callable[[str], str] = None,
+    batch_size: int = 50,
 ) -> Dataset:
-    """Convenience function for stateless precomputation.
-
-    Creates a PrecomputeEngine instance and runs all three passes.
+    """
+    Stateless precomputation of image latents and caption preparation.
 
     Args:
-        dataset: Input dataset with image and caption fields.
-        stage: Training stage in [0, 1] for caption curriculum scheduling.
-        caption_fields: List of caption field names to sample from.
-        text_encoder_path: Path to Qwen3-VL text encoder.
-        pooling: Whether to return pooled text embeddings.
-        vae_path: Path to Qwen-Image VAE.
-        resolution_buckets: Optional resolution bucket definitions.
-        do_caption_scheduling: Whether to use caption curriculum scheduling.
-        caption_scheduling_args: Arguments for caption scheduling.
-        cfg_drop_prob: Probability of dropping captions for classifier-free guidance.
-        preprocessing_batch_size: Batch size for pass 1.
-        vae_batch_size: Batch size for pass 2.
-        text_batch_size: Batch size for pass 3.
+        dataset: Input dataset.
+        image_field: Name of the column containing image objects or URLs.
+        caption_fields: List of column names containing captions.
+        vae_path: Path to the VAE model.
+        resolution_buckets: Dictionary mapping bucket IDs to (width, height).
+        text_fn: Function to process a single caption string.
+                 If None, no processing is applied.
+        batch_size: Batch size for processing.
 
     Returns:
-        Fully precomputed dataset ready for training.
+        Processed dataset with 'latents', 'captions', and 'resolution_bucket_id'.
+        'captions' will be a List[str] for each example.
     """
-    engine = PrecomputeEngine(
-        caption_fields=caption_fields,
-        text_encoder_path=text_encoder_path,
-        pooling=pooling,
-        vae_path=vae_path,
-        resolution_buckets=resolution_buckets,
-        do_caption_scheduling=do_caption_scheduling,
-        caption_scheduling_args=caption_scheduling_args,
-        cfg_drop_prob=cfg_drop_prob,
+    
+    # Load VAE
+    from diffusers import AutoencoderKLQwenImage
+    print(f"Loading VAE from {vae_path}...")
+    vae = AutoencoderKLQwenImage.from_pretrained(
+        vae_path,
+        torch_dtype=torch.bfloat16,
+        device_map="cuda:0"
     )
-    return engine.run(
-        dataset=dataset,
-        stage=stage,
-        preprocessing_batch_size=preprocessing_batch_size,
-        vae_batch_size=vae_batch_size,
-        text_batch_size=text_batch_size,
-    )
+    vae.eval()
 
-
-def _test_sample_caption(
-    output_path: str="./test_sample_caption.png",
-    captions=None, 
-    stages_count=101, 
-    sample_count=1000
-):
-    """Test _sample_caption function by sampling multiple times and plotting probabilities."""
-    import matplotlib.pyplot as plt
-    
-    # Test data: 4 captions with different lengths
-    if captions is None:
-        test_captions = [
-            "A",  # Short caption
-            "A beautiful landscape",  # Medium caption
-            "A beautiful landscape with mountains and rivers under blue sky",  # Long caption
-            "Art"  # Very short caption
-        ]
-    else:
-        test_captions = captions
-    
-    print("Testing _sample_caption function...")
-    print(f"Test captions: {test_captions}")
-    
-    # Sample points from 0.0 to 1.0
-    stages = [i/(stages_count-1) for i in range(stages_count)] if stages_count > 1 else [0.0]
-    
-    # Initialize frequency tracking
-    caption_frequencies = {caption: [] for caption in test_captions}
-    
-    min_prob, max_prob = 0.15, 0.80
-    
-    # For each stage, sample multiple times and record frequencies
-    for stage in stages:
-        # Count occurrences of each caption
-        counts = {caption: 0 for caption in test_captions}
+    def _process_batch(batch: Dict) -> Dict:
+        images_raw = batch[image_field]
+        batch_len = len(images_raw)
         
-        # Sample multiple times
-        for _ in range(sample_count):
-            sampled_caption = _sample_caption(test_captions, stage, min_prob, max_prob)
-            counts[sampled_caption] += 1
+        # Group by resolution bucket: (bucket_id, resolution) -> list of (original_idx, image)
+        batches_by_bucket = {}
         
-        # Record frequencies
-        for caption in test_captions:
-            frequency = counts[caption] / sample_count
-            caption_frequencies[caption].append(frequency)
-            print(f"Stage {stage:.2f}: '{caption}' frequency = {frequency:.2f}")
-    
-    # Plot the results if matplotlib is available
-    plt.figure(figsize=(10, 6))
-    for caption in test_captions:
-        plt.plot(stages, caption_frequencies[caption], marker='o', label=f"'{caption[:20]}'")
-    
-    plt.xlabel('Training Stage')
-    plt.ylabel('Sampling Frequency')
-    plt.title('_sample_caption Sampling Frequency vs Training Stage')
-    plt.legend()
-    plt.grid(True)
-    plt.savefig(output_path)
-    plt.close()
-    
-    print(f"Saved plot to {output_path}")
-    print("Test completed.\n")
+        # Parallel fetch
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(batch_len, 50)) as executor:
+            # Submit all tasks
+            futures = [executor.submit(_fetch_image, img_data) for img_data in images_raw]
+            
+            for idx, future in enumerate(futures):
+                try:
+                    image = future.result()
+                except Exception:
+                    image = None
+                
+                if image is None:
+                    continue
+                    
+                # 2. Find bucket and resize
+                width, height = image.size
+                try:
+                    bucket_id, resolution = _get_resolution_bucket(width, height, resolution_buckets)
+                    resized_image = image.resize(resolution, Image.BICUBIC)
+                    
+                    key = (bucket_id, resolution)
+                    if key not in batches_by_bucket:
+                        batches_by_bucket[key] = []
+                    batches_by_bucket[key].append((idx, resized_image))
+                except Exception:
+                    continue
 
-def _test_sample_resolution_bucket(
-    resolution_buckets=None,
-    test_images=None,
-    sample_count=500
-):
-    """Test _sample_resolution_bucket function by sampling multiple times and printing frequencies."""
-    # Test data: resolution buckets
-    if resolution_buckets is None:
-        resolution_buckets = {
-            1: (336, 336),  # 1:1 aspect ratio
-            2: (448, 252),  # 16:9 landscape
-            3: (252, 448),  # 9:16 portrait
-            4: (388, 291),  # 4:3 landscape
-            5: (291, 388),  # 3:4 portrait
+        if not batches_by_bucket:
+            return {
+                "latents": [],
+                "captions": [],
+                "resolution_bucket_id": []
+            }
+
+        # 3. Compute latents per bucket
+        latents_map = {} # original_idx -> latent
+        bucket_ids_map = {} # original_idx -> bucket_id
+        
+        for (bucket_id, resolution), items in batches_by_bucket.items():
+            batch_indices = [item[0] for item in items]
+            batch_images = [item[1] for item in items]
+            
+            try:
+                with torch.no_grad():
+                    # encode_image expects a list of PIL images
+                    batch_latents = encode_image(batch_images, vae).detach().cpu()
+                
+                for i, original_idx in enumerate(batch_indices):
+                    latents_map[original_idx] = batch_latents[i]
+                    bucket_ids_map[original_idx] = bucket_id
+            except Exception as e:
+                print(f"Error encoding batch for resolution {resolution}: {e}")
+                continue
+        
+        if not latents_map:
+             return {
+                "latents": [],
+                "captions": [],
+                "resolution_bucket_id": []
+            }
+
+        # 4. Gather results in order
+        valid_latents = []
+        valid_captions_list = []
+        valid_bucket_ids = []
+        
+        # Sort by original index to maintain relative order (optional but good for determinism)
+        sorted_indices = sorted(latents_map.keys())
+        
+        for original_idx in sorted_indices:
+            valid_latents.append(latents_map[original_idx])
+            valid_bucket_ids.append(bucket_ids_map[original_idx])
+            
+            # Gather items from caption fields
+            current_captions = []
+            for field in caption_fields:
+                if field in batch and batch[field][original_idx] is not None:
+                    val = batch[field][original_idx]
+                    if isinstance(val, str):
+                        if text_fn:
+                            val = text_fn(val)
+                        current_captions.append(val)
+                    elif isinstance(val, list):
+                        for item in val:
+                            if isinstance(item, str):
+                                if text_fn:
+                                    item = text_fn(item)
+                                current_captions.append(item)
+            
+            valid_captions_list.append(current_captions)
+
+        return {
+            "latents": valid_latents,
+            "captions": valid_captions_list,
+            "resolution_bucket_id": valid_bucket_ids
         }
+
+    # Determine columns to remove
+    columns_to_keep = {"latents", "captions", "resolution_bucket_id"}
+    columns_to_remove = [col for col in dataset.column_names if col not in columns_to_keep]
+
+    print("Starting precomputation...")
+    processed_dataset = dataset.map(
+        _process_batch,
+        batched=True,
+        batch_size=batch_size,
+        remove_columns=columns_to_remove,
+        desc="Precomputing latents and captions"
+    )
     
-    print("Testing _sample_resolution_bucket function...")
-    print(f"Resolution buckets: {resolution_buckets}")
+    # Set format to torch
+    # We don't specify columns so that all columns are returned.
+    processed_dataset = processed_dataset.with_format("torch")
     
-    # Test with different image sizes
-    if test_images is None:
-        test_images = [
-            (300, 300),  # Square image
-            (600, 400),  # Landscape image
-            (400, 600),  # Portrait image
-        ]
-    
-    for width, height in test_images:
-        print(f"\nTesting with image size: {width}x{height}")
-        
-        # Count occurrences of each bucket
-        counts = {bucket_id: 0 for bucket_id in resolution_buckets.keys()}
-        
-        # Sample multiple times
-        for _ in range(sample_count):
-            bucket_id, (bucket_width, bucket_height) = _sample_resolution_bucket(width, height, resolution_buckets)
-            # Find the bucket_id for this resolution
-            if bucket_id is not None:
-                counts[bucket_id] += 1
-        
-        # Print frequencies
-        print("Bucket frequencies:")
-        for bucket_id, (w, h) in resolution_buckets.items():
-            frequency = counts[bucket_id] / sample_count
-            aspect_ratio = w / h
-            print(f"  Bucket {bucket_id} ({w}x{h}, {aspect_ratio:.2f}): {frequency:.2f}")
-
-def _test_precompute():
-    """Test the full precomputation pipeline using PrecomputeEngine.run()"""
-    from datasets import load_dataset
-
-    print("Loading dataset...")
-    dataset = load_dataset("kaupane/wikiart-captions-monet")["train"]
-    print(f"Dataset size: {len(dataset)}\n")
-
-    pooling = True
-    engine = PrecomputeEngine(
-        caption_fields=["mistral-caption"],
-        text_encoder_path="Qwen/Qwen3-VL-2B-Instruct",
-        pooling=pooling,
-        vae_path="REPA-E/e2e-qwenimage-vae"
-    )
-
-    print("Running full precomputation pipeline...")
-    dataset = engine.run(
-        dataset=dataset,
-        stage=0.5,
-        preprocessing_batch_size=128,
-        vae_batch_size=24,
-        text_batch_size=32
-    )
-
-    print("\nPrecomputation complete!")
-    print(f"Final dataset: {dataset}\n")
-
-    # Set format for torch tensors
-    if pooling:
-        dataset = dataset.with_format("torch", ["latents", "text_embedding", "attention_mask", "pooled_embedding"])
-    else:
-        dataset = dataset.with_format("torch", ["latents", "text_embedding", "attention_mask"])
-
-    # Sample and inspect results
-    print("Sampling results:")
-    for idx in range(min(10, len(dataset))):
-        sample_idx = idx * (len(dataset) // 10) if len(dataset) >= 10 else idx
-        print(f"\nSample {sample_idx}:")
-        print(f"  Latent shape: {dataset[sample_idx]['latents'].shape}")
-        print(f"  Text embedding shape: {dataset[sample_idx]['text_embedding'].shape}")
-        print(f"  Attention mask shape: {dataset[sample_idx]['attention_mask'].shape}")
-        print(f"  Attention mask: {dataset[sample_idx]['attention_mask']}")
-        if pooling:
-            print(f"  Pooled embedding shape: {dataset[sample_idx]['pooled_embedding'].shape}")
-
-def _test_precompute_stateless():
-    """Test the stateless precompute() convenience function"""
-    from datasets import load_dataset
-
-    print("Loading dataset...")
-    dataset = load_dataset("kaupane/wikiart-captions-monet")["train"].select(range(256))
-    print(f"Dataset size: {len(dataset)}\n")
-
-    print("Running stateless precomputation...")
-    dataset = precompute(
-        dataset=dataset,
-        stage=0.5,
-        caption_fields=["mistral-caption"],
-        text_encoder_path="Qwen/Qwen3-VL-2B-Instruct",
-        pooling=True,
-        vae_path="REPA-E/e2e-qwenimage-vae",
-        preprocessing_batch_size=128,
-        vae_batch_size=20,
-        text_batch_size=32
-    )
-
-    print("\nPrecomputation complete!")
-    print(f"Final dataset: {dataset}\n")
-
-    # Set format and inspect
-    dataset = dataset.with_format("torch", ["latents", "text_embedding", "attention_mask", "pooled_embedding"])
-
-    print("Sample result:")
-    sample = dataset[0]
-    print(f"  Latent shape: {sample['latents'].shape}")
-    print(f"  Text embedding shape: {sample['text_embedding'].shape}")
-    print(f"  Attention mask shape: {sample['attention_mask'].shape}")
-    print(f"  Pooled embedding shape: {sample['pooled_embedding'].shape}")
-    
-if __name__ == "__main__":
-    """Tests"""
-
-    # Test full precomputation pipeline
-    _test_precompute()
-
-    # Test stateless convenience function
-    #_test_precompute_stateless()
-
-    # Test _sample_caption function
-    _test_sample_caption(
-        output_path="./test_sample_caption.png",
-        captions=[
-            "realism landscape by Vincent Van Gogh",
-            "A desolate winter landscape, etched in delicate, intersecting lines, reveals bare trees standing starkly along a frozen waterway, their silhouettes mirrored faintly in the still surface, while two dark birds cut across the hazy, sepia-toned sky, evoking a quiet, melancholic solitude.",
-            "Bare trees stand in the left and right foreground, framing a misty, shadowed expanse of water and distant land under a textured, hazy sky with two small birds flying above the left trees.",
-            "detailed pen and ink landscape drawing, bare winter trees with intricate branches, dense forest on the left, solitary gnarled tree on the right, calm river or marsh reflecting the sky, distant silhouettes of buildings or farms, two birds flying in the upper left sky, textured paper surface with crosshatching and stippling, warm sepia tones with dark browns and light ochre, atmospheric perspective creating depth, soft diffused light suggesting late afternoon or overcast day, melancholic and serene mood, naturalistic composition with horizon line slightly above center, vertical framing emphasizing tall trees, influenced by Japanese woodblock prints and 19th-century landscape etchings, fine-line detail throughout, minimalist and contemplative aesthetic"
-        ],
-        stages_count=65,
-        sample_count=1000
-    )
-
-    # Test _sample_resolution_bucket function
-    _test_sample_resolution_bucket(
-        resolution_buckets={
-            1: (384, 384),
-            2: (512, 288),
-            3: (288, 512),
-            4: (448, 336),
-            5: (336, 448),
-            6: (480, 320),
-            7: (320, 480),
-        },
-        sample_count=1000
-    )
+    return processed_dataset
