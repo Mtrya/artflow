@@ -8,8 +8,8 @@ import torch
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from models.artflow_uncond import ArtFlowUncond
-from models.artflow import ArtFlow
+from src.models.artflow_uncond import ArtFlowUncond
+from src.models.artflow import ArtFlow
 
 
 def print_test_header(test_name):

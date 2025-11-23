@@ -6,7 +6,7 @@ import shutil
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from utils.evaluation import calculate_fid, calculate_clip_score, make_image_grid, visualize_denoising
+from src.utils.evaluation import calculate_fid, calculate_clip_score, make_image_grid, visualize_denoising
 
 def test_fid():
     print("Testing FID...")
