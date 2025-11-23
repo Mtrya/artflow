@@ -23,7 +23,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from src.models.artflow_uncond import ArtFlowUncond
 from src.flow.paths import ScoreMatchingDiffusion, FlowMatchingDiffusion, FlowMatchingOT
 from src.flow.solvers import sample_ode, ScoreMatchingODE
-from src.utils.precompute_engine import precompute
 from src.utils.evaluation import run_evaluation_uncond
 from torchvision.utils import save_image
 
@@ -31,32 +30,33 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train ArtFlow model")
     parser.add_argument("--run_name", type=str, default="artflow_run", help="Name of the run")
     parser.add_argument("--output_dir", type=str, default="output", help="Output directory")
-    parser.add_argument("--dataset_name", type=str, default="kaupane/wikiart-captions-monet", help="Dataset name")
-    parser.add_argument("--resolution", type=int, default=128, help="Image resolution")
+    parser.add_argument("--precomputed_dataset_path", type=str, required=True, help="Path to precomputed dataset")
+    parser.add_argument("--range", type=int, default=-1, help="Range of dataset to use (for debugging)")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size per device")
     parser.add_argument("--num_epochs", type=int, default=200, help="Number of epochs")
     parser.add_argument("--learning_rate", type=float, default=1e-4, help="Learning rate")
+    parser.add_argument("--mixed_precision", type=str, default="bf16", choices=["no", "fp16", "bf16"], help="Mixed precision training")
+    parser.add_argument("--max_grad_norm", type=float, default=1.0, help="Max gradient norm for clipping")
     parser.add_argument("--algorithm", type=str, choices=["sm-diffusion", "fm-diffusion", "fm-ot"], default="fm-ot", help="Algorithm to use")
-    parser.add_argument("--vae_path", type=str, default="REPA-E/e2e-qwenimage-vae", help="Path to VAE")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--checkpoint_interval", type=int, default=20, help="Epochs between checkpoints")
     parser.add_argument("--eval_interval", type=int, default=20, help="Epochs between evaluation")
+    parser.add_argument("--eval_resolution", type=int, default=256, help="Resolution for evaluation generation")
     parser.add_argument("--num_eval_samples", type=int, default=9, help="Number of samples to generate during evaluation")
-    parser.add_argument("--mixed_precision", type=str, default="bf16", choices=["no", "fp16", "bf16"], help="Mixed precision training")
+    parser.add_argument("--vae_path", type=str, default="REPA-E/e2e-qwenimage-vae", help="Path to VAE model")
     parser.add_argument("--model_hidden_size", type=int, default=512, help="Hidden size of the model")
     parser.add_argument("--model_depth", type=int, default=8, help="Depth of the model")
     parser.add_argument("--model_num_heads", type=int, default=8, help="Number of heads in the model")
-    parser.add_argument("--max_grad_norm", type=float, default=1.0, help="Max gradient norm for clipping")
     return parser.parse_args()
 
 def main():
     args = parse_args()
-    accelerator = Accelerator(mixed_precision=args.mixed_precision, log_with="wandb")
+    accelerator = Accelerator(mixed_precision=args.mixed_precision, log_with="swanlab")
     if accelerator.is_main_process:
         accelerator.init_trackers(
-            project_name="artflow", 
+            project_name="artflow-stage0", 
             config=vars(args),
-            init_kwargs={"wandb": {"name": args.run_name}}
+            init_kwargs={"swanlab": {"experiment_name": args.run_name}}
         )
     set_seed(args.seed)
 
@@ -68,33 +68,21 @@ def main():
     # 1. Load and Preprocess Data
     # For Stage 0, we use fixed resolution and no text conditioning (unconditional)
     if accelerator.is_main_process:
-        print("Loading dataset...")
+        print(f"Loading precomputed dataset from {args.precomputed_dataset_path}...")
     
-    # Load raw dataset
-    dataset = load_dataset(args.dataset_name, split="train")
+    from datasets import load_from_disk
+    dataset = load_from_disk(args.precomputed_dataset_path)
     
-    if accelerator.is_main_process:
-        print("Precomputing dataset (VAE encoding)...")
-    
-    precomputed_dataset = precompute(
-        dataset=dataset,
-        stage=0.5, # Irrelevant for unconditional
-        caption_fields=[], 
-        text_encoder_path="", # Not used
-        pooling=False,
-        vae_path=args.vae_path,
-        resolution_buckets={1: (args.resolution, args.resolution)}, # Fixed resolution
-        do_caption_scheduling=False,
-        preprocessing_batch_size=32,
-        vae_batch_size=16,
-        text_batch_size=1
-    )
+    if args.range > 0:
+        if accelerator.is_main_process:
+            print(f"Selecting first {args.range} examples...")
+        dataset = dataset.select(range(min(args.range, len(dataset))))
     
     # Set format for pytorch
-    precomputed_dataset.set_format("torch", columns=["latents"])
+    dataset.set_format("torch", columns=["latents"])
     
     train_dataloader = DataLoader(
-        precomputed_dataset, 
+        dataset, 
         batch_size=args.batch_size, 
         shuffle=True,
         num_workers=4,
