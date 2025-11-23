@@ -24,7 +24,7 @@ from src.models.artflow_uncond import ArtFlowUncond
 from src.flow.paths import ScoreMatchingDiffusion, FlowMatchingDiffusion, FlowMatchingOT
 from src.flow.solvers import sample_ode, ScoreMatchingODE
 from src.utils.precompute_engine import precompute
-from src.utils.evaluation import run_evaluation_stage0
+from src.utils.evaluation import run_evaluation_uncond
 from torchvision.utils import save_image
 
 def parse_args():
@@ -179,7 +179,7 @@ def main():
 
             # Evaluation
             if (epoch + 1) % args.eval_interval == 0:
-                run_evaluation_stage0(
+                run_evaluation_uncond(
                     accelerator=accelerator,
                     model=model,
                     args=args,

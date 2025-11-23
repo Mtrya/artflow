@@ -40,6 +40,8 @@ class ArtFlow(nn.Module):
         qkv_bias: bool = True,
         modulation_share: str = "none",
         ffn_type: str = "gated",
+        rope_scaling_type: str = "none",
+        rope_scaling_factor: float = 1.0,
     ):
         super().__init__()
         self.patch_size = patch_size
@@ -92,7 +94,9 @@ class ArtFlow(nn.Module):
                     qkv_bias=qkv_bias,
                     rope_axes_dim=rope_axes_dim,
                     modulation_share=modulation_share,
-                    ffn_type=ffn_type
+                    ffn_type=ffn_type,
+                    rope_scaling_type=rope_scaling_type,
+                    rope_scaling_factor=rope_scaling_factor
                 )
             )
             
@@ -106,7 +110,9 @@ class ArtFlow(nn.Module):
                     mlp_ratio=mlp_ratio,
                     qkv_bias=qkv_bias,
                     rope_axes_dim=rope_axes_dim,
-                    ffn_type=ffn_type
+                    ffn_type=ffn_type,
+                    rope_scaling_type=rope_scaling_type,
+                    rope_scaling_factor=rope_scaling_factor
                 )
             )
             

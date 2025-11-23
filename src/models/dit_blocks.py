@@ -67,13 +67,15 @@ def apply_rotary_emb(x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
     
 class MSRoPE(nn.Module):
     """Multimodal Scalable RoPE for 2D images and text"""
-    def __init__(self, theta: int=10000, axes_dim: list=[64,64]):
+    def __init__(self, theta: int=10000, axes_dim: list=[64,64], scaling_type: str = "none", scaling_factor: float = 1.0):
         super().__init__()
         self.theta = theta
         self.axes_dim = axes_dim
+        self.scaling_type = scaling_type
+        self.scaling_factor = scaling_factor
 
         # Precompute frequency tables for both spatial axes
-        pos_index = torch.arange(2048) # maximum position index
+        pos_index = torch.arange(2560) # maximum position index
         # Store as real to avoid safetensors issues with complex numbers
         self.register_buffer('pos_freqs', torch.view_as_real(self._build_frequency_table(pos_index)))
 
@@ -90,10 +92,20 @@ class MSRoPE(nn.Module):
             Complex frequency tensor [S, dim]
         """
         assert dim % 2 == 0
+        
+        # Apply scaling
+        if self.scaling_type == "linear":
+            index = index / self.scaling_factor
+            theta = self.theta
+        elif self.scaling_type == "ntk":
+            theta = self.theta * (self.scaling_factor ** (dim / (dim - 2)))
+        else:
+            theta = self.theta
+
         # Compute frequency components: 1/ theta^(2i/dim)
         freqs = torch.outer(
             index,
-            1.0 / torch.pow(self.theta, torch.arange(0, dim, 2).to(torch.float32).div(dim))
+            1.0 / torch.pow(theta, torch.arange(0, dim, 2).to(torch.float32).div(dim))
         )
 
         # Convert to complex polar form: e^(i*freqs)
@@ -119,6 +131,17 @@ class MSRoPE(nn.Module):
         """
         height, width = img_hw
 
+        # Check if we need to expand the frequency table
+        max_needed = max(height, width) + txt_seq_len
+        current_max = self.pos_freqs.shape[0]
+        
+        if max_needed > current_max:
+            # Expand by 2x or to max_needed, whichever is larger
+            new_max = max(max_needed, current_max * 2)
+            # print(f"Expanding RoPE frequency table from {current_max} to {new_max}")
+            pos_index = torch.arange(new_max, device=device)
+            self.pos_freqs = torch.view_as_real(self._build_frequency_table(pos_index))
+            
         # Ensure frequencies are on correct device
         if self.pos_freqs.device != device:
             self.pos_freqs = self.pos_freqs.to(device)
@@ -210,7 +233,7 @@ def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 class DoubleStreamAttention(nn.Module):
-    def __init__(self, dim: int, num_heads: int, qkv_bias: bool = True, rope_theta: int = 10000, rope_axes_dim: list = [64, 64]):
+    def __init__(self, dim: int, num_heads: int, qkv_bias: bool = True, rope_theta: int = 10000, rope_axes_dim: list = [64, 64], rope_scaling_type: str = "none", rope_scaling_factor: float = 1.0):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
@@ -224,7 +247,7 @@ class DoubleStreamAttention(nn.Module):
         self.q_norm_txt = nn.RMSNorm(self.head_dim, eps=1e-6)
         self.k_norm_txt = nn.RMSNorm(self.head_dim, eps=1e-6)
 
-        self.rope = MSRoPE(theta=rope_theta, axes_dim=rope_axes_dim)
+        self.rope = MSRoPE(theta=rope_theta, axes_dim=rope_axes_dim, scaling_type=rope_scaling_type, scaling_factor=rope_scaling_factor)
         
         self.proj_img = nn.Linear(dim, dim)
         self.proj_txt = nn.Linear(dim, dim)
@@ -295,7 +318,7 @@ class DoubleStreamAttention(nn.Module):
         return x_img, x_txt
 
 class DoubleStreamDiTBlock(nn.Module):
-    def __init__(self, dim: int, num_heads: int, c_dim: int, mlp_ratio: float = 4.0, qkv_bias: bool = True, rope_theta: int = 10000, rope_axes_dim: list = [64, 64], modulation_share: str = "none", ffn_type: str = "gated"):
+    def __init__(self, dim: int, num_heads: int, c_dim: int, mlp_ratio: float = 4.0, qkv_bias: bool = True, rope_theta: int = 10000, rope_axes_dim: list = [64, 64], modulation_share: str = "none", ffn_type: str = "gated", rope_scaling_type: str = "none", rope_scaling_factor: float = 1.0):
         super().__init__()
         self.dim = dim
         self.num_heads = num_heads
@@ -337,7 +360,7 @@ class DoubleStreamDiTBlock(nn.Module):
         # Attention
         self.norm1_img = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
         self.norm1_txt = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
-        self.attn = DoubleStreamAttention(dim, num_heads, qkv_bias, rope_theta, rope_axes_dim)
+        self.attn = DoubleStreamAttention(dim, num_heads, qkv_bias, rope_theta, rope_axes_dim, rope_scaling_type=rope_scaling_type, rope_scaling_factor=rope_scaling_factor)
         
         # MLP
         self.norm2_img = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
@@ -412,7 +435,7 @@ class DoubleStreamDiTBlock(nn.Module):
         return img_tokens, txt_tokens
 
 class SingleStreamAttention(nn.Module):
-    def __init__(self, dim: int, num_heads: int, qkv_bias: bool = True, rope_theta: int = 10000, rope_axes_dim: list = [64, 64]):
+    def __init__(self, dim: int, num_heads: int, qkv_bias: bool = True, rope_theta: int = 10000, rope_axes_dim: list = [64, 64], rope_scaling_type: str = "none", rope_scaling_factor: float = 1.0):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
@@ -423,7 +446,7 @@ class SingleStreamAttention(nn.Module):
         self.q_norm = nn.RMSNorm(self.head_dim, eps=1e-6)
         self.k_norm = nn.RMSNorm(self.head_dim, eps=1e-6)
 
-        self.rope = MSRoPE(theta=rope_theta, axes_dim=rope_axes_dim)
+        self.rope = MSRoPE(theta=rope_theta, axes_dim=rope_axes_dim, scaling_type=rope_scaling_type, scaling_factor=rope_scaling_factor)
         
     def forward(self, x: torch.Tensor, freqs: torch.Tensor, attention_mask: Optional[torch.Tensor]=None) -> torch.Tensor:
         B, S, C = x.shape
@@ -446,7 +469,7 @@ class SingleStreamAttention(nn.Module):
         return x
 
 class SingleStreamDiTBlock(nn.Module):
-    def __init__(self, dim: int, num_heads: int, c_dim: int, mlp_ratio: float = 4.0, qkv_bias: bool = True, rope_theta: int = 10000, rope_axes_dim: list = [64, 64], ffn_type: str = "gated"):
+    def __init__(self, dim: int, num_heads: int, c_dim: int, mlp_ratio: float = 4.0, qkv_bias: bool = True, rope_theta: int = 10000, rope_axes_dim: list = [64, 64], ffn_type: str = "gated", rope_scaling_type: str = "none", rope_scaling_factor: float = 1.0):
         super().__init__()
         self.dim = dim
         self.num_heads = num_heads
@@ -458,7 +481,7 @@ class SingleStreamDiTBlock(nn.Module):
         )
         
         self.norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
-        self.attn = SingleStreamAttention(dim, num_heads, qkv_bias, rope_theta, rope_axes_dim)
+        self.attn = SingleStreamAttention(dim, num_heads, qkv_bias, rope_theta, rope_axes_dim, rope_scaling_type=rope_scaling_type, rope_scaling_factor=rope_scaling_factor)
         
         if ffn_type == "gated":
             self.mlp = GatedFeedForward(dim, self.mlp_hidden_dim)
@@ -508,7 +531,7 @@ class SingleStreamDiTBlock(nn.Module):
         return img_tokens, txt_tokens
 
 class UnconditionalAttention(nn.Module):
-    def __init__(self, dim: int, num_heads: int, qkv_bias: bool = True, rope_theta: int = 10000, rope_axes_dim: list = [64, 64]):
+    def __init__(self, dim: int, num_heads: int, qkv_bias: bool = True, rope_theta: int = 10000, rope_axes_dim: list = [64, 64], rope_scaling_type: str = "none", rope_scaling_factor: float = 1.0):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
@@ -518,7 +541,7 @@ class UnconditionalAttention(nn.Module):
         self.q_norm = nn.RMSNorm(self.head_dim, eps=1e-6)
         self.k_norm = nn.RMSNorm(self.head_dim, eps=1e-6)
 
-        self.rope = MSRoPE(theta=rope_theta, axes_dim=rope_axes_dim)
+        self.rope = MSRoPE(theta=rope_theta, axes_dim=rope_axes_dim, scaling_type=rope_scaling_type, scaling_factor=rope_scaling_factor)
         self.proj = nn.Linear(dim, dim)
 
     def forward(self, x: torch.Tensor, img_hw: Tuple[int, int]) -> torch.Tensor:
@@ -546,7 +569,7 @@ class UnconditionalAttention(nn.Module):
         return x
 
 class UnconditionalDiTBlock(nn.Module):
-    def __init__(self, dim: int, num_heads: int, c_dim: int, mlp_ratio: float = 4.0, qkv_bias: bool = True, rope_theta: int = 10000, rope_axes_dim: list = [64, 64]):
+    def __init__(self, dim: int, num_heads: int, c_dim: int, mlp_ratio: float = 4.0, qkv_bias: bool = True, rope_theta: int = 10000, rope_axes_dim: list = [64, 64], rope_scaling_type: str = "none", rope_scaling_factor: float = 1.0):
         super().__init__()
         self.dim = dim
         self.num_heads = num_heads
@@ -558,7 +581,7 @@ class UnconditionalDiTBlock(nn.Module):
         )
         
         self.norm1 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
-        self.attn = UnconditionalAttention(dim, num_heads, qkv_bias, rope_theta, rope_axes_dim)
+        self.attn = UnconditionalAttention(dim, num_heads, qkv_bias, rope_theta, rope_axes_dim, rope_scaling_type=rope_scaling_type, rope_scaling_factor=rope_scaling_factor)
         
         self.norm2 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
         self.norm2 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)

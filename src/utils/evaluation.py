@@ -198,7 +198,7 @@ def visualize_denoising(
         value_range=(-1, 1)
     )
 
-def run_evaluation_stage0(
+def run_evaluation_uncond(
     accelerator: Accelerator,
     model: torch.nn.Module,
     args: Any,
@@ -209,16 +209,13 @@ def run_evaluation_stage0(
     ScoreMatchingODE_cls: Any
 )->dict:
     """
-    Run the full evaluation pipeline:
+    Lightweight evaluation pipeline for unconditional generation:
     1. Generate samples
     2. Calculate FID and CLIP scores
     3. Visualize denoising process
-    4. Return metrics for Wandb save locally
-    Note: we need thousands of image pairs for reliable FID score and hundreds of image-prompt pairs for CLIP score, 
-    but we're only evaluating on a batch here - don't take these metrics seriously
+    4. Return metrics for Wandb and save locally
     """
     print("Running evaluation...")
-    os.makedirs(os.path.join(args.output_dir, f"{args.run_name}"), exist_ok=True)
     model.eval()
     
     from diffusers import AutoencoderKLQwenImage
@@ -310,6 +307,8 @@ def run_evaluation_stage0(
             vis_path = os.path.join(args.output_dir, f"{args.run_name}/denoising_epoch_{epoch+1:03d}.png")
             visualize_denoising(decoded_intermediates, vis_path)
             print(f"Saved denoising visualization to {vis_path}")
+            if accelerator.is_main_process:
+                accelerator.log({"denoising": wandb.Image(vis_path)}, step=epoch+1)
                 
         except Exception as e:
             print(f"Denoising visualization failed: {e}")
@@ -318,4 +317,10 @@ def run_evaluation_stage0(
     del vae
     gc.collect()
     torch.cuda.empty_cache()
+
+def run_evaluation_light():
+    pass
+
+def run_evaluation_heavy():
+    pass
     

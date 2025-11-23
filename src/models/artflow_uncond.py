@@ -23,6 +23,8 @@ class ArtFlowUncond(nn.Module):
         depth: int = 28,
         num_heads: int = 16,
         mlp_ratio: float = 2.67,
+        rope_scaling_type: str = "none",
+        rope_scaling_factor: float = 1.0,
     ):
         super().__init__()
         self.patch_size = patch_size
@@ -48,7 +50,7 @@ class ArtFlowUncond(nn.Module):
         rope_axes_dim = [head_dim // 2, head_dim // 2]
         
         self.blocks = nn.ModuleList([
-            UnconditionalDiTBlock(hidden_size, num_heads, c_dim=hidden_size, mlp_ratio=mlp_ratio, rope_axes_dim=rope_axes_dim)
+            UnconditionalDiTBlock(hidden_size, num_heads, c_dim=hidden_size, mlp_ratio=mlp_ratio, rope_axes_dim=rope_axes_dim, rope_scaling_type=rope_scaling_type, rope_scaling_factor=rope_scaling_factor)
             for _ in range(depth)
         ])
         
