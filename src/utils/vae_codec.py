@@ -9,9 +9,9 @@ import numpy as np
 import torch
 from PIL import Image
 
+
 def encode_image(
-    images: List[Image.Image],
-    model: AutoencoderKLQwenImage
+    images: List[Image.Image], model: AutoencoderKLQwenImage
 ) -> torch.Tensor:
     """
     Encode a batch of PIL Images to latents.
@@ -33,7 +33,7 @@ def encode_image(
         tensor = tensor / 127.5 - 1.0
         tensors.append(tensor)
 
-    batch = torch.stack(tensors).to(device) # [b, c, h, w]
+    batch = torch.stack(tensors).to(device)  # [b, c, h, w]
 
     # Add temporal dimension [b, c, 1, h, w]
     batch = batch.unsqueeze(2)
@@ -46,9 +46,9 @@ def encode_image(
 
     return latents
 
+
 def decode_latents(
-    latents: torch.Tensor,
-    model: AutoencoderKLQwenImage
+    latents: torch.Tensor, model: AutoencoderKLQwenImage
 ) -> List[Image.Image]:
     """
     Decode latents to a batch of PIL Images.
@@ -86,9 +86,7 @@ def decode_latents(
 
 if __name__ == "__main__":
     vae = AutoencoderKLQwenImage.from_pretrained(
-        "REPA-E/e2e-qwenimage-vae",
-        torch_dtype=torch.bfloat16,
-        device_map="cuda:0"
+        "REPA-E/e2e-qwenimage-vae", torch_dtype=torch.bfloat16, device_map="cuda:0"
     )
 
     test_image = Image.open("test_image.png")

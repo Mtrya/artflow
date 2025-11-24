@@ -7,9 +7,8 @@ import argparse
 import os
 import sys
 import ast
-from typing import List, Dict, Tuple
+from typing import Dict, Tuple
 
-import torch
 from datasets import load_dataset
 
 # Add parent directory to path

@@ -10,9 +10,7 @@ import random
 import torch
 import numpy as np
 from datasets import load_from_disk
-from PIL import Image
 from collections import Counter
-from tqdm import tqdm
 
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -36,7 +34,7 @@ def main():
     print(f"Loading dataset from {args.dataset_path}...")
     dataset = load_from_disk(args.dataset_path)
     
-    print(f"\n=== Basic Info ===")
+    print("\n=== Basic Info ===")
     print(f"Number of examples: {len(dataset)}")
     print(f"Columns: {dataset.column_names}")
     
@@ -47,7 +45,7 @@ def main():
         print(f"Warning: Missing columns: {missing_columns}")
     
     # Statistics
-    print(f"\n=== Statistics ===")
+    print("\n=== Statistics ===")
     
     # Resolution Buckets
     if "resolution_bucket_id" in dataset.column_names:
@@ -91,8 +89,7 @@ def main():
                     all_values.append(torch.tensor(latent).flatten())
                 elif isinstance(latent, np.ndarray):
                     all_values.append(torch.from_numpy(latent).flatten())
-            except Exception as e:
-                # Skip problematic examples
+            except Exception:
                 continue
         
         if all_values:

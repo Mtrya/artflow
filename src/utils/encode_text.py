@@ -7,11 +7,12 @@ from typing import List, Optional, Tuple
 from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 import torch
 
+
 def encode_text(
     texts: List[str],
     model: Qwen3VLForConditionalGeneration,
     processor: AutoProcessor,
-    pooling: bool
+    pooling: bool,
 ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
     """
     Encode text to embeddings for DiT conditioning
@@ -29,40 +30,36 @@ def encode_text(
     """
 
     inputs = processor(
-        text=texts, 
-        return_tensors="pt", 
-        padding=True,
-        truncation=True,
-        max_length=256
+        text=texts, return_tensors="pt", padding=True, truncation=True, max_length=256
     ).to(model.device)
 
     with torch.no_grad():
         outputs = model.model(
-            input_ids=inputs.input_ids,
-            attention_mask=inputs.attention_mask
+            input_ids=inputs.input_ids, attention_mask=inputs.attention_mask
         )
-        embedding = outputs.last_hidden_state # [b, s, d]
+        embedding = outputs.last_hidden_state  # [b, s, d]
 
-    mask = inputs.attention_mask # [b, s]
+    mask = inputs.attention_mask  # [b, s]
 
     pooled = None
     if pooling:
         # Mean pooling
-        mask_unsqueezed = mask.unsqueeze(-1) # [b, s, 1]
+        mask_unsqueezed = mask.unsqueeze(-1)  # [b, s, 1]
         pooled = (embedding * mask_unsqueezed).sum(1) / mask_unsqueezed.sum(1)
 
     return embedding, mask, pooled
 
-if __name__ == "__main__":
 
+if __name__ == "__main__":
     model = Qwen3VLForConditionalGeneration.from_pretrained(
-        "Qwen/Qwen3-VL-2B-Instruct",
-        dtype=torch.bfloat16,
-        device_map="cuda:0"
+        "Qwen/Qwen3-VL-2B-Instruct", dtype=torch.bfloat16, device_map="cuda:0"
     )
     processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-2B-Instruct")
 
-    texts = ["Impressionism landscape by Claude Monet", "romanticism marina by Van Gogh"]
+    texts = [
+        "Impressionism landscape by Claude Monet",
+        "romanticism marina by Van Gogh",
+    ]
 
     embedding, mask, pooled = encode_text(texts, model, processor, True)
 

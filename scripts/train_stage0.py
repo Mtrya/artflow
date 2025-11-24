@@ -6,16 +6,13 @@ Stage 0: unconditional image generation with WikiArt Monet subset, for algorithm
 import argparse
 import os
 import sys
-import math
-from typing import Optional
 
 import torch
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from accelerate import Accelerator
 from accelerate.utils import set_seed
 from tqdm.auto import tqdm
-from datasets import load_dataset
+from datasets import load_from_disk
 
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -24,7 +21,6 @@ from src.models.artflow_uncond import ArtFlowUncond
 from src.flow.paths import ScoreMatchingDiffusion, FlowMatchingDiffusion, FlowMatchingOT
 from src.flow.solvers import sample_ode, ScoreMatchingODE
 from src.utils.evaluation import run_evaluation_uncond
-from torchvision.utils import save_image
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train ArtFlow model")
@@ -70,7 +66,6 @@ def main():
     if accelerator.is_main_process:
         print(f"Loading precomputed dataset from {args.precomputed_dataset_path}...")
     
-    from datasets import load_from_disk
     dataset = load_from_disk(args.precomputed_dataset_path)
     
     if args.range > 0:

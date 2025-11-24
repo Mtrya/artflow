@@ -6,45 +6,51 @@ This module provides functions to:
 - Handle resolution bucketing and resizing.
 """
 
-from typing import Any, Dict, List, Optional, Tuple, Callable, Union
+from typing import Dict, List, Optional, Tuple, Callable, Union
 import os
-import re
 import random
 import io
+import gc
 import requests
 import concurrent.futures
 import numpy as np
 import torch
 from datasets import Dataset
 from PIL import Image
+
 try:
     from vae_codec import encode_image
 except ImportError:
     from .vae_codec import encode_image
 
+
 def _estimate_token_counts(texts: List[str]) -> List[int]:
     """Approximate token counts assuming ~1.3 tokens per word for English prose."""
     return [int(len(text.split()) * 1.3) for text in texts]
+
 
 def clean_caption(text: str) -> str:
     """
     Remove triple quotes and other wrapper artifacts from the caption.
     Removes both outer and inner triple quotes.
-    
+
     Args:
         text: The input caption string.
-        
+
     Returns:
         The cleaned caption string.
     """
     if not isinstance(text, str):
         return ""
-        
-    text = text.replace('"""', '').replace("'''", '')
-    
+
+    text = text.replace('"""', "").replace("'''", "")
+
     return text.strip()
 
-def sample_caption(captions: List[str], stage: float, min_prob: float = 0.15, max_prob: float = 0.80) -> str:
+
+def sample_caption(
+    captions: List[str], stage: float, min_prob: float = 0.15, max_prob: float = 0.80
+) -> str:
     """
     Sample a caption using stage-controlled symmetric preference scores.
 
@@ -88,7 +94,11 @@ def sample_caption(captions: List[str], stage: float, min_prob: float = 0.15, ma
         scores = [max(score, 1e-6) for score in scores]
 
         # Apply min/max probability clipping
-        max_prob = min(max_prob, 1.0 - min_prob * (len(captions) - 1)) if len(captions) > 1 else 1.0
+        max_prob = (
+            min(max_prob, 1.0 - min_prob * (len(captions) - 1))
+            if len(captions) > 1
+            else 1.0
+        )
         if max_prob < min_prob:
             max_prob = min_prob
 
@@ -105,7 +115,10 @@ def sample_caption(captions: List[str], stage: float, min_prob: float = 0.15, ma
 
     return captions[sampled_idx]
 
-def _get_resolution_bucket(width: int, height: int, resolution_buckets: Dict[int, Tuple[int, int]]) -> Tuple[int, Tuple[int, int]]:
+
+def _get_resolution_bucket(
+    width: int, height: int, resolution_buckets: Dict[int, Tuple[int, int]]
+) -> Tuple[int, Tuple[int, int]]:
     """Return the closest resolution bucket to the original aspect ratio."""
 
     if not resolution_buckets:
@@ -126,6 +139,7 @@ def _get_resolution_bucket(width: int, height: int, resolution_buckets: Dict[int
     closest_bucket_id = min(distances, key=distances.__getitem__)
     return closest_bucket_id, resolution_buckets[closest_bucket_id]
 
+
 def _fetch_image(image_data: Union[str, Image.Image]) -> Optional[Image.Image]:
     """
     Fetch image from URL or return PIL Image.
@@ -133,14 +147,14 @@ def _fetch_image(image_data: Union[str, Image.Image]) -> Optional[Image.Image]:
     """
     if isinstance(image_data, Image.Image):
         return image_data
-    
+
     if isinstance(image_data, str):
-        if image_data.startswith('http'):
+        if image_data.startswith("http"):
             try:
                 response = requests.get(image_data, timeout=30)
                 response.raise_for_status()
                 image = Image.open(io.BytesIO(response.content))
-                image.load() # Verify it's a valid image
+                image.load()  # Verify it's a valid image
                 return image.convert("RGB")
             except Exception as e:
                 print(f"Failed to fetch image from {image_data}: {e}")
@@ -153,8 +167,9 @@ def _fetch_image(image_data: Union[str, Image.Image]) -> Optional[Image.Image]:
             except Exception as e:
                 print(f"Failed to load image from {image_data}: {e}")
                 return None
-            
+
     return None
+
 
 def precompute(
     dataset: Dataset,
@@ -182,44 +197,50 @@ def precompute(
         Processed dataset with 'latents', 'captions', and 'resolution_bucket_id'.
         'captions' will be a List[str] for each example.
     """
-    
+
     # Load VAE
     from diffusers import AutoencoderKLQwenImage
+
     print(f"Loading VAE from {vae_path}...")
     vae = AutoencoderKLQwenImage.from_pretrained(
-        vae_path,
-        torch_dtype=torch.bfloat16,
-        device_map="cuda:0"
+        vae_path, torch_dtype=torch.bfloat16, device_map="cuda:0"
     )
     vae.eval()
 
     def _process_batch(batch: Dict) -> Dict:
+        nonlocal vae
         images_raw = batch[image_field]
         batch_len = len(images_raw)
-        
+
         # Group by resolution bucket: (bucket_id, resolution) -> list of (original_idx, image)
         batches_by_bucket = {}
-        
+
         # Parallel fetch
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(batch_len, 50)) as executor:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(batch_len, 50)
+        ) as executor:
             # Submit all tasks
-            futures = [executor.submit(_fetch_image, img_data) for img_data in images_raw]
-            
+            futures = [
+                executor.submit(_fetch_image, img_data) for img_data in images_raw
+            ]
+
             for idx, future in enumerate(futures):
                 try:
                     image = future.result()
                 except Exception:
                     image = None
-                
+
                 if image is None:
                     continue
-                    
+
                 # 2. Find bucket and resize
                 width, height = image.size
                 try:
-                    bucket_id, resolution = _get_resolution_bucket(width, height, resolution_buckets)
+                    bucket_id, resolution = _get_resolution_bucket(
+                        width, height, resolution_buckets
+                    )
                     resized_image = image.resize(resolution, Image.BICUBIC)
-                    
+
                     key = (bucket_id, resolution)
                     if key not in batches_by_bucket:
                         batches_by_bucket[key] = []
@@ -228,51 +249,52 @@ def precompute(
                     continue
 
         if not batches_by_bucket:
-            return {
-                "latents": [],
-                "captions": [],
-                "resolution_bucket_id": []
-            }
+            return {"latents": [], "captions": [], "resolution_bucket_id": []}
 
         # 3. Compute latents per bucket
-        latents_map = {} # original_idx -> latent
-        bucket_ids_map = {} # original_idx -> bucket_id
-        
+        latents_map = {}  # original_idx -> latent
+        bucket_ids_map = {}  # original_idx -> bucket_id
+
         for (bucket_id, resolution), items in batches_by_bucket.items():
             batch_indices = [item[0] for item in items]
             batch_images = [item[1] for item in items]
-            
+
             try:
                 with torch.no_grad():
                     # encode_image expects a list of PIL images
                     batch_latents = encode_image(batch_images, vae).detach().cpu()
-                
+
                 for i, original_idx in enumerate(batch_indices):
                     latents_map[original_idx] = batch_latents[i]
                     bucket_ids_map[original_idx] = bucket_id
+
+                # Explicitly delete intermediate tensors and images
+                del batch_latents
+                del batch_images
+                del batch_indices
+
             except Exception as e:
                 print(f"Error encoding batch for resolution {resolution}: {e}")
                 continue
-        
+
+        # Clear the batches_by_bucket dict to free PIL images
+        del batches_by_bucket
+
         if not latents_map:
-             return {
-                "latents": [],
-                "captions": [],
-                "resolution_bucket_id": []
-            }
+            return {"latents": [], "captions": [], "resolution_bucket_id": []}
 
         # 4. Gather results in order
         valid_latents = []
         valid_captions_list = []
         valid_bucket_ids = []
-        
+
         # Sort by original index to maintain relative order (optional but good for determinism)
         sorted_indices = sorted(latents_map.keys())
-        
+
         for original_idx in sorted_indices:
             valid_latents.append(latents_map[original_idx])
             valid_bucket_ids.append(bucket_ids_map[original_idx])
-            
+
             # Gather items from caption fields
             current_captions = []
             for field in caption_fields:
@@ -288,18 +310,29 @@ def precompute(
                                 if text_fn:
                                     item = text_fn(item)
                                 current_captions.append(item)
-            
+
             valid_captions_list.append(current_captions)
+
+        # Clear the maps to free memory before returning
+        del latents_map
+        del bucket_ids_map
+
+        # Force garbage collection and clear CUDA cache
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         return {
             "latents": valid_latents,
             "captions": valid_captions_list,
-            "resolution_bucket_id": valid_bucket_ids
+            "resolution_bucket_id": valid_bucket_ids,
         }
 
     # Determine columns to remove
     columns_to_keep = {"latents", "captions", "resolution_bucket_id"}
-    columns_to_remove = [col for col in dataset.column_names if col not in columns_to_keep]
+    columns_to_remove = [
+        col for col in dataset.column_names if col not in columns_to_keep
+    ]
 
     print("Starting precomputation...")
     processed_dataset = dataset.map(
@@ -307,11 +340,18 @@ def precompute(
         batched=True,
         batch_size=batch_size,
         remove_columns=columns_to_remove,
-        desc="Precomputing latents and captions"
+        desc="Precomputing latents and captions",
     )
-    
+
+    # Clean up VAE from GPU memory
+    print("Cleaning up VAE from GPU memory...")
+    del vae
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     # Set format to torch
     # We don't specify columns so that all columns are returned.
     processed_dataset = processed_dataset.with_format("torch")
-    
+
     return processed_dataset

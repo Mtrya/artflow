@@ -44,21 +44,21 @@ CAPTIONERS_QWEN = [
         "provider": "siliconflow",
         "model": "Qwen/Qwen3-VL-32B-Instruct",
         "api_key_env": "SILICONFLOW_API_KEY",
-        "prompt": DIRECT_CAPTION_PROMPT
+        "prompt": DIRECT_CAPTION_PROMPT,
     },
     {
         "name": "qwen-spatial",
         "provider": "siliconflow",
         "model": "Qwen/Qwen3-VL-32B-Instruct",
         "api_key_env": "SILICONFLOW_API_KEY",
-        "prompt": SPATIAL_RELATIONSHIP_PROMPT
+        "prompt": SPATIAL_RELATIONSHIP_PROMPT,
     },
     {
         "name": "qwen-reverse",
         "provider": "siliconflow",
         "model": "Qwen/Qwen3-VL-32B-Instruct",
         "api_key_env": "SILICONFLOW_API_KEY",
-        "prompt": REVERSE_IMAGE_PROMPT
+        "prompt": REVERSE_IMAGE_PROMPT,
     },
 ]
 
@@ -68,9 +68,10 @@ CAPTIONERS_MISTRAL = [
         "provider": "openrouter",
         "model": "mistralai/mistral-medium-3.1",
         "api_key_env": "OPENROUTER_API_KEY",
-        "prompt": DIRECT_CAPTION_PROMPT
+        "prompt": DIRECT_CAPTION_PROMPT,
     }
 ]
+
 
 def pil_to_base64(image: Image.Image) -> str:
     """Convert PIL Image to base64 string for OpenAI-compatible API"""
@@ -82,16 +83,20 @@ def pil_to_base64(image: Image.Image) -> str:
 
     buffer = BytesIO()
     resized_image.save(buffer, format="PNG")
-    image_str = base64.b64encode(buffer.getvalue()).decode('utf-8')
+    image_str = base64.b64encode(buffer.getvalue()).decode("utf-8")
     return image_str
+
 
 def unwrap_quotes(s: str) -> str:
     """Remove surrounding quotes if present"""
-    if len(s) >= 2 and ((s[0] == '"' and s[-1] == '"') or (s[0] == "'" and s[-1] == "'")):
+    if len(s) >= 2 and (
+        (s[0] == '"' and s[-1] == '"') or (s[0] == "'" and s[-1] == "'")
+    ):
         return s[1:-1]
     return s
 
-def call_vision_api(base64_image: str, captioner_config: Dict[str,str]):
+
+def call_vision_api(base64_image: str, captioner_config: Dict[str, str]):
     """Call vision API"""
     provider = captioner_config["provider"]
     model = captioner_config["model"]
@@ -107,10 +112,7 @@ def call_vision_api(base64_image: str, captioner_config: Dict[str,str]):
     else:
         raise ValueError(f"provider {provider} not supported.")
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
     payload = {
         "model": model,
@@ -123,12 +125,12 @@ def call_vision_api(base64_image: str, captioner_config: Dict[str,str]):
                         "type": "image_url",
                         "image_url": {
                             "url": f"data:image/png;base64,{base64_image}",
-                            "detail": "low"
-                        }
-                    }
-                ]
+                            "detail": "low",
+                        },
+                    },
+                ],
             }
-        ]
+        ],
     }
 
     if provider.lower() == "dashscope" and model.startswith("qwen3-vl"):
@@ -141,16 +143,18 @@ def call_vision_api(base64_image: str, captioner_config: Dict[str,str]):
         payload["enable_thinking"] = False
 
     response = requests.post(
-        f"{base_url}/chat/completions",
-        headers=headers,
-        json=payload,
-        timeout=45
+        f"{base_url}/chat/completions", headers=headers, json=payload, timeout=45
     )
 
     response.raise_for_status()
     return response.json()
 
-def call_parallel(images: List[Image.Image], captioners: Optional[List[Dict[str,str]]]=CAPTIONERS_QWEN, existing_captions: Optional[List[Dict[str,str]]]=None) -> List[Dict[str,str]]:
+
+def call_parallel(
+    images: List[Image.Image],
+    captioners: Optional[List[Dict[str, str]]] = CAPTIONERS_QWEN,
+    existing_captions: Optional[List[Dict[str, str]]] = None,
+) -> List[Dict[str, str]]:
     """
     Call different VLM models simultaneously.
     If existing_captions is provided, it will only call models for missing captions.
@@ -159,7 +163,7 @@ def call_parallel(images: List[Image.Image], captioners: Optional[List[Dict[str,
 
     if existing_captions is None:
         existing_captions = [{c["name"]: None for c in captioners} for _ in images]
-    
+
     assert len(base64_images) == len(existing_captions)
 
     # Flatten all (image_idx, captioner) pairs that need calls
@@ -171,14 +175,17 @@ def call_parallel(images: List[Image.Image], captioners: Optional[List[Dict[str,
 
     if not tasks:
         return existing_captions
-    
+
     with concurrent.futures.ThreadPoolExecutor() as executor:
         # Map future -> (image_idx, captioner_name)
         future_to_task = {
-            executor.submit(call_vision_api, base64_image, captioner): (img_idx, captioner["name"])
+            executor.submit(call_vision_api, base64_image, captioner): (
+                img_idx,
+                captioner["name"],
+            )
             for img_idx, base64_image, captioner in tasks
         }
-        
+
         # Initialize results structure
         results = [{} for _ in images]
 
@@ -189,15 +196,15 @@ def call_parallel(images: List[Image.Image], captioners: Optional[List[Dict[str,
             except Exception as exc:
                 print(f"{captioner_name} for image {img_idx} failed: {exc}")
                 results[img_idx][captioner_name] = None
-        
+
     # Process results and merge with existing captions
     final_captions = [existing.copy() for existing in existing_captions]
     for img_idx, img_results in enumerate(results):
         for captioner_name, result in img_results.items():
             caption = None
             # Extract message content from openai-compatible api response
-            if result and 'choices' in result and result['choices']:
-                message = result["choices"][0].get("message",{})
+            if result and "choices" in result and result["choices"]:
+                message = result["choices"][0].get("message", {})
                 content = message.get("content")
                 if content and isinstance(content, str):
                     caption_text = content.strip()
@@ -207,10 +214,11 @@ def call_parallel(images: List[Image.Image], captioners: Optional[List[Dict[str,
 
             final_captions[img_idx][captioner_name] = caption
 
-    
     return final_captions
 
+
 if __name__ == "__main__":
+
     def test_captions():
         """Test caption generation"""
         from PIL import Image

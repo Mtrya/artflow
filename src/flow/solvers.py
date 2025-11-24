@@ -6,43 +6,61 @@ from abc import ABC, abstractmethod
 from typing import Callable, Optional, Tuple, Union, List
 import torch
 
+
 class Solver(ABC):
     """Abstract base class for solvers."""
-    @abstractmethod
-    def step(self, x: torch.Tensor, t: float, dt: float, model_fn: Callable) -> torch.Tensor:
-        pass
 
-# ... (skipping classes for brevity in replacement, but I need to be careful with replace_file_content)
-# Actually, I should just replace the imports and the function signature separately or use multi_replace.
-# Let's use multi_replace to be safe and clean.
+    @abstractmethod
+    def step(
+        self, x: torch.Tensor, t: float, dt: float, model_fn: Callable
+    ) -> torch.Tensor:
+        pass
 
 
 class Euler(Solver):
     """Euler method for ODEs."""
-    def step(self, x: torch.Tensor, t: float, dt: float, model_fn: Callable) -> torch.Tensor:
+
+    def step(
+        self, x: torch.Tensor, t: float, dt: float, model_fn: Callable
+    ) -> torch.Tensor:
         # x is current state at time t
         # model_fn(x, t) returns velocity v(x, t)
         t_tensor = torch.tensor(t, device=x.device, dtype=x.dtype).expand(x.shape[0])
         v = model_fn(x, t_tensor)
         return x + v * dt
 
+
 class Heun(Solver):
     """Heun's method (Improved Euler) for ODEs."""
-    def step(self, x: torch.Tensor, t: float, dt: float, model_fn: Callable) -> torch.Tensor:
+
+    def step(
+        self, x: torch.Tensor, t: float, dt: float, model_fn: Callable
+    ) -> torch.Tensor:
         t_tensor = torch.tensor(t, device=x.device, dtype=x.dtype).expand(x.shape[0])
         v1 = model_fn(x, t_tensor)
-        
+
         x_guess = x + v1 * dt
         t_next = t + dt
-        t_next_tensor = torch.tensor(t_next, device=x.device, dtype=x.dtype).expand(x.shape[0])
+        t_next_tensor = torch.tensor(t_next, device=x.device, dtype=x.dtype).expand(
+            x.shape[0]
+        )
         v2 = model_fn(x_guess, t_next_tensor)
-        
+
         return x + 0.5 * (v1 + v2) * dt
+
 
 class EulerMaruyama(Solver):
     """Euler-Maruyama method for SDEs."""
-    def step(self, x: torch.Tensor, t: float, dt: float, model_fn: Callable, 
-             drift_fn: Callable, diffusion_fn: Callable) -> torch.Tensor:
+
+    def step(
+        self,
+        x: torch.Tensor,
+        t: float,
+        dt: float,
+        model_fn: Callable,
+        drift_fn: Callable,
+        diffusion_fn: Callable,
+    ) -> torch.Tensor:
         """
         Args:
             x: Current state
@@ -53,65 +71,49 @@ class EulerMaruyama(Solver):
             diffusion_fn: Returns g(t)
         """
         # Note: This signature is slightly different because SDEs need drift/diffusion terms
-        # We might need to adapt the calling code or this class.
-        # For VP-SDE reverse: dx = [f(x,t) - g(t)^2 score] dt + g(t) dw
-        
         t_tensor = torch.tensor(t, device=x.device, dtype=x.dtype).expand(x.shape[0])
-        
-        # Get model prediction (score)
+
         score = model_fn(x, t_tensor)
-        
-        # Get drift and diffusion coefficients
-        # Assuming drift_fn returns the linear drift coefficient beta(t) or similar
-        # For VP-SDE: f(x,t) = -0.5 * beta(t) * x
-        # g(t) = sqrt(beta(t))
-        
+
         f = drift_fn(x, t_tensor)
         g = diffusion_fn(t_tensor)
-        
-        # Reverse SDE drift: f - g^2 * score
-        # Note: score matching usually predicts score. 
-        # If model predicts something else, model_fn should handle conversion.
-        
-        reverse_drift = f - (g ** 2) * score
-        
+
+        reverse_drift = f - (g**2) * score
+
         # Noise
         z = torch.randn_like(x)
-        
-        # Step
-        # For reverse time, dt is negative. 
-        # Usually we integrate from T to 0. dt should be passed as negative if t is decreasing.
-        # Or we treat dt as positive step size and handle sign in the loop.
-        # Standard convention: dx = ... dt + ... dw
-        # If solving reverse SDE, we usually write it in terms of dt (positive) going backwards.
-        # Let's assume dt is the signed step (negative for reverse).
-        
+
         x_next = x + reverse_drift * dt + g * torch.abs(torch.tensor(dt)).sqrt() * z
         return x_next
+
 
 class ScoreMatchingODE(Solver):
     """
     Probability Flow ODE solver for Score Matching (VP-SDE).
     dx = -0.5 * beta(t) * (x + score) * dt
     """
+
     def __init__(self, beta_min: float = 0.1, beta_max: float = 20.0):
         self.beta_min = beta_min
         self.beta_max = beta_max
 
-    def step(self, x: torch.Tensor, t: float, dt: float, model_fn: Callable) -> torch.Tensor:
+    def step(
+        self, x: torch.Tensor, t: float, dt: float, model_fn: Callable
+    ) -> torch.Tensor:
         # t is current time
         # model_fn(x, t) returns score s(x, t)
-        
+
         t_tensor = torch.tensor(t, device=x.device, dtype=x.dtype).expand(x.shape[0])
         score = model_fn(x, t_tensor)
-        
+
         beta_t = self.beta_min + t * (self.beta_max - self.beta_min)
-        
+
         # Probability Flow ODE: dx = -0.5 * beta(t) * (x + score) dt
         # Note: This is the vector field v(x, t)
         velocity = -0.5 * beta_t * (x + score)
-        
+
         return x + velocity * dt
+
 
 def sample_ode(
     model_fn: Callable,
@@ -122,7 +124,7 @@ def sample_ode(
     t_start: float = 0.0,
     t_end: float = 1.0,
     device: str = "cuda",
-    return_intermediates: bool = False
+    return_intermediates: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, List[torch.Tensor]]]:
     """Sample using ODE solver."""
     if solver_instance is not None:
@@ -133,22 +135,21 @@ def sample_ode(
         s = Heun()
     else:
         raise ValueError(f"Unknown solver: {solver}")
-    
+
     x = z0.to(device)
     dt = (t_end - t_start) / steps
     t = t_start
-    
+
     intermediates = []
     if return_intermediates:
         intermediates.append(x.cpu())
-    
+
     for _ in range(steps):
         x = s.step(x, t, dt, model_fn)
         t += dt
         if return_intermediates:
             intermediates.append(x.cpu())
-        
+
     if return_intermediates:
         return x, intermediates
     return x
-

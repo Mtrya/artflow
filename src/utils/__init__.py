@@ -17,5 +17,5 @@ __all__ = [
     "decode_latents",
     # Precomputation
     "precompute",
-    "sample_caption"
+    "sample_caption",
 ]
