@@ -11,6 +11,7 @@ from torchmetrics.image.fid import FrechetInceptionDistance
 from torchmetrics.multimodal.clip_score import CLIPScore
 from typing import List, Optional, Union, Dict, Any
 import os
+import sys
 import numpy as np
 import gc
 from PIL import Image
@@ -20,6 +21,7 @@ from tqdm.auto import tqdm
 
 import transformers
 import swanlab
+
 
 transformers.logging.set_verbosity_error()
 
@@ -386,7 +388,6 @@ def run_evaluation_light(
     text_encoder: Any,
     processor: Any,
     pooling: bool,
-    sample_ode_fn: Any,
     resolution: int = 256,
 ) -> Dict[str, float]:
     """
@@ -400,13 +401,17 @@ def run_evaluation_light(
         text_encoder: Frozen Qwen3-VL model
         processor: AutoProcessor
         pooling: Whether to use pooled text embeddings
-        sample_ode_fn: Sampling function
         resolution: Target resolution for evaluation (default: 256)
 
     Returns:
         Dictionary of metrics
     """
     print(f"Running light evaluation at step {current_step}...")
+    # Add parent directory to path
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+    from flow.solvers import sample_ode
+
     model.eval()
 
     # Import here to avoid circular imports
@@ -424,25 +429,49 @@ def run_evaluation_light(
     metrics = {}
 
     with torch.no_grad():
-        from datasets import load_dataset
-
-        # Hardcode validation set
-        os.environ["HF_HUB_OFFLINE"] = "1"
-        dataset = load_dataset(
-            "kaupane/wikiart-captions", split="train[:args.num_eval_samples]"
-        )
-        del os.environ["HF_HUB_OFFLINE"]
+        from datasets import load_dataset, load_from_disk
 
         real_images = []
         prompts = []
 
-        for item in dataset:
-            # Image
-            img = item["image"]
-            # Resize to fixed resolution
-            img = img.resize((resolution, resolution), Image.BICUBIC)
-            real_images.append(torchvision.transforms.functional.to_tensor(img))
-            prompts.append(item["qwen-direct"])
+        # Hardcode validation set
+        try:
+            dataset = load_from_disk("./precomputed_dataset/light-eval@256p")
+
+            for item in dataset:
+                # Latents are already encoded, just need to decode
+                # Add batch dimension for VAE decoder
+                latents = (
+                    item["latents"]
+                    .unsqueeze(0)
+                    .unsqueeze(2)
+                    .to(accelerator.device)
+                    .to(torch.bfloat16)
+                )
+                img = vae.decode(latents).sample.squeeze(2).squeeze(0)
+                real_images.append(img)
+
+                # Captions is a List[str], pick the first one for evaluation
+                captions_list = item["captions"]
+                if isinstance(captions_list, list) and len(captions_list) > 0:
+                    prompts.append(captions_list[0])
+                else:
+                    # Fallback if captions is somehow not a list or empty
+                    prompts.append(str(captions_list))
+
+        except Exception as e:
+            print(f"Failed to load from disk: {e}")
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            dataset = load_dataset("kaupane/wikiart-captions", split="train[:16]")
+            del os.environ["HF_HUB_OFFLINE"]
+
+            for item in dataset:
+                # Image
+                img = item["image"]
+                # Resize to fixed resolution
+                img = img.resize((resolution, resolution), Image.BICUBIC)
+                real_images.append(torchvision.transforms.functional.to_tensor(img))
+                prompts.append(item["qwen-direct"])
 
         # 2. Encode prompts
         txt, txt_mask, txt_pooled = encode_text(
@@ -466,7 +495,8 @@ def run_evaluation_light(
             return model(x, t_tensor, txt, txt_pooled, txt_mask)
 
         # Sample using fm-ot defaults (t_start=0.0, t_end=1.0)
-        samples = sample_ode_fn(model_fn, sample_z0, steps=50, t_start=0.0, t_end=1.0)
+        with accelerator.autocast():
+            samples = sample_ode(model_fn, sample_z0, steps=50, t_start=0.0, t_end=1.0)
 
         # Decode
         samples = samples.to(dtype=torch.bfloat16)
@@ -476,7 +506,8 @@ def run_evaluation_light(
 
         # Save locally
         save_path = os.path.join(
-            args.output_dir, f"{args.run_name}/samples_step_{current_step:06d}.png"
+            args.output_dir,
+            f"{args.run_name}/samples_step_{round(current_step / 1000)}k.png",
         )
         _ = make_image_grid(
             images, save_path=save_path, normalize=True, value_range=(-1, 1)

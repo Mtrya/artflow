@@ -59,7 +59,7 @@ if __name__ == "__main__":
     texts = [
         "Impressionism landscape by Claude Monet",
         "romanticism marina by Van Gogh",
-    ]
+    ] * 16  # 32 texts
 
     embedding, mask, pooled = encode_text(texts, model, processor, True)
 
