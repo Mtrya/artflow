@@ -361,8 +361,8 @@ class DoubleStreamAttention(nn.Module):
             full_mask = torch.cat([img_mask, txt_attention_mask], dim=1)
 
             # Convert to attention mask format [B, 1, 1, S_total]
-            # Invert mask: 1 (valid) -> False (unmasked), 0 (padding) -> True (masked)
-            attn_mask = (full_mask == 0).unsqueeze(1).unsqueeze(2)
+            # Mask: 1 (valid) -> True (attend), 0 (padding) -> False (ignore)
+            attn_mask = (full_mask > 0).unsqueeze(1).unsqueeze(2)
             attn_mask = attn_mask.to(dtype=torch.bool)
 
         # Attention with mask
@@ -671,7 +671,7 @@ class SingleStreamDiTBlock(nn.Module):
                 dtype=txt_attention_mask.dtype,
             )
             full_mask = torch.cat([img_mask, txt_attention_mask], dim=1)
-            attn_mask = (full_mask == 0).unsqueeze(1).unsqueeze(2)
+            attn_mask = (full_mask > 0).unsqueeze(1).unsqueeze(2)
             attn_mask = attn_mask.to(dtype=torch.bool)
 
         # Attention
