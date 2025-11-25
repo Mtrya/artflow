@@ -7,7 +7,6 @@ This module provides functions to:
 """
 
 from typing import Dict, List, Optional, Tuple, Callable, Union
-import os
 import random
 import io
 import gc
@@ -143,30 +142,20 @@ def _get_resolution_bucket(
 def _fetch_image(image_data: Union[str, Image.Image]) -> Optional[Image.Image]:
     """
     Fetch image from URL or return PIL Image.
-    Returns None if fetching fails.
     """
     if isinstance(image_data, Image.Image):
         return image_data
 
     if isinstance(image_data, str):
-        if image_data.startswith("http"):
-            try:
-                response = requests.get(image_data, timeout=30)
-                response.raise_for_status()
-                image = Image.open(io.BytesIO(response.content))
-                image.load()  # Verify it's a valid image
-                return image.convert("RGB")
-            except Exception as e:
-                print(f"Failed to fetch image from {image_data}: {e}")
-                return None
-        elif os.path.exists(image_data):
-            try:
-                image = Image.open(image_data)
-                image.load()
-                return image.convert("RGB")
-            except Exception as e:
-                print(f"Failed to load image from {image_data}: {e}")
-                return None
+        try:
+            response = requests.get(image_data, timeout=(2, 7))
+            response.raise_for_status()
+            image = Image.open(io.BytesIO(response.content))
+            image.load()  # Verify it's a valid image
+            return image.convert("RGB")
+        except Exception as e:
+            print(f"Failed to fetch image from {image_data[:10]}: {str(e)[:10]}")
+            return None
 
     return None
 
@@ -179,6 +168,7 @@ def precompute(
     resolution_buckets: Dict[int, Tuple[int, int]],
     text_fn: Callable[[str], str] = None,
     batch_size: int = 50,
+    device: str = "cuda",
 ) -> Dataset:
     """
     Stateless precomputation of image latents and caption preparation.
@@ -203,7 +193,7 @@ def precompute(
 
     print(f"Loading VAE from {vae_path}...")
     vae = AutoencoderKLQwenImage.from_pretrained(
-        vae_path, torch_dtype=torch.bfloat16, device_map="cuda:0"
+        vae_path, torch_dtype=torch.bfloat16, device_map=device
     )
     vae.eval()
 
@@ -215,7 +205,7 @@ def precompute(
         # Group by resolution bucket: (bucket_id, resolution) -> list of (original_idx, image)
         batches_by_bucket = {}
 
-        # Parallel fetch
+        # Parallel fetch with timeout per image
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=min(batch_len, 50)
         ) as executor:
@@ -226,19 +216,32 @@ def precompute(
 
             for idx, future in enumerate(futures):
                 try:
-                    image = future.result()
-                except Exception:
+                    # Enforce strict timeout on the entire fetch operation
+                    # If this times out, the sample is dropped
+                    image = future.result(timeout=10.0)
+                except concurrent.futures.TimeoutError:
+                    print(f"Sample {idx}: Dropped due to download timeout")
+                    image = None
+                except Exception as e:
+                    print(f"Sample {idx}: Dropped due to error: {str(e)[:10]}")
                     image = None
 
                 if image is None:
                     continue
 
-                # 2. Find bucket and resize
+                # 2. Find bucket and resize if original resolution is sufficient
                 width, height = image.size
                 try:
                     bucket_id, resolution = _get_resolution_bucket(
                         width, height, resolution_buckets
                     )
+
+                    if width < resolution[0] or height < resolution[1]:
+                        print(
+                            f"Skipping sample {idx}: resolution {width}x{height} below bucket {resolution[0]}x{resolution[1]}"
+                        )
+                        continue
+
                     resized_image = image.resize(resolution, Image.BICUBIC)
 
                     key = (bucket_id, resolution)
@@ -298,7 +301,17 @@ def precompute(
             # Gather items from caption fields
             current_captions = []
             for field in caption_fields:
-                if field in batch and batch[field][original_idx] is not None:
+                if (
+                    field in batch
+                    and batch[field][original_idx] is not None
+                    and field == "human_caption_hq"
+                ):
+                    val = batch[field][original_idx]
+                    val = val[1]["value"]
+                    if text_fn:
+                        val = text_fn(val)
+                    current_captions.append(val)
+                elif field in batch and batch[field][original_idx] is not None:
                     val = batch[field][original_idx]
                     if isinstance(val, str):
                         if text_fn:
