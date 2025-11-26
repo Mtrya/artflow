@@ -32,5 +32,6 @@ dev = [
     "matplotlib>=3.10.7",
     "mypy>=1.18.2",
     "ruff>=0.14.1",
-    "fvcore>=0.1.5.post20221221"
+    "fvcore>=0.1.5.post20221221",
+    "pytest>=9.0.1",
 ]

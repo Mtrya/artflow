@@ -31,7 +31,7 @@ def _estimate_token_counts(texts: List[str]) -> List[int]:
 def clean_caption(text: str) -> str:
     """
     Remove triple quotes and other wrapper artifacts from the caption.
-    Removes both outer and inner triple quotes.
+    Remove "The image shows a painting of " opening
 
     Args:
         text: The input caption string.
@@ -41,6 +41,11 @@ def clean_caption(text: str) -> str:
     """
     if not isinstance(text, str):
         return ""
+
+    if text.startswith("The image shows a painting of "):
+        text = text[len("The image shows a painting of ") :]
+    if text.startswith("The image shows a drawing of "):
+        text = text[len("The image shows a drawing of ") :]
 
     text = text.replace('"""', "").replace("'''", "")
 
@@ -166,7 +171,7 @@ def precompute(
     caption_fields: List[str],
     vae_path: str,
     resolution_buckets: Dict[int, Tuple[int, int]],
-    text_fn: Callable[[str], str] = None,
+    text_fn: Callable[[str], str] = clean_caption,
     batch_size: int = 50,
     device: str = "cuda",
 ) -> Dataset:
