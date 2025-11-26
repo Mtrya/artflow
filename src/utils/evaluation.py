@@ -355,6 +355,12 @@ def run_evaluation_uncond(
         real_images_norm = (real_images + 1) / 2
         fake_images_norm = (images + 1) / 2
 
+        fid_score = calculate_fid(
+            real_images_norm, fake_images_norm, device=accelerator.device
+        )
+        print(f"Epoch {epoch + 1} | FID: {fid_score:.4f}")
+        metrics["fid"] = fid_score
+
         kid_score = calculate_kid(
             real_images_norm, fake_images_norm, device=accelerator.device
         )
@@ -436,6 +442,7 @@ def run_evaluation_uncond(
     gc.collect()
     torch.cuda.empty_cache()
 
+
 def gather_all(accelerator, tensor):
     if not accelerator.use_distributed:
         return tensor
@@ -446,14 +453,14 @@ def run_evaluation_light(
     accelerator: Accelerator,
     model: torch.nn.Module,
     vae_path: str,
-    save_path: str, 
+    save_path: str,
     current_step: int,
     text_encoder: Any,
     processor: Any,
     pooling: bool,
     dataset_path: str = "./precomputed_dataset/light-eval@256p",
     num_samples: int = 16,
-    batch_size: int = 16
+    batch_size: int = 16,
 ) -> Dict[str, float]:
     """Run the fast validation loop over the light-eval split.
 
@@ -486,6 +493,7 @@ def run_evaluation_light(
     # Add parent directory to path
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
     from flow.solvers import sample_ode
+
     try:
         from encode_text import encode_text
     except ImportError:
@@ -502,8 +510,8 @@ def run_evaluation_light(
     metrics = {}
     num_processes = getattr(accelerator, "num_processes", 1)
     process_index = getattr(accelerator, "process_index", 0)
-    can_broadcast_objects = (
-        num_processes > 1 and hasattr(accelerator, "broadcast_object_list")
+    can_broadcast_objects = num_processes > 1 and hasattr(
+        accelerator, "broadcast_object_list"
     )
     can_gather_objects = num_processes > 1 and hasattr(accelerator, "gather_object")
 
@@ -580,18 +588,28 @@ def run_evaluation_light(
                 H, W = bucket_resolutions[bucket_id]
 
                 for batch_start in range(0, len(local_prompts), batch_size):
-                    batch_prompts = local_prompts[batch_start : batch_start + batch_size]
+                    batch_prompts = local_prompts[
+                        batch_start : batch_start + batch_size
+                    ]
                     txt, txt_mask, txt_pooled = encode_text(
                         batch_prompts, text_encoder, processor, pooling
                     )
 
                     sample_z0 = torch.randn(
-                        len(batch_prompts), 16, H // 8, W // 8, device=accelerator.device
+                        len(batch_prompts),
+                        16,
+                        H // 8,
+                        W // 8,
+                        device=accelerator.device,
                     )
 
-                    def model_fn(x, t, txt=txt, txt_pooled=txt_pooled, txt_mask=txt_mask):
+                    def model_fn(
+                        x, t, txt=txt, txt_pooled=txt_pooled, txt_mask=txt_mask
+                    ):
                         if isinstance(t, float):
-                            t_tensor = torch.tensor(t, device=x.device).expand(x.shape[0])
+                            t_tensor = torch.tensor(t, device=x.device).expand(
+                                x.shape[0]
+                            )
                         else:
                             t_tensor = t
                         return model(x, t_tensor, txt, txt_pooled, txt_mask)
@@ -655,17 +673,27 @@ def run_evaluation_light(
                         f"samples_step_{round(current_step / 1000)}k_bucket{bucket_id}_{H}x{W}.png",
                     )
                     _ = make_image_grid(
-                        bucket_images, save_path=grid_path, normalize=True, value_range=(0, 1)
+                        bucket_images,
+                        save_path=grid_path,
+                        normalize=True,
+                        value_range=(0, 1),
                     )
                     print(f"Saved samples to {grid_path}")
                     bucket_grid_paths.append(grid_path)
 
-                for idx in len(bucket_grid_paths):
-                    accelerator.log({f"samples_{idx}": swanlab.Image(bucket_grid_paths[idx])}, step=current_step)
+                for idx in range(len(bucket_grid_paths)):
+                    accelerator.log(
+                        {f"samples_{idx}": swanlab.Image(bucket_grid_paths[idx])},
+                        step=current_step,
+                    )
 
                 if real_images and fake_images_list:
-                    real_processed = [torch.clamp((img + 1) / 2, 0, 1) for img in real_images]
-                    fake_processed = [torch.clamp(img, 0, 1) for img in fake_images_list]
+                    real_processed = [
+                        torch.clamp((img + 1) / 2, 0, 1) for img in real_images
+                    ]
+                    fake_processed = [
+                        torch.clamp(img, 0, 1) for img in fake_images_list
+                    ]
 
                     real_resized = torch.stack(
                         [
@@ -690,8 +718,8 @@ def run_evaluation_light(
                         ]
                     )
 
-                    real_resized = real_resized.to(accelerator.device)
-                    fake_resized = fake_resized.to(accelerator.device)
+                    real_resized = real_resized.clamp(0, 1).to(accelerator.device)
+                    fake_resized = fake_resized.clamp(0, 1).to(accelerator.device)
 
                     fid_score = calculate_fid(
                         real_resized, fake_resized, device=accelerator.device
