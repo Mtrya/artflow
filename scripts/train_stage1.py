@@ -11,6 +11,7 @@ from accelerate import Accelerator
 from accelerate.utils import ProjectConfiguration, set_seed
 from tqdm.auto import tqdm
 from datasets import load_from_disk
+from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -81,9 +82,6 @@ def parse_args():
         help="VAE path (for eval)",
     )  # Note: VAE used for eval decoding
     parser.add_argument(
-        "--eval_resolution", type=int, default=256, help="Base resolution"
-    )
-    parser.add_argument(
         "--checkpoint_interval",
         type=int,
         default=5000,
@@ -92,6 +90,8 @@ def parse_args():
     parser.add_argument(
         "--eval_interval", type=int, default=1000, help="Run evaluation every N steps"
     )
+    parser.add_argument("--num_eval_samples", type=int, default=16, help="Evaluate on M samples")
+    parser.add_argument("--eval_batch_size", type=int, default=16, help="Batch size used in evaluation")
 
     # Training Config
     parser.add_argument(
@@ -229,8 +229,6 @@ def main():
         )
 
     # Load Text Encoder (Frozen, on GPU)
-    from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
-
     accelerator.print(f"Loading Text Encoder: {args.text_encoder_path}")
     text_encoder = Qwen3VLForConditionalGeneration.from_pretrained(
         args.text_encoder_path,
@@ -283,7 +281,12 @@ def main():
     dataset = load_from_disk(args.precomputed_dataset_path)
 
     # Sampler & Loader
-    sampler = ResolutionBucketSampler(dataset, batch_size=args.batch_size)
+    sampler = ResolutionBucketSampler(
+        dataset,
+        batch_size=args.batch_size,
+        num_replicas=accelerator.num_processes,
+        rank=accelerator.process_index,
+    )
     dataloader = DataLoader(
         dataset,
         batch_sampler=sampler,
@@ -413,12 +416,14 @@ def main():
                 run_evaluation_light(
                     accelerator=accelerator,
                     model=eval_model,
-                    args=args,
+                    vae_path=args.vae_path,
+                    save_path=f"{args.output_dir}/{args.run_name}",
                     current_step=global_step,
                     text_encoder=text_encoder,
                     processor=processor,
                     pooling=(args.conditioning_scheme == "fused"),
-                    resolution=args.eval_resolution,
+                    num_samples=args.num_eval_samples,
+                    batch_size=args.eval_batch_size
                 )
                 model.train()
 
