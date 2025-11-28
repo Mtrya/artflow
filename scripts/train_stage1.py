@@ -432,7 +432,7 @@ def main():
             if global_step % args.checkpoint_interval == 0:
                 save_path = os.path.join(
                     args.output_dir,
-                    f"{args.run_name}/checkpoint_step_{round(global_step / 1000)}k",
+                    f"{args.run_name}/checkpoint_step_{global_step:06d}",
                 )
                 os.makedirs(save_path, exist_ok=True)
                 accelerator.save_state(save_path)

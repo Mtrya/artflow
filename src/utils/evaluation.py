@@ -714,7 +714,7 @@ def run_evaluation_light(
                     H, W = bucket_resolutions[bucket_id]
                     grid_path = os.path.join(
                         save_path,
-                        f"samples_step_{round(current_step / 1000)}k_bucket{bucket_id}_{H}x{W}.png",
+                        f"samples_step_{current_step:06d}_bucket{bucket_id}_{H}x{W}.png",
                     )
                     _ = make_image_grid(
                         bucket_images[:9],  # Only visualize 9 generations max
