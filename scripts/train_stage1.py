@@ -20,6 +20,7 @@ from src.models.artflow import ArtFlow
 from src.dataset.dataloader_utils import ResolutionBucketSampler, collate_fn
 from src.utils.encode_text import encode_text
 from src.utils.precompute_engine import sample_caption
+from src.utils.vae_codec import get_vae_stats
 from src.flow.paths import FlowMatchingOT
 from src.utils.evaluation import run_evaluation_light
 from transformers.optimization import get_scheduler
@@ -90,12 +91,16 @@ def parse_args():
     parser.add_argument(
         "--eval_interval", type=int, default=1000, help="Run evaluation every N steps"
     )
-    parser.add_argument("--num_eval_samples", type=int, default=16, help="Evaluate on M samples")
-    parser.add_argument("--eval_batch_size", type=int, default=16, help="Batch size used in evaluation")
+    parser.add_argument(
+        "--num_eval_samples", type=int, default=16, help="Evaluate on M samples"
+    )
+    parser.add_argument(
+        "--eval_batch_size", type=int, default=16, help="Batch size used in evaluation"
+    )
 
     # Training Config
     parser.add_argument(
-        "--precomputed_dataset_path",
+        "--dataset_path",
         type=str,
         required=True,
         help="Path to precomputed dataset",
@@ -181,6 +186,9 @@ def parse_args():
         "--single_stream_depth", type=int, default=0, help="Single stream blocks"
     )
     parser.add_argument(
+        "--mlp_ratio", type=float, default=2.67, help="MLP ratio in FeedForward module"
+    )
+    parser.add_argument(
         "--conditioning_scheme",
         type=str,
         default="pure",
@@ -188,10 +196,17 @@ def parse_args():
         help="Conditioning scheme",
     )
     parser.add_argument(
-        "--modulation_share",
+        "--double_stream_modulation",
         type=str,
         default="none",
         choices=["none", "stream", "layer", "all"],
+        help="Modulation sharing",
+    )
+    parser.add_argument(
+        "--single_stream_modulation",
+        type=str,
+        default="none",
+        choices=["none", "layer"],
         help="Modulation sharing",
     )
     parser.add_argument(
@@ -220,6 +235,9 @@ def main():
 
     set_seed(args.seed)
 
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
     if accelerator.is_main_process:
         os.makedirs(args.output_dir, exist_ok=True)
         accelerator.init_trackers(
@@ -234,11 +252,21 @@ def main():
         args.text_encoder_path,
         torch_dtype=torch.bfloat16 if args.mixed_precision == "bf16" else torch.float32,
         device_map=accelerator.device,
+        local_files_only=True,
     )
     text_encoder.eval()
     text_encoder.requires_grad_(False)
 
     processor = AutoProcessor.from_pretrained(args.text_encoder_path)
+
+    # Load VAE Stats
+    accelerator.print(f"Loading VAE Stats from {args.vae_path}")
+    vae_mean, vae_std = get_vae_stats(args.vae_path, device=accelerator.device)
+    if args.mixed_precision == "bf16":
+        vae_mean = vae_mean.to(dtype=torch.bfloat16)
+        vae_std = vae_std.to(dtype=torch.bfloat16)
+    elif args.mixed_precision == "fp16":
+        vae_mean = vae_mean.to(dtype=torch.float16)
 
     # Load Model
     accelerator.print("Initializing ArtFlow Model...")
@@ -247,13 +275,19 @@ def main():
         num_heads=args.num_heads,
         double_stream_depth=args.double_stream_depth,
         single_stream_depth=args.single_stream_depth,
+        mlp_ratio=args.mlp_ratio,
         conditioning_scheme=args.conditioning_scheme,
-        modulation_share=args.modulation_share,
+        double_stream_modulation=args.double_stream_modulation,
+        single_stream_modulation=args.single_stream_modulation,
         ffn_type=args.ffn_type,
         # Default params
         patch_size=2,
         in_channels=16,
         txt_in_features=2048,
+    )
+    # Print model statistics
+    accelerator.print(
+        f"Model params: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}"
     )
 
     # Optimizer
@@ -277,8 +311,8 @@ def main():
     ema_model = deepcopy(model) if args.use_ema else None
 
     # Dataset
-    accelerator.print(f"Loading dataset from {args.precomputed_dataset_path}")
-    dataset = load_from_disk(args.precomputed_dataset_path)
+    accelerator.print(f"Loading dataset from {args.dataset_path}")
+    dataset = load_from_disk(args.dataset_path)
 
     # Sampler & Loader
     sampler = ResolutionBucketSampler(
@@ -331,9 +365,7 @@ def main():
             captions_list = batch["captions"]  # List[List[str]]
 
             # Curriculum Sampling
-            stage = global_step / (
-                args.max_steps * 2
-            )  # for a small model, we want to prioritize learning the easy examples
+            stage = global_step / args.max_steps
             selected_captions = [
                 sample_caption(caps, stage=stage) for caps in captions_list
             ]
@@ -348,6 +380,10 @@ def main():
 
             # 2. Prepare Inputs
             latents = batch["latents"]
+
+            # Normalize latents: z_norm = (z - mean) / std
+            latents = (latents - vae_mean) / vae_std
+
             t = torch.rand(latents.shape[0], device=latents.device)
 
             # Flow Matching
@@ -423,7 +459,7 @@ def main():
                     processor=processor,
                     pooling=(args.conditioning_scheme == "fused"),
                     num_samples=args.num_eval_samples,
-                    batch_size=args.eval_batch_size
+                    batch_size=args.eval_batch_size,
                 )
                 model.train()
 

@@ -348,9 +348,6 @@ class DoubleStreamAttention(nn.Module):
         # Prepare attention mask
         attn_mask = None
         if txt_attention_mask is not None:
-            # Create mask for concatenated sequence [img + txt]
-            B, _ = q.shape[0], q.shape[1]
-
             # Image tokens always have attention
             img_mask = torch.ones(
                 B,
@@ -428,7 +425,9 @@ class DoubleStreamDiTBlock(nn.Module):
                 nn.SiLU(), nn.Linear(c_dim, 3 * dim, bias=True)
             )
         else:
-            raise ValueError(f"Unknown modulation_share strategy: {modulation_share}")
+            raise ValueError(
+                f"Unknown modulation_share strategy for DoubleStreamDiTBlock: {modulation_share}"
+            )
 
         # Attention
         self.norm1_img = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
@@ -537,6 +536,17 @@ class DoubleStreamDiTBlock(nn.Module):
 
         return img_tokens, txt_tokens
 
+    def initialize_weights(self):
+        # AdaLN-zero: Initialize modulation MLP to zero
+        if self.modulation_share == "none":
+            nn.init.constant_(self.modulation_img[-1].weight, 0)
+            nn.init.constant_(self.modulation_img[-1].bias, 0)
+            nn.init.constant_(self.modulation_txt[-1].weight, 0)
+            nn.init.constant_(self.modulation_txt[-1].bias, 0)
+        else:
+            nn.init.constant_(self.modulation[-1].weight, 0)
+            nn.init.constant_(self.modulation[-1].bias, 0)
+
 
 class SingleStreamAttention(nn.Module):
     def __init__(
@@ -555,7 +565,6 @@ class SingleStreamAttention(nn.Module):
         self.scale = self.head_dim**-0.5
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-
         self.q_norm = nn.RMSNorm(self.head_dim, eps=1e-6)
         self.k_norm = nn.RMSNorm(self.head_dim, eps=1e-6)
 
@@ -566,11 +575,14 @@ class SingleStreamAttention(nn.Module):
             scaling_factor=rope_scaling_factor,
         )
 
+        self.proj = nn.Linear(dim, dim)
+
     def forward(
         self,
         x: torch.Tensor,
-        freqs: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
+        img_hw: Tuple[int, int],
+        txt_seq_len: int,
+        txt_attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         B, S, C = x.shape
 
@@ -579,21 +591,53 @@ class SingleStreamAttention(nn.Module):
             .reshape(B, S, 3, self.num_heads, self.head_dim)
             .permute(2, 0, 3, 1, 4)
         )
-        q, k, v = qkv.unbind(0)  # [B, H, S, D]
+        q, k, v = qkv.unbind(0)
 
         q = self.q_norm(q)
         k = self.k_norm(k)
 
-        # Apply RoPE
-        q = apply_rotary_emb(q.transpose(1, 2), freqs).transpose(1, 2)
-        k = apply_rotary_emb(k.transpose(1, 2), freqs).transpose(1, 2)
+        # Need to apply different RoPE to img and txt parts
+        # Assuming x is [img, txt]
+        S_img = img_hw[0] * img_hw[1]
 
-        # Attention
-        x = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=attention_mask, dropout_p=0.0
-        )
+        q_img = q[:, :, :S_img, :]
+        k_img = k[:, :, :S_img, :]
+        q_txt = q[:, :, S_img:, :]
+        k_txt = k[:, :, S_img:, :]
+
+        img_freqs, txt_freqs = self.rope(img_hw, txt_seq_len, x.device)
+
+        q_img = apply_rotary_emb(q_img.transpose(1, 2), img_freqs).transpose(1, 2)
+        k_img = apply_rotary_emb(k_img.transpose(1, 2), img_freqs).transpose(1, 2)
+        q_txt = apply_rotary_emb(q_txt.transpose(1, 2), txt_freqs).transpose(1, 2)
+        k_txt = apply_rotary_emb(k_txt.transpose(1, 2), txt_freqs).transpose(1, 2)
+
+        q = torch.cat([q_img, q_txt], dim=2)
+        k = torch.cat([k_img, k_txt], dim=2)
+
+        # Prepare attention mask
+        attn_mask = None
+        if txt_attention_mask is not None:
+            # Image tokens always have attention
+            img_mask = torch.ones(
+                B,
+                S_img,
+                device=txt_attention_mask.device,
+                dtype=txt_attention_mask.dtype,
+            )
+            full_mask = torch.cat([img_mask, txt_attention_mask], dim=1)
+
+            # Convert to attention mask format [B, 1, 1, S]
+            # Mask : 1 (valid) -> True (attend), 0 (padding) -> False (ignore)
+            attn_mask = (full_mask > 0).unsqueeze(1).unsqueeze(2)
+            attn_mask = attn_mask.to(dtype=torch.bool)
+
+        # Attention with mask
+        x = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, dropout_p=0.0)
 
         x = x.transpose(1, 2).reshape(B, S, C)
+
+        x = self.proj(x)
 
         return x
 
@@ -608,6 +652,7 @@ class SingleStreamDiTBlock(nn.Module):
         qkv_bias: bool = True,
         rope_theta: int = 10000,
         rope_axes_dim: list = [64, 64],
+        modulation_share: str = "none",
         ffn_type: str = "gated",
         rope_scaling_type: str = "none",
         rope_scaling_factor: float = 1.0,
@@ -615,11 +660,26 @@ class SingleStreamDiTBlock(nn.Module):
         super().__init__()
         self.dim = dim
         self.num_heads = num_heads
-        self.mlp_hidden_dim = int(dim * mlp_ratio)
+        self.mlp_ratio = mlp_ratio
+        self.modulation_share = modulation_share
 
-        self.modulation = nn.Sequential(nn.SiLU(), nn.Linear(c_dim, 3 * dim, bias=True))
+        # Modulation
+        if modulation_share == "none":
+            # Separate MSA/MLP -> 6 * dim
+            self.modulation = nn.Sequential(
+                nn.SiLU(), nn.Linear(c_dim, 6 * dim, bias=True)
+            )
+        elif modulation_share == "layer":
+            # Share MSA/MLP -> 3 * dim
+            self.modulation = nn.Sequential(
+                nn.SiLU(), nn.Linear(c_dim, 3 * dim, bias=True)
+            )
+        else:
+            raise ValueError(
+                f"Unknown modulation_share strategy for SingleStreamDiTBlock: {modulation_share}"
+            )
 
-        self.norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
+        self.norm1 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
         self.attn = SingleStreamAttention(
             dim,
             num_heads,
@@ -630,14 +690,16 @@ class SingleStreamDiTBlock(nn.Module):
             rope_scaling_factor=rope_scaling_factor,
         )
 
+        # MLP
+        self.norm2 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
+        mlp_hidden_dim = int(dim * mlp_ratio)
+
         if ffn_type == "gated":
-            self.mlp = GatedFeedForward(dim, self.mlp_hidden_dim)
+            self.mlp = GatedFeedForward(dim, mlp_hidden_dim)
         elif ffn_type == "standard":
-            self.mlp = StandardFeedForward(dim, self.mlp_hidden_dim)
+            self.mlp = StandardFeedForward(dim, mlp_hidden_dim)
         else:
             raise ValueError(f"Unknown ffn_type: {ffn_type}")
-
-        self.proj_out = nn.Linear(dim + dim, dim)
 
     def forward(
         self,
@@ -648,47 +710,48 @@ class SingleStreamDiTBlock(nn.Module):
         txt_seq_len: int,
         txt_attention_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        B, S_img, C = img_tokens.shape
-        _, S_txt, _ = txt_tokens.shape
+        # Modulation
+        # c: [B, c_dim]
+        if self.modulation_share == "none":
+            (
+                shift_msa,
+                scale_msa,
+                gate_msa,
+                shift_mlp,
+                scale_mlp,
+                gate_mlp,
+            ) = self.modulation(c).chunk(6, dim=1)
+        elif self.modulation_share == "layer":
+            params = self.modulation(c)
+            shift, scale, gate = params.chunk(3, dim=1)
+            shift_msa = shift_mlp = shift
+            scale_msa = scale_mlp = scale
+            gate_msa = gate_mlp = gate
 
+        # Concatenate for shared MSA/MLP processing
+        S_img = img_tokens.shape[1]
+        S_txt = txt_tokens.shape[1]
         x = torch.cat([img_tokens, txt_tokens], dim=1)
 
-        # Prepare RoPE frequencies
-        img_freqs, txt_freqs = self.attn.rope(img_hw, txt_seq_len, x.device)
-        freqs = torch.cat([img_freqs, txt_freqs], dim=0)
+        # 1. Attention Block
+        x_norm = modulate(self.norm1(x), shift_msa, scale_msa)
 
-        # Modulation
-        shift_msa, scale_msa, gate_msa = self.modulation(c).chunk(3, dim=1)
-        norm_x = modulate(self.norm(x), shift_msa, scale_msa)
+        x_attn = self.attn(x_norm, img_hw, txt_seq_len, txt_attention_mask)
 
-        # Prepare attention mask
-        attn_mask = None
-        if txt_attention_mask is not None:
-            img_mask = torch.ones(
-                B,
-                S_img,
-                device=txt_attention_mask.device,
-                dtype=txt_attention_mask.dtype,
-            )
-            full_mask = torch.cat([img_mask, txt_attention_mask], dim=1)
-            attn_mask = (full_mask > 0).unsqueeze(1).unsqueeze(2)
-            attn_mask = attn_mask.to(dtype=torch.bool)
+        x = x + gate_msa.unsqueeze(1) * x_attn
 
-        # Attention
-        attn_out = self.attn(norm_x, freqs, attn_mask)
+        # 2. MLP Block
+        x_norm = modulate(self.norm2(x), shift_mlp, scale_mlp)
+        x = x + gate_mlp.unsqueeze(1) * self.mlp(x_norm)
 
-        # MLP
-        mlp_out = self.mlp(norm_x)
-
-        # Combine
-        hidden = torch.cat([attn_out, mlp_out], dim=-1)
-        out = gate_msa.unsqueeze(1) * self.proj_out(hidden)
-        x = x + out
-
-        img_tokens = x[:, :S_img, :]
-        txt_tokens = x[:, S_img:, :]
+        img_tokens, txt_tokens = x.split([S_img, S_txt], dim=1)
 
         return img_tokens, txt_tokens
+
+    def initialize_weights(self):
+        # AdaLN-zero: Initialize modulation MLP to zero
+        nn.init.constant_(self.modulation[-1].weight, 0)
+        nn.init.constant_(self.modulation[-1].bias, 0)
 
 
 class UnconditionalAttention(nn.Module):
@@ -803,6 +866,11 @@ class UnconditionalDiTBlock(nn.Module):
         x = x + gate_mlp.unsqueeze(1) * mlp_out
 
         return x
+
+    def initialize_weights(self):
+        # AdaLN-zero: Initialize modulation MLP to zero
+        nn.init.constant_(self.modulation[-1].weight, 0)
+        nn.init.constant_(self.modulation[-1].bias, 0)
 
 
 if __name__ == "__main__":

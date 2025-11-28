@@ -48,7 +48,8 @@ class ArtFlow(nn.Module):
         mlp_ratio: float = 2.67,
         conditioning_scheme: str = "pure",
         qkv_bias: bool = True,
-        modulation_share: str = "none",
+        double_stream_modulation: str = "none",
+        single_stream_modulation: str = "none",
         ffn_type: str = "gated",
         rope_scaling_type: str = "none",
         rope_scaling_factor: float = 1.0,
@@ -105,7 +106,7 @@ class ArtFlow(nn.Module):
                     mlp_ratio=mlp_ratio,
                     qkv_bias=qkv_bias,
                     rope_axes_dim=rope_axes_dim,
-                    modulation_share=modulation_share,
+                    modulation_share=double_stream_modulation,
                     ffn_type=ffn_type,
                     rope_scaling_type=rope_scaling_type,
                     rope_scaling_factor=rope_scaling_factor,
@@ -122,6 +123,7 @@ class ArtFlow(nn.Module):
                     mlp_ratio=mlp_ratio,
                     qkv_bias=qkv_bias,
                     rope_axes_dim=rope_axes_dim,
+                    modulation_share=single_stream_modulation,
                     ffn_type=ffn_type,
                     rope_scaling_type=rope_scaling_type,
                     rope_scaling_factor=rope_scaling_factor,
@@ -146,6 +148,15 @@ class ArtFlow(nn.Module):
                     nn.init.constant_(module.bias, 0)
 
         self.apply(_basic_init)
+
+        # Initialize blocks (AdaLN-zero)
+        for block in self.blocks:
+            if hasattr(block, "initialize_weights"):
+                block.initialize_weights()
+
+        # Zero-out output layer
+        nn.init.constant_(self.final_layer[1].weight, 0)
+        nn.init.constant_(self.final_layer[1].bias, 0)
 
     def unpatchify(self, x: torch.Tensor, h: int, w: int) -> torch.Tensor:
         c = self.out_channels
