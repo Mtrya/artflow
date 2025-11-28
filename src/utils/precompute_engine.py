@@ -46,10 +46,16 @@ def clean_caption(text: str) -> str:
         text = text[len("The image shows a painting of ") :]
     if text.startswith("The image shows a drawing of "):
         text = text[len("The image shows a drawing of ") :]
+    if text.startswith("The image shows "):
+        text = text[len("The image shows ") :]
 
     text = text.replace('"""', "").replace("'''", "")
 
-    return text.strip()
+    return text.strip().capitalize()
+
+
+def format_artist_name(text: str) -> str:
+    return text.replace("-", " ").title()
 
 
 def sample_caption(
@@ -306,28 +312,36 @@ def precompute(
             # Gather items from caption fields
             current_captions = []
             for field in caption_fields:
-                if (
-                    field in batch
-                    and batch[field][original_idx] is not None
-                    and field == "human_caption_hq"
-                ):
-                    val = batch[field][original_idx]
-                    val = val[1]["value"]
+                if field not in batch or batch[field][original_idx] is None:
+                    continue
+
+                val = batch[field][original_idx]
+                processed_items = []
+
+                if field == "human_caption_hq":
+                    item = val[1]["value"]
+                    if text_fn and isinstance(item, str):
+                        processed_items.append(text_fn(item))
+                    elif isinstance(item, str):
+                        processed_items.append(item)
+                elif field == "artist":
                     if text_fn:
                         val = text_fn(val)
-                    current_captions.append(val)
-                elif field in batch and batch[field][original_idx] is not None:
-                    val = batch[field][original_idx]
-                    if isinstance(val, str):
-                        if text_fn:
-                            val = text_fn(val)
-                        current_captions.append(val)
-                    elif isinstance(val, list):
-                        for item in val:
-                            if isinstance(item, str):
-                                if text_fn:
-                                    item = text_fn(item)
-                                current_captions.append(item)
+                    processed_items.append(format_artist_name(val))
+                elif isinstance(val, str):
+                    if text_fn:
+                        processed_items.append(text_fn(val))
+                    else:
+                        processed_items.append(val)
+                elif isinstance(val, list):
+                    for item in val:
+                        if isinstance(item, str):
+                            if text_fn:
+                                processed_items.append(text_fn(item))
+                            else:
+                                processed_items.append(item)
+
+                current_captions.extend(processed_items)
 
             valid_captions_list.append(current_captions)
 
