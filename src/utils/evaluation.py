@@ -17,7 +17,6 @@ import sys
 import numpy as np
 import gc
 import math
-from PIL import Image
 from accelerate import Accelerator
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
@@ -34,6 +33,7 @@ def calculate_fid(
     fake_images: torch.Tensor,
     feature: int = 2048,
     device: Optional[torch.device] = None,
+    batch_size: int = 32,
 ) -> float:
     """
     Calculate FID score between real and fake images.
@@ -43,6 +43,7 @@ def calculate_fid(
         fake_images: Tensor of shape [B, C, H, W], values in [0, 1] or [0, 255] (uint8)
         feature: Inception feature dimension (64, 192, 768, 2048)
         device: Device to run calculation on
+        batch_size: Batch size for processing images to avoid OOM
 
     Returns:
         FID score (float)
@@ -52,21 +53,21 @@ def calculate_fid(
 
     fid = FrechetInceptionDistance(feature=feature).to(device)
 
-    # Ensure images are uint8 for torchmetrics FID
-    if real_images.dtype != torch.uint8:
-        if real_images.max() <= 1.0:
-            real_images = (real_images * 255).to(torch.uint8)
-        else:
-            real_images = real_images.to(torch.uint8)
+    def update_metric(images, is_real):
+        nonlocal fid
+        for i in range(0, len(images), batch_size):
+            batch = images[i : i + batch_size]
+            # Ensure images are uint8 for torchmetrics FID
+            if batch.dtype != torch.uint8:
+                if batch.max() <= 1.0:
+                    batch = (batch * 255).to(torch.uint8)
+                else:
+                    batch = batch.to(torch.uint8)
+            batch = batch.to(device)
+            fid.update(batch, real=is_real)
 
-    if fake_images.dtype != torch.uint8:
-        if fake_images.max() <= 1.0:
-            fake_images = (fake_images * 255).to(torch.uint8)
-        else:
-            fake_images = fake_images.to(torch.uint8)
-
-    fid.update(real_images, real=True)
-    fid.update(fake_images, real=False)
+    update_metric(real_images, True)
+    update_metric(fake_images, False)
 
     score = fid.compute().item()
 
@@ -84,6 +85,7 @@ def calculate_kid(
     feature: int = 2048,
     subset_size: int = 50,
     device: Optional[torch.device] = None,
+    batch_size: int = 32,
 ) -> float:
     """
     Calculate KID score between real and fake images.
@@ -94,6 +96,7 @@ def calculate_kid(
         feature: Inception feature dimension (64, 192, 768, 2048)
         subset_size: Number of samples to use for the polynomial kernel estimation
         device: Device to run calculation on
+        batch_size: Batch size for processing images to avoid OOM
 
     Returns:
         KID score (float)
@@ -108,21 +111,21 @@ def calculate_kid(
 
     kid = KernelInceptionDistance(feature=feature, subset_size=subset_size).to(device)
 
-    # Ensure images are uint8 for torchmetrics KID
-    if real_images.dtype != torch.uint8:
-        if real_images.max() <= 1.0:
-            real_images = (real_images * 255).to(torch.uint8)
-        else:
-            real_images = real_images.to(torch.uint8)
+    def update_metric(images, is_real):
+        nonlocal kid
+        for i in range(0, len(images), batch_size):
+            batch = images[i : i + batch_size]
+            # Ensure images are uint8 for torchmetrics KID
+            if batch.dtype != torch.uint8:
+                if batch.max() <= 1.0:
+                    batch = (batch * 255).to(torch.uint8)
+                else:
+                    batch = batch.to(torch.uint8)
+            batch = batch.to(device)
+            kid.update(batch, real=is_real)
 
-    if fake_images.dtype != torch.uint8:
-        if fake_images.max() <= 1.0:
-            fake_images = (fake_images * 255).to(torch.uint8)
-        else:
-            fake_images = fake_images.to(torch.uint8)
-
-    kid.update(real_images, real=True)
-    kid.update(fake_images, real=False)
+    update_metric(real_images, True)
+    update_metric(fake_images, False)
 
     # KID returns (mean, std), we take the mean
     score = kid.compute()[0].item()
@@ -140,6 +143,7 @@ def calculate_clip_score(
     prompts: Union[str, List[str]],
     model_name_or_path: str = "openai/clip-vit-base-patch16",
     device: Optional[torch.device] = None,
+    batch_size: int = 32,
 ) -> float:
     """
     Calculate CLIP score for images and prompts.
@@ -149,6 +153,7 @@ def calculate_clip_score(
         prompts: Single string or list of strings matching batch size
         model_name_or_path: CLIP model name
         device: Device to run calculation on
+        batch_size: Batch size for processing images to avoid OOM
 
     Returns:
         CLIP score (float)
@@ -158,18 +163,24 @@ def calculate_clip_score(
 
     metric = CLIPScore(model_name_or_path=model_name_or_path).to(device)
 
-    # Ensure images are uint8 [0, 255] for CLIPScore
-    if images.dtype != torch.uint8:
-        if images.max() <= 1.0:
-            images = (images * 255).to(torch.uint8)
-        else:
-            images = images.to(torch.uint8)
-
     if isinstance(prompts, str):
         prompts = [prompts] * images.shape[0]
 
-    score = metric(images, prompts)
+    for i in range(0, len(images), batch_size):
+        img_batch = images[i : i + batch_size]
+        prompt_batch = prompts[i : i + batch_size]
 
+        # Ensure images are uint8 [0, 255] for CLIPScore
+        if img_batch.dtype != torch.uint8:
+            if img_batch.max() <= 1.0:
+                img_batch = (img_batch * 255).to(torch.uint8)
+            else:
+                img_batch = img_batch.to(torch.uint8)
+
+        img_batch = img_batch.to(device)
+        metric.update(img_batch, prompt_batch)
+
+    score = metric.compute()
     val = score.item()
 
     # Cleanup
@@ -282,6 +293,13 @@ def run_evaluation_uncond(
         args.vae_path, torch_dtype=torch.bfloat16, local_files_only=True
     ).to(accelerator.device)
 
+    # Get VAE stats
+    from .vae_codec import get_vae_stats
+
+    vae_mean, vae_std = get_vae_stats(args.vae_path, device=accelerator.device)
+    vae_mean = vae_mean.to(dtype=torch.bfloat16)
+    vae_std = vae_std.to(dtype=torch.bfloat16)
+
     with torch.no_grad():
         # --- 1. Generate Samples ---
         sample_z0 = torch.randn(
@@ -322,6 +340,10 @@ def run_evaluation_uncond(
             )
 
         samples = samples.to(dtype=torch.bfloat16)
+
+        # Denormalize
+        samples = samples * vae_std + vae_mean
+
         samples = samples.unsqueeze(2)
         images = vae.decode(samples).sample
         images = images.squeeze(2)
@@ -422,6 +444,10 @@ def run_evaluation_uncond(
             decoded_intermediates = []
             for lat in intermediates:
                 lat = lat.to(accelerator.device).to(dtype=torch.bfloat16)
+
+                # Denormalize
+                lat = lat * vae_std + vae_mean
+
                 lat = lat.unsqueeze(2)
                 img = vae.decode(lat).sample.squeeze(2)
                 decoded_intermediates.append(img.cpu())
@@ -462,7 +488,8 @@ def run_evaluation_light(
     num_samples: int = 16,
     batch_size: int = 16,
 ) -> Dict[str, float]:
-    """Run the fast validation loop over the light-eval split.
+    """
+    Run the fast validation loop over the light-eval split.
 
     The routine loads a small cached dataset, decodes latents into real images,
     groups prompts by the five hard-coded resolution buckets, and for each
@@ -490,14 +517,11 @@ def run_evaluation_light(
         Dictionary with ``fid``, ``kid`` and ``clip_score`` when computed.
     """
     print(f"Running light evaluation at step {current_step}...")
-    # Add parent directory to path
+    # Imports
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
     from flow.solvers import sample_ode
-
-    try:
-        from encode_text import encode_text
-    except ImportError:
-        from .encode_text import encode_text
+    from .encode_text import encode_text
+    from .vae_codec import get_vae_stats
     from diffusers import AutoencoderKLQwenImage
     from datasets import load_from_disk
 
@@ -506,6 +530,11 @@ def run_evaluation_light(
     vae = AutoencoderKLQwenImage.from_pretrained(
         vae_path, torch_dtype=torch.bfloat16, local_files_only=True
     ).to(accelerator.device)
+
+    # Get VAE stats for denormalization
+    vae_mean, vae_std = get_vae_stats(vae_path, device=accelerator.device)
+    vae_mean = vae_mean.to(dtype=torch.bfloat16)
+    vae_std = vae_std.to(dtype=torch.bfloat16)
 
     metrics = {}
     num_processes = getattr(accelerator, "num_processes", 1)
@@ -523,6 +552,16 @@ def run_evaluation_light(
         5: (224, 288),
     }
 
+    def format_prompt_caption(prompts: List[str], limit: int = 32) -> str:
+        if not prompts:
+            return ""
+        trimmed = [p.replace("\n", " ").strip() for p in prompts[:limit]]
+        lines = [f"{idx + 1}. {text}" for idx, text in enumerate(trimmed)]
+        remaining = len(prompts) - len(trimmed)
+        if remaining > 0:
+            lines.append(f"... (+{remaining} more)")
+        return "\n\n".join(lines)
+
     with torch.no_grad():
         real_images: List[torch.Tensor] = []
         bucket_prompts: Dict[int, List[str]] = {bid: [] for bid in bucket_resolutions}
@@ -531,7 +570,9 @@ def run_evaluation_light(
             dataset = load_from_disk(dataset_path)
             if num_samples is not None:
                 num_eval = min(num_samples, len(dataset))
-                dataset = dataset.select(range(num_eval))
+                end_idx = current_step % (len(dataset) - num_eval) + num_eval
+                indices = list(range(end_idx - num_eval, end_idx))
+                dataset = dataset.select(indices)
 
             for item in dataset:
                 latents = (
@@ -545,10 +586,7 @@ def run_evaluation_light(
                 real_images.append(img.cpu().float())
 
                 captions_list = item.get("captions", "")
-                if isinstance(captions_list, list) and len(captions_list) > 0:
-                    prompt = captions_list[0]
-                else:
-                    prompt = str(captions_list)
+                prompt = captions_list[0]
 
                 bucket_id = int(item.get("resolution_bucket_id", 1) or 1)
                 if bucket_id not in bucket_resolutions:
@@ -619,7 +657,12 @@ def run_evaluation_light(
                             model_fn, sample_z0, steps=50, t_start=0.0, t_end=1.0
                         )
 
-                    samples = samples.to(dtype=torch.bfloat16).unsqueeze(2)
+                    samples = samples.to(dtype=torch.bfloat16)
+
+                    # Denormalize: z = z_norm * std + mean
+                    samples = samples * vae_std + vae_mean
+
+                    samples = samples.unsqueeze(2)
                     decoded = vae.decode(samples).sample.squeeze(2)
                     decoded = torch.clamp((decoded + 1) / 2, 0, 1)
 
@@ -663,6 +706,7 @@ def run_evaluation_light(
                         generated_prompts.extend(prompts)
 
                 bucket_grid_paths = []
+                bucket_grid_captions: List[str] = []
                 for bucket_id, image_batches in bucket_fake_images.items():
                     if not image_batches:
                         continue
@@ -673,19 +717,28 @@ def run_evaluation_light(
                         f"samples_step_{round(current_step / 1000)}k_bucket{bucket_id}_{H}x{W}.png",
                     )
                     _ = make_image_grid(
-                        bucket_images,
+                        bucket_images[:9],  # Only visualize 9 generations max
                         save_path=grid_path,
                         normalize=True,
                         value_range=(0, 1),
                     )
                     print(f"Saved samples to {grid_path}")
                     bucket_grid_paths.append(grid_path)
-
-                for idx in range(len(bucket_grid_paths)):
-                    accelerator.log(
-                        {f"samples_{idx}": swanlab.Image(bucket_grid_paths[idx])},
-                        step=current_step,
+                    prompts_for_bucket = bucket_prompts.get(bucket_id, [])
+                    prompts_for_bucket = prompts_for_bucket[: bucket_images.shape[0]]
+                    bucket_grid_captions.append(
+                        format_prompt_caption(prompts_for_bucket[:9])
                     )
+
+                for idx, (path, caption) in enumerate(
+                    zip(bucket_grid_paths, bucket_grid_captions)
+                ):
+                    media = (
+                        swanlab.Image(path, caption=caption)
+                        if caption
+                        else swanlab.Image(path)
+                    )
+                    accelerator.log({f"samples_{idx}": media}, step=current_step)
 
                 if real_images and fake_images_list:
                     real_processed = [
@@ -718,23 +771,32 @@ def run_evaluation_light(
                         ]
                     )
 
-                    real_resized = real_resized.clamp(0, 1).to(accelerator.device)
-                    fake_resized = fake_resized.clamp(0, 1).to(accelerator.device)
+                    real_resized = real_resized.clamp(0, 1)
+                    fake_resized = fake_resized.clamp(0, 1)
 
                     fid_score = calculate_fid(
-                        real_resized, fake_resized, device=accelerator.device
+                        real_resized,
+                        fake_resized,
+                        device=accelerator.device,
+                        batch_size=batch_size,
                     )
                     metrics["fid"] = fid_score
                     print(f"Step {current_step} | FID: {fid_score:.4f}")
 
                     kid_score = calculate_kid(
-                        real_resized, fake_resized, device=accelerator.device
+                        real_resized,
+                        fake_resized,
+                        device=accelerator.device,
+                        batch_size=batch_size,
                     )
                     metrics["kid"] = kid_score
                     print(f"Step {current_step} | KID: {kid_score:.4f}")
 
                     clip_score = calculate_clip_score(
-                        fake_resized, generated_prompts, device=accelerator.device
+                        fake_resized,
+                        generated_prompts,
+                        device=accelerator.device,
+                        batch_size=batch_size,
                     )
                     metrics["clip_score"] = clip_score
                     print(f"Step {current_step} | CLIP Score: {clip_score:.4f}")
@@ -760,19 +822,18 @@ def run_evaluation_light(
 def run_evaluation_heavy(
     checkpoint_path: str,
     model_config: Dict[str, Any],
-    dataset_path: str,
     vae_path: str,
     text_encoder_path: str,
     pooling: bool,
     output_dir: str,
-    sample_ode_fn: Any,
+    dataset_path: str = "./precomputed_dataset/heavy-eval@256p",
     num_fid_samples: int = 2000,
     num_clip_samples: int = 2000,
     batch_size: int = 32,
     device: str = "cuda:0",
 ) -> Dict[str, float]:
     """
-    Large-scale evaluation for offline use.
+    Run the large-scale validation loop over the heavy-eval split.
 
     Args:
         checkpoint_path: Path to model checkpoint
@@ -792,20 +853,17 @@ def run_evaluation_heavy(
         Dictionary of metrics
     """
     print(f"Running heavy evaluation on {checkpoint_path}...")
-    os.makedirs(output_dir, exist_ok=True)
+    # Imports
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-    # Import here
-    try:
-        from .encode_text import encode_text
-        from ..models.artflow import ArtFlow
-        from ..dataset.dataloader_utils import ResolutionBucketSampler
-    except ImportError:
-        from encode_text import encode_text
-        import sys
+    from ..flow.solvers import sample_ode
+    from .encode_text import encode_text
+    from ..models.artflow import ArtFlow
+    from ..dataset.dataloader_utils import ResolutionBucketSampler
 
-        sys.path.append(os.path.join(os.path.dirname(__file__), "../.."))
-        from src.models.artflow import ArtFlow
-        from src.dataset.dataloader_utils import ResolutionBucketSampler
+    from datasets import load_from_disk
+    from diffusers import AutoencoderKLQwenImage
+    from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 
     # 1. Load Models
     print("Loading models...")
@@ -819,15 +877,9 @@ def run_evaluation_heavy(
     model.to(device)
     model.eval()
 
-    # Load VAE
-    from diffusers import AutoencoderKLQwenImage
-
     vae = AutoencoderKLQwenImage.from_pretrained(
         vae_path, torch_dtype=torch.bfloat16, local_files_only=True
     ).to(device)
-
-    # Load Text Encoder
-    from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 
     text_encoder = Qwen3VLForConditionalGeneration.from_pretrained(
         text_encoder_path,
@@ -839,8 +891,6 @@ def run_evaluation_heavy(
 
     # 2. Load Dataset
     print(f"Loading dataset from {dataset_path}...")
-    from datasets import load_from_disk
-
     dataset = load_from_disk(dataset_path)
 
     # Determine max samples needed
@@ -871,71 +921,32 @@ def run_evaluation_heavy(
     real_images_list = []
     fake_images_list = []
 
-    # Check if we can use ResolutionBucketSampler
-    has_buckets = "resolution_bucket_id" in dataset.column_names
-    if has_buckets:
-        print("Using ResolutionBucketSampler for variable resolution generation.")
-        sampler = ResolutionBucketSampler(dataset, batch_size=batch_size)
-        dataloader = DataLoader(
-            dataset, batch_sampler=sampler, num_workers=4, pin_memory=True
-        )
-    else:
-        print("No resolution buckets found. Resizing all to 256x256.")
-        dataloader = DataLoader(
-            dataset, batch_size=batch_size, shuffle=False, num_workers=4
-        )
+    print("Using ResolutionBucketSampler for variable resolution generation.")
+    sampler = ResolutionBucketSampler(dataset, batch_size=batch_size)
+    dataloader = DataLoader(
+        dataset, batch_sampler=sampler, num_workers=4, pin_memory=True
+    )
 
     with torch.no_grad():
         for i, batch in enumerate(tqdm(dataloader, desc="Generating")):
             # Get prompts
-            if "caption" in batch:
-                prompts = batch["caption"]
-            elif "text" in batch:
-                prompts = batch["text"]
-            elif "captions" in batch:
-                # Handle list of captions (pick first)
-                prompts = [
-                    c[0] if isinstance(c, list) and len(c) > 0 else str(c)
-                    for c in batch["captions"]
-                ]
-            else:
-                prompts = [""] * len(batch["image"])
+            prompts = [c[0] for c in batch["captions"]]
 
             all_prompts.extend(prompts)
 
-            # Handle Real Images
-            # If we have 'image' column (PIL)
-            if "image" in batch:
-                imgs = batch["image"]
-                if isinstance(imgs, list):
-                    # Convert PIL to tensor
-                    real_imgs = []
-                    for img in imgs:
-                        if not has_buckets:
-                            img = img.resize((256, 256), Image.BICUBIC)
-                        real_imgs.append(
-                            torchvision.transforms.functional.to_tensor(img)
-                        )
-                    real_imgs = torch.stack(real_imgs)
-                else:
-                    real_imgs = imgs
-            elif "latents" in batch:
-                # If we have latents, decode them to get real images
-                latents = batch["latents"].to(device).to(torch.bfloat16)
-                if latents.ndim == 3:
-                    latents = latents.unsqueeze(1)  # Add channel dim if missing
+            # Decode latents
+            latents = batch["latents"].to(device).to(torch.bfloat16)
+            if latents.ndim == 3:
+                latents = latents.unsqueeze(1)  # Add channel dim if missing
 
-                # VAE decode expects [B, C, H, W] or [B, C, 1, H, W] depending on VAE
-                # Based on run_evaluation_uncond, it uses unsqueeze(2)
-                latents = latents.unsqueeze(2)
-                real_imgs = vae.decode(latents).sample.squeeze(2)
-                # Normalize to [0, 1]
-                real_imgs = (real_imgs + 1) / 2
-                real_imgs = torch.clamp(real_imgs, 0, 1)
-                real_imgs = real_imgs.cpu()
-            else:
-                # Fallback
-                real_imgs = torch.zeros(len(prompts), 3, 256, 256)
+            # VAE decode expects [B, C, H, W] or [B, C, 1, H, W] depending on VAE
+            # Based on run_evaluation_uncond, it uses unsqueeze(2)
+            latents = latents.unsqueeze(2)
+            real_imgs = vae.decode(latents).sample.squeeze(2)
+            # Normalize to [0, 1]
+            real_imgs = (real_imgs + 1) / 2
+            real_imgs = torch.clamp(real_imgs, 0, 1)
+            real_imgs = real_imgs.cpu()
 
             real_images_list.append(real_imgs)
 
@@ -944,16 +955,9 @@ def run_evaluation_heavy(
                 prompts, text_encoder, processor, pooling
             )
 
-            # Determine resolution
-            if has_buckets and "latents" in batch:
-                # Use latent shape
-                _, _, H_lat, W_lat = batch["latents"].shape
-                H, W = H_lat * 8, W_lat * 8
-            elif has_buckets and "image" in batch:
-                # Use first image shape
-                W, H = batch["image"][0].size
-            else:
-                H, W = 256, 256
+            # Determine resolution and use latent shape
+            _, _, H_lat, W_lat = batch["latents"].shape
+            H, W = H_lat * 8, W_lat * 8
 
             sample_z0 = torch.randn(len(prompts), 16, H // 8, W // 8, device=device)
 
@@ -964,9 +968,7 @@ def run_evaluation_heavy(
                     t_tensor = t
                 return model(x, t_tensor, txt, txt_pooled, txt_mask)
 
-            samples = sample_ode_fn(
-                model_fn, sample_z0, steps=50, t_start=0.0, t_end=1.0
-            )
+            samples = sample_ode(model_fn, sample_z0, steps=50, t_start=0.0, t_end=1.0)
 
             # Decode
             samples = samples.to(dtype=torch.bfloat16)
@@ -1028,56 +1030,35 @@ def run_evaluation_heavy(
         print(
             f"Calculating FID on {min(len(real_images_all), num_fid_samples)} samples..."
         )
-        fid = FrechetInceptionDistance(feature=2048).to(device)
-
         # Select subset
         real_subset = real_images_all[:num_fid_samples]
         fake_subset = fake_images_all[:num_fid_samples]
 
-        # Update in batches
-        eval_bs = 50
-        for i in range(0, len(real_subset), eval_bs):
-            real_batch = real_subset[i : i + eval_bs].to(device)
-            real_batch = (real_batch * 255).to(torch.uint8)
-            fid.update(real_batch, real=True)
-
-        for i in range(0, len(fake_subset), eval_bs):
-            fake_batch = fake_subset[i : i + eval_bs].to(device)
-            fake_batch = (fake_batch * 255).to(torch.uint8)
-            fid.update(fake_batch, real=False)
-
-        fid_score = fid.compute().item()
+        fid_score = calculate_fid(
+            real_subset,
+            fake_subset,
+            device=device,
+            batch_size=batch_size,
+        )
         print(f"FID: {fid_score:.4f}")
         metrics["fid"] = fid_score
-
-        del fid
 
     # CLIP Score
     if num_clip_samples > 0:
         print(
             f"Calculating CLIP Score on {min(len(fake_images_all), num_clip_samples)} samples..."
         )
-        clip_metric = CLIPScore(model_name_or_path="openai/clip-vit-base-patch16").to(
-            device
-        )
-        clip_scores = []
-
         fake_subset = fake_images_all[:num_clip_samples]
         prompts_subset = all_prompts[:num_clip_samples]
 
-        for i in range(0, len(fake_subset), eval_bs):
-            fake_batch = fake_subset[i : i + eval_bs].to(device)
-            fake_batch = (fake_batch * 255).to(torch.uint8)
-            batch_prompts = prompts_subset[i : i + eval_bs]
-
-            score = clip_metric(fake_batch, batch_prompts)
-            clip_scores.append(score.item())
-
-        avg_clip_score = sum(clip_scores) / len(clip_scores) if clip_scores else 0.0
-        print(f"CLIP Score: {avg_clip_score:.4f}")
-        metrics["clip_score"] = avg_clip_score
-
-        del clip_metric
+        clip_score = calculate_clip_score(
+            fake_subset,
+            prompts_subset,
+            device=device,
+            batch_size=batch_size,
+        )
+        print(f"CLIP Score: {clip_score:.4f}")
+        metrics["clip_score"] = clip_score
 
     metrics["num_samples"] = num_samples
     metrics["num_fid_samples"] = num_fid_samples

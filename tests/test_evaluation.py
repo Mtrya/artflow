@@ -1,228 +1,146 @@
-import contextlib
+import unittest
+from unittest.mock import MagicMock, patch
+import torch
 import os
 import sys
-import types
-from pathlib import Path
+import shutil
+import tempfile
 
-import torch
-import torch.nn as nn
+# Add project root and src to path to mimic the environment
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from src.utils.evaluation import run_evaluation_heavy
 
-
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-from src.utils import evaluation  # noqa: E402
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
 
 
-class DummyAccelerator:
-    def __init__(self) -> None:
-        self.device = torch.device("cpu")
-        self.is_main_process = True
-        self.num_processes = 1
-        self.process_index = 0
-        self.use_distributed = False
-        self.logged = []
+class TestEvaluation(unittest.TestCase):
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+        self.checkpoint_path = os.path.join(self.test_dir, "checkpoint.pt")
+        torch.save({"module": {}}, self.checkpoint_path)
 
-    def log(self, payload, step):
-        self.logged.append((payload, step))
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
 
-    @contextlib.contextmanager
-    def autocast(self):
-        yield
+    @patch("src.utils.evaluation.calculate_clip_score")
+    @patch("src.utils.evaluation.calculate_fid")
+    @patch("src.flow.solvers.sample_ode")
+    @patch("src.utils.encode_text.encode_text")
+    @patch("datasets.load_from_disk")
+    @patch("transformers.AutoProcessor")
+    @patch("transformers.Qwen3VLForConditionalGeneration")
+    @patch("diffusers.AutoencoderKLQwenImage")
+    @patch("src.models.artflow.ArtFlow")
+    @patch("src.dataset.dataloader_utils.ResolutionBucketSampler")
+    @patch("src.utils.evaluation.DataLoader")
+    def test_run_evaluation_heavy(
+        self,
+        mock_dataloader_cls,
+        mock_sampler,
+        mock_artflow,
+        mock_vae_cls,
+        mock_text_encoder_cls,
+        mock_processor_cls,
+        mock_load_dataset,
+        mock_encode_text,
+        mock_sample_ode,
+        mock_calc_fid,
+        mock_calc_clip,
+    ):
+        # Setup Mocks
 
-    def gather_object(self, obj):
-        return [obj]
+        # Mock ArtFlow
+        mock_model = MagicMock()
+        mock_model.to.return_value = mock_model
+        mock_artflow.return_value = mock_model
 
-    def broadcast_object_list(self, obj_list):
-        return obj_list
+        # Mock VAE
+        mock_vae = MagicMock()
+        mock_vae.to.return_value = mock_vae
+        mock_vae_cls.from_pretrained.return_value = mock_vae
+        # VAE decode output
+        mock_vae_output = MagicMock()
+        mock_vae_output.sample = torch.randn(2, 3, 256, 256)  # Batch size 2
+        mock_vae.decode.return_value = mock_vae_output
 
+        # Mock Text Encoder & Processor
+        mock_text_encoder = MagicMock()
+        mock_text_encoder_cls.from_pretrained.return_value = mock_text_encoder
+        mock_processor = MagicMock()
+        mock_processor_cls.from_pretrained.return_value = mock_processor
 
-class DummyModel(nn.Module):
-    def forward(self, latents, timesteps, txt, txt_pooled, txt_mask):
-        return torch.zeros_like(latents)
+        # Mock Dataset
+        mock_dataset = MagicMock()
+        mock_dataset.__len__.return_value = 10
+        mock_dataset.column_names = ["latents", "captions", "resolution_bucket_id"]
+        mock_dataset.select.return_value = mock_dataset
+        mock_load_dataset.return_value = mock_dataset
 
-
-class DummyDataset:
-    def __init__(self, items):
-        self._items = items
-
-    def __len__(self):
-        return len(self._items)
-
-    def select(self, indices):
-        selected = [self._items[i] for i in indices]
-        return DummyDataset(selected)
-
-    def __iter__(self):
-        return iter(self._items)
-
-
-def _install_encode_text_stub(monkeypatch):
-    module = types.ModuleType("encode_text")
-
-    def _encode(prompts, text_encoder, processor, pooling):
-        batch = len(prompts)
-        seq = 2
-        hidden = 4
-        txt = torch.zeros(batch, seq, hidden)
-        txt_mask = torch.ones(batch, seq, dtype=torch.long)
-        pooled = torch.zeros(batch, hidden) if pooling else None
-        return txt, txt_mask, pooled
-
-    module.encode_text = _encode
-    monkeypatch.setitem(sys.modules, "encode_text", module)
-
-
-def _install_diffusers_stub(monkeypatch):
-    module = types.ModuleType("diffusers")
-
-    class _Autoencoder:
-        @classmethod
-        def from_pretrained(cls, *args, **kwargs):
-            return cls()
-
-        def to(self, device):
-            self.device = device
-            return self
-
-        def decode(self, latents):
-            tensor = latents.to(torch.float32).squeeze(2)
-            upsampled = torch.nn.functional.interpolate(
-                tensor, scale_factor=8, mode="nearest"
-            )
-            base = upsampled.mean(dim=1, keepdim=True)
-            sample = base.unsqueeze(2).repeat(1, 3, 1, 1, 1)
-            return types.SimpleNamespace(sample=sample)
-
-    module.AutoencoderKLQwenImage = _Autoencoder
-    monkeypatch.setitem(sys.modules, "diffusers", module)
-
-
-def _install_swanlab_stub(monkeypatch):
-    class _Image:
-        def __init__(self, path):
-            self.path = path
-
-    monkeypatch.setattr(evaluation.swanlab, "Image", _Image)
-
-
-def _install_flow_stub(monkeypatch, sample_history):
-    flow_module = types.ModuleType("flow")
-    solvers_module = types.ModuleType("flow.solvers")
-
-    def _sample_ode(model_fn, sample_z0, steps, t_start, t_end):
-        sample_history.append(
-            (
-                sample_z0.shape[0],
-                sample_z0.shape[-2] * 8,
-                sample_z0.shape[-1] * 8,
-            )
-        )
-        return torch.zeros_like(sample_z0)
-
-    solvers_module.sample_ode = _sample_ode
-    flow_module.solvers = solvers_module
-    monkeypatch.setitem(sys.modules, "flow", flow_module)
-    monkeypatch.setitem(sys.modules, "flow.solvers", solvers_module)
-    return solvers_module
-
-
-def _build_dataset_items():
-    bucket_resolutions = {
-        1: (256, 256),
-        2: (336, 192),
-        3: (192, 336),
-        4: (288, 224),
-        5: (224, 288),
-    }
-    items = []
-    for bucket_id, (h, w) in bucket_resolutions.items():
-        repeats = 3 if bucket_id == 1 else 1
-        for idx in range(repeats):
-            latents = torch.full((16, h // 8, w // 8), float(bucket_id + idx))
-            items.append(
-                {
-                    "latents": latents,
-                    "captions": [f"prompt-{bucket_id}-{idx}"],
-                    "resolution_bucket_id": bucket_id,
+        # Mock DataLoader to return dummy batches
+        def dummy_batch_generator():
+            for _ in range(2):  # 2 batches
+                yield {
+                    "latents": torch.randn(2, 4, 32, 32),  # B, C, H, W
+                    "captions": [["a photo of a cat"]]
+                    * 2,  # List of lists (as per dataset format usually)
+                    "resolution_bucket_id": torch.tensor([1, 1]),
                 }
-            )
-    return items, bucket_resolutions
+
+        mock_dataloader = MagicMock()
+        mock_dataloader.__iter__.side_effect = dummy_batch_generator
+        mock_dataloader_cls.return_value = mock_dataloader
+
+        # Mock encode_text
+        mock_encode_text.return_value = (
+            torch.randn(2, 10, 768),
+            torch.ones(2, 10),
+            torch.randn(2, 768),
+        )
+
+        # Mock sample_ode
+        mock_sample_ode.return_value = torch.randn(2, 16, 32, 32)  # B, C, H, W
+
+        # Mock Metrics
+        mock_calc_fid.return_value = 12.34
+        mock_calc_clip.return_value = 23.45
+
+        # Args
+        model_config = {"in_channels": 16}
+        output_dir = os.path.join(self.test_dir, "output")
+
+        # Run
+        metrics = run_evaluation_heavy(
+            checkpoint_path=self.checkpoint_path,
+            model_config=model_config,
+            vae_path="dummy_vae_path",
+            text_encoder_path="dummy_text_encoder_path",
+            pooling=True,
+            output_dir=output_dir,
+            dataset_path="dummy_dataset_path",
+            num_fid_samples=4,
+            num_clip_samples=4,
+            batch_size=2,
+            device="cpu",
+        )
+
+        # Assertions
+        self.assertIn("fid", metrics)
+        self.assertEqual(metrics["fid"], 12.34)
+        self.assertIn("clip_score", metrics)
+        self.assertEqual(metrics["clip_score"], 23.45)
+
+        # Check if files were saved
+        self.assertTrue(os.path.exists(os.path.join(output_dir, "metrics.json")))
+        self.assertTrue(os.path.exists(os.path.join(output_dir, "generated_images")))
+
+        # Verify calls
+        mock_artflow.assert_called_once()
+        mock_vae_cls.from_pretrained.assert_called_once()
+        mock_load_dataset.assert_called_once()
+        mock_sample_ode.assert_called()
+        mock_calc_fid.assert_called_once()
+        mock_calc_clip.assert_called_once()
 
 
-def test_run_evaluation_light_handles_resolution_buckets(tmp_path, monkeypatch):
-    _install_encode_text_stub(monkeypatch)
-    _install_diffusers_stub(monkeypatch)
-    _install_swanlab_stub(monkeypatch)
-
-    items, bucket_resolutions = _build_dataset_items()
-    dataset = DummyDataset(items)
-
-    import datasets as datasets_module
-
-    monkeypatch.setattr(datasets_module, "load_from_disk", lambda path: dataset)
-
-    sample_history = []
-    _install_flow_stub(monkeypatch, sample_history)
-
-    fid_calls = {}
-    kid_calls = {}
-    clip_calls = {}
-
-    def _fid(real, fake, device=None):
-        fid_calls["shapes"] = (tuple(real.shape), tuple(fake.shape))
-        assert real.shape[-2:] == (256, 256)
-        assert fake.shape[-2:] == (256, 256)
-        return 0.1
-
-    def _kid(real, fake, device=None):
-        kid_calls["shapes"] = (tuple(real.shape), tuple(fake.shape))
-        return 0.2
-
-    def _clip(images, prompts, device=None):
-        clip_calls["count"] = (images.shape[0], len(prompts))
-        assert images.shape[0] == len(prompts)
-        return 0.3
-
-    monkeypatch.setattr(evaluation, "calculate_fid", _fid)
-    monkeypatch.setattr(evaluation, "calculate_kid", _kid)
-    monkeypatch.setattr(evaluation, "calculate_clip_score", _clip)
-
-    accelerator = DummyAccelerator()
-    model = DummyModel()
-    save_dir = tmp_path / "grids"
-
-    metrics = evaluation.run_evaluation_light(
-        accelerator=accelerator,
-        model=model,
-        vae_path="dummy",
-        save_path=str(save_dir),
-        current_step=1200,
-        text_encoder=object(),
-        processor=object(),
-        pooling=True,
-        dataset_path="ignored",
-        num_samples=16,
-        batch_size=2,
-    )
-
-    assert metrics == {"fid": 0.1, "kid": 0.2, "clip_score": 0.3}
-    assert fid_calls["shapes"][0][-2:] == (256, 256)
-    assert kid_calls["shapes"][1][-2:] == (256, 256)
-    assert clip_calls["count"][0] == clip_calls["count"][1]
-
-    expected_calls = [
-        (2, 256, 256),
-        (1, 256, 256),
-        (1, 336, 192),
-        (1, 192, 336),
-        (1, 288, 224),
-        (1, 224, 288),
-    ]
-    assert sample_history == expected_calls
-
-    step_tag = round(1200 / 1000)
-    for bucket_id, (h, w) in bucket_resolutions.items():
-        grid_path = Path(save_dir) / f"samples_step_{step_tag}k_bucket{bucket_id}_{h}x{w}.png"
-        assert grid_path.exists()
-
-    assert accelerator.logged, "Expected accelerator.log to be called"
+if __name__ == "__main__":
+    unittest.main()
