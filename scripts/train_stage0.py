@@ -21,6 +21,7 @@ from src.models.artflow_uncond import ArtFlowUncond
 from src.flow.paths import ScoreMatchingDiffusion, FlowMatchingDiffusion, FlowMatchingOT
 from src.flow.solvers import sample_ode, ScoreMatchingODE
 from src.utils.evaluation import run_evaluation_uncond
+from src.utils.vae_codec import get_vae_stats
 
 
 def parse_args():
@@ -141,6 +142,16 @@ def main():
         pin_memory=True,
     )
 
+    # Load VAE Stats
+    if accelerator.is_main_process:
+        print(f"Loading VAE Stats from {args.vae_path}")
+    vae_mean, vae_std = get_vae_stats(args.vae_path, device=accelerator.device)
+    if args.mixed_precision == "bf16":
+        vae_mean = vae_mean.to(dtype=torch.bfloat16)
+        vae_std = vae_std.to(dtype=torch.bfloat16)
+    elif args.mixed_precision == "fp16":
+        vae_mean = vae_mean.to(dtype=torch.float16)
+
     # 2. Model Setup
     model = ArtFlowUncond(
         in_channels=16,
@@ -181,6 +192,9 @@ def main():
         total_loss = 0.0
         for batch in progress_bar:
             latents = batch["latents"]  # [B, 16, H, W]
+
+            # Normalize latents
+            latents = (latents - vae_mean) / vae_std
 
             # Sample t
             t = torch.rand(latents.shape[0], device=latents.device)

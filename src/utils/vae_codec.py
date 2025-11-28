@@ -103,3 +103,52 @@ if __name__ == "__main__":
     # Save reconstructed image
     reconstructed_images[0].save("test_reconstruction.png")
     print("Saved reconstructed image to test_reconstruction.png")
+
+
+def get_vae_stats(
+    vae_path: str, device: torch.device = None
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Get latent mean and std from VAE config.
+
+    Args:
+        vae_path: Path to VAE model
+        device: Device to put tensors on
+
+    Returns:
+        (mean, std) tuple of tensors with shape [1, C, 1, 1]
+    """
+    # Load config only to be fast
+    from transformers import PretrainedConfig
+
+    try:
+        config = PretrainedConfig.from_pretrained(vae_path)
+    except Exception:
+        # Fallback to loading full model if config load fails (e.g. local path issues)
+        vae = AutoencoderKLQwenImage.from_pretrained(
+            vae_path, torch_dtype=torch.bfloat16, local_files_only=True
+        )
+        config = vae.config
+        del vae
+
+    if hasattr(config, "latents_mean") and config.latents_mean is not None:
+        mean = torch.tensor(config.latents_mean).view(1, -1, 1, 1)
+    else:
+        mean = torch.zeros(1, 16, 1, 1)
+
+    if hasattr(config, "latents_std") and config.latents_std is not None:
+        std = torch.tensor(config.latents_std).view(1, -1, 1, 1)
+    else:
+        std = torch.ones(1, 16, 1, 1)
+
+    if device:
+        mean = mean.to(device)
+        std = std.to(device)
+
+    # print(
+    #    mean
+    # )  # [-0.0418, -0.0157, -0.0053, -0.0127, -0.0445, 0.0351, -0.0367, 0.0239, -0.0363, -0.0044, 0.0380, -0.0015, -0.0821, -0.1100, -0.0483, 0.0077]
+    # print(
+    #    std
+    # )  # [2.3349, 2.3665, 2.3873, 2.3958, 2.3773, 2.4054, 2.3908, 2.3725, 2.3623, 2.3824, 2.4043, 2.3669, 2.3800, 2.3779, 2.3889, 2.3639]
+    return mean, std

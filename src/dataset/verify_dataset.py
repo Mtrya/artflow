@@ -92,21 +92,18 @@ def main():
         # Iterate through individual examples to handle torch format properly
         all_values = []
         for i in range(subset_size):
-            try:
-                example = dataset[i]
-                latent = example.get("latents")
+            example = dataset[i]
+            latent = example.get("latents")
 
-                if latent is None:
-                    continue
-
-                if isinstance(latent, torch.Tensor):
-                    all_values.append(latent.flatten())
-                elif isinstance(latent, list):
-                    all_values.append(torch.tensor(latent).flatten())
-                elif isinstance(latent, np.ndarray):
-                    all_values.append(torch.from_numpy(latent).flatten())
-            except Exception:
+            if latent is None:
                 continue
+
+            if isinstance(latent, torch.Tensor):
+                all_values.append(latent.flatten())
+            elif isinstance(latent, list):
+                all_values.append(torch.tensor(latent).flatten())
+            elif isinstance(latent, np.ndarray):
+                all_values.append(torch.from_numpy(latent).flatten())
 
         if all_values:
             latents_subset = torch.cat(all_values)
@@ -145,17 +142,20 @@ def main():
         # Load VAE if provided
         vae = None
         if args.vae_path:
-            try:
-                from diffusers import AutoencoderKLQwenImage
-                from utils.vae_codec import decode_latents
+            from diffusers import AutoencoderKLQwenImage
+            from utils.vae_codec import decode_latents, get_vae_stats
 
-                print(f"Loading VAE from {args.vae_path}...")
-                vae = AutoencoderKLQwenImage.from_pretrained(
-                    args.vae_path, torch_dtype=torch.bfloat16, device_map=args.device
-                )
-                vae.eval()
-            except Exception as e:
-                print(f"Failed to load VAE: {e}")
+            print(f"Loading VAE from {args.vae_path}...")
+            vae = AutoencoderKLQwenImage.from_pretrained(
+                args.vae_path, torch_dtype=torch.bfloat16, device_map=args.device
+            )
+            vae.eval()
+            vae_mean, vae_std = get_vae_stats(args.vae_path, "cpu")
+            latents_subset = (latents_subset - vae_mean) / vae_std
+            print(f"Latent Min After Scaling: {latents_subset.min().item():.4f}")
+            print(f"Latent Max After Scaling: {latents_subset.max().item():.4f}")
+            print(f"Latent Mean After Scaling: {latents_subset.mean().item():.4f}")
+            print(f"Latent Std After Scaling: {latents_subset.std().item():.4f}")
 
         for i, idx in enumerate(indices):
             example = dataset[idx]
@@ -170,13 +170,10 @@ def main():
                 # Add batch dim
                 latent = latent.unsqueeze(0)
 
-                try:
-                    images = decode_latents(latent, vae)
-                    img_path = os.path.join(args.output_dir, f"sample_{idx}.png")
-                    images[0].save(img_path)
-                    print(f"  Saved image reconstruction to {img_path}")
-                except Exception as e:
-                    print(f"  Failed to decode image: {e}")
+                images = decode_latents(latent, vae)
+                img_path = os.path.join(args.output_dir, f"sample_{idx}.png")
+                images[0].save(img_path)
+                print(f"  Saved image reconstruction to {img_path}")
 
 
 if __name__ == "__main__":
