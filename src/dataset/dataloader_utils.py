@@ -8,11 +8,13 @@ from torch.utils.data import Sampler
 
 
 class ResolutionBucketSampler(Sampler):
-    def __init__(self, dataset, batch_size, num_replicas: int = 1, rank: int = 0):
+    def __init__(self, dataset, batch_size, num_replicas: int = 1, rank: int = 0, shuffle: bool = True, drop_last: bool = True):
         self.dataset = dataset
         self.batch_size = batch_size
         self.num_replicas = num_replicas
         self.rank = rank
+        self.shuffle = shuffle
+        self.drop_last = drop_last
 
     def __iter__(self):
         # 1. Shuffle all indices
@@ -21,7 +23,8 @@ class ResolutionBucketSampler(Sampler):
         # Subsample for distributed training (shard by rank)
         indices = indices[self.rank :: self.num_replicas]
 
-        random.shuffle(indices)
+        if self.shuffle:
+            random.shuffle(indices)
 
         # 2. Group by resolution bucket
         from collections import defaultdict
@@ -50,11 +53,15 @@ class ResolutionBucketSampler(Sampler):
         for bucket_indices in buckets.values():
             for i in range(0, len(bucket_indices), self.batch_size):
                 batch = bucket_indices[i : i + self.batch_size]
-                if len(batch) == self.batch_size:  # Only keep full batches
+                if self.drop_last:
+                    if len(batch) == self.batch_size:  # Only keep full batches
+                        all_batches.append(batch)
+                else:
                     all_batches.append(batch)
 
         # 4. Shuffle the batches themselves (randomize bucket order)
-        random.shuffle(all_batches)
+        if self.shuffle:
+            random.shuffle(all_batches)
 
         # 5. Yield batches in random order
         for batch in all_batches:

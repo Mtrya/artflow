@@ -267,6 +267,17 @@ def visualize_denoising(
     )
 
 
+def format_prompt_caption(prompts: List[str], limit: int=32) -> str:
+    if not prompts:
+        return ""
+    trimmed = [p.replace("\n", " ").strip() for p in prompts[:limit]]
+    lines = [f"{idx + 1}. {text}" for idx, text in enumerate(trimmed)]
+    remaining = len(prompts) - len(trimmed)
+    if remaining > 0:
+        lines.append(f"... (+{remaining} more)")
+    return "\n\n".join(lines)
+
+
 def run_evaluation_uncond(
     accelerator: Accelerator,
     model: torch.nn.Module,
@@ -474,7 +485,6 @@ def gather_all(accelerator, tensor):
         return tensor
     return accelerator.gather(tensor)
 
-
 def run_evaluation_light(
     accelerator: Accelerator,
     model: torch.nn.Module,
@@ -487,38 +497,12 @@ def run_evaluation_light(
     dataset_path: str = "./precomputed_dataset/light-eval@256p",
     num_samples: int = 16,
     batch_size: int = 16,
+    bucket_resolutions = {1: (256, 256),2: (336, 192),3: (192, 336),4: (288, 224),5: (224, 288)}
 ) -> Dict[str, float]:
-    """
-    Run the fast validation loop over the light-eval split.
-
-    The routine loads a small cached dataset, decodes latents into real images,
-    groups prompts by the five hard-coded resolution buckets, and for each
-    bucket repeatedly encodes text, samples latents, and decodes them through
-    the VAE to form bucket-specific grids saved to ``save_path``. All decoded
-    real/fake images are then resized to ``256×256`` to feed the shared metric
-    stack: resized pairs go to FID and KID, while the resized fake images plus
-    their prompts go to CLIP. Metrics and preview grids are logged through the
-    provided ``accelerator`` before the usual cleanup.
-
-    Args:
-        accelerator: Accelerate instance handling device placement/logging.
-        model: Conditional ArtFlow model under evaluation.
-        vae_path: Local path to the frozen QwenImage VAE weights.
-        save_path: Directory where per-bucket sample grids are written.
-        current_step: Training step used for logging/filenames.
-        text_encoder: Frozen Qwen3-VL model for prompt embeddings.
-        processor: Matching AutoProcessor for text tokenization.
-        pooling: Whether to request pooled embeddings from ``encode_text``.
-        dataset_path: HuggingFace dataset directory with light-eval samples.
-        num_samples: Maximum number of dataset items to evaluate.
-        batch_size: Generation minibatch size per resolution bucket.
-
-    Returns:
-        Dictionary with ``fid``, ``kid`` and ``clip_score`` when computed.
-    """
+    """Run the fast validation loop over the light-eval split."""
     print(f"Running light evaluation at step {current_step}...")
     # Imports
-    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__),"..")))
     from flow.solvers import sample_ode
     from .encode_text import encode_text
     from .vae_codec import get_vae_stats
@@ -539,31 +523,11 @@ def run_evaluation_light(
     metrics = {}
     num_processes = getattr(accelerator, "num_processes", 1)
     process_index = getattr(accelerator, "process_index", 0)
-    can_broadcast_objects = num_processes > 1 and hasattr(
-        accelerator, "broadcast_object_list"
-    )
+    can_broadcast_objects = num_processes > 1 and hasattr(accelerator, "broadcast_object_list")
     can_gather_objects = num_processes > 1 and hasattr(accelerator, "gather_object")
 
-    bucket_resolutions = {
-        1: (256, 256),
-        2: (336, 192),
-        3: (192, 336),
-        4: (288, 224),
-        5: (224, 288),
-    }
-
-    def format_prompt_caption(prompts: List[str], limit: int = 32) -> str:
-        if not prompts:
-            return ""
-        trimmed = [p.replace("\n", " ").strip() for p in prompts[:limit]]
-        lines = [f"{idx + 1}. {text}" for idx, text in enumerate(trimmed)]
-        remaining = len(prompts) - len(trimmed)
-        if remaining > 0:
-            lines.append(f"... (+{remaining} more)")
-        return "\n\n".join(lines)
-
     with torch.no_grad():
-        real_images: List[torch.Tensor] = []
+        real_images_list: List[torch.Tensor] = []
         bucket_prompts: Dict[int, List[str]] = {bid: [] for bid in bucket_resolutions}
 
         if accelerator.is_main_process:
@@ -575,241 +539,154 @@ def run_evaluation_light(
                 dataset = dataset.select(indices)
 
             for item in dataset:
-                latents = (
-                    item["latents"]
-                    .unsqueeze(0)
-                    .unsqueeze(2)
-                    .to(accelerator.device)
-                    .to(torch.bfloat16)
-                )
+                latents = item["latents"].unsqueeze(0).unsqueeze(2).to(accelerator.device).to(torch.bfloat16)
                 img = vae.decode(latents).sample.squeeze(2).squeeze(0)
-                real_images.append(img.cpu().float())
+                img = torch.clamp((img + 1) / 2, 0, 1)
+                real_images_list.append(img.cpu().float())
 
                 captions_list = item.get("captions", "")
                 prompt = captions_list[0]
 
-                bucket_id = int(item.get("resolution_bucket_id", 1) or 1)
-                if bucket_id not in bucket_resolutions:
-                    bucket_id = 1
+                bucket_id = int(item.get("resolution_bucket_id", 1))
                 bucket_prompts.setdefault(bucket_id, []).append(prompt)
-
+        
         bucket_payload = [bucket_prompts]
         if can_broadcast_objects:
             accelerator.broadcast_object_list(bucket_payload)
         bucket_prompts = bucket_payload[0]
 
-        if not any(bucket_prompts.values()):
-            if accelerator.is_main_process:
-                print("Light eval dataset is empty. Skipping metrics.")
+        if accelerator.is_main_process:
+            os.makedirs(save_path, exist_ok=True)
+
+        bucket_fake_images_local: Dict[int, List[torch.Tensor]] = {bid: [] for bid in bucket_resolutions}
+        fake_images_local: List[torch.Tensor] = []
+        generation_prompts_local: List[str] = []
+
+        # Generation loop per bucket
+        for bucket_id, prompts_list in bucket_prompts.items():
+            total_prompts = len(prompts_list)
+            if total_prompts == 0:
+                continue # no prompts in this bucket
+
+            chunk = math.ceil(total_prompts / max(1, num_processes))
+            start = chunk * process_index
+            end = min(start + chunk, total_prompts)
+            if start >= end:
+                continue
+
+            local_prompts = prompts_list[start:end]
+            H, W = bucket_resolutions[bucket_id]
+
+            for batch_start in range(0, len(local_prompts), batch_size):
+                batch_prompts = local_prompts[batch_start: batch_start + batch_size]
+                txt, txt_mask, txt_pooled = encode_text(batch_prompts, text_encoder, processor, pooling)
+
+                sample_z0 = torch.randn(len(batch_prompts), 16, H // 8, W // 8, device=accelerator.device)
+
+                def model_fn(x, t, txt=txt, txt_pooled=txt_pooled, txt_mask=txt_mask):
+                    if isinstance(t, float):
+                        t_tensor = torch.tensor(t, device=x.device).expand(x.shape[0])
+                    else:
+                        t_tensor = t
+                    return model(x, t_tensor, txt, txt_pooled, txt_mask)
+                
+                with accelerator.autocast():
+                    samples = sample_ode(model_fn, sample_z0, steps=50, t_start=0.0, t_end=1.0)
+                
+                samples = samples.to(dtype=torch.bfloat16)
+
+                # Denormalize: z = z_norm * std + mean
+                samples = samples * vae_std + vae_mean
+                samples = samples.unsqueeze(2)
+                samples = vae.decode(samples).sample.squeeze(2)
+                samples = torch.clamp((samples + 1) / 2, 0, 1)
+                samples = samples.cpu().float()
+                bucket_fake_images_local[bucket_id].append(samples)
+                for img, prompt in zip(samples, batch_prompts):
+                    fake_images_local.append(img)
+                    generation_prompts_local.append(prompt)
+
+        # Gather prompts and generated fake images
+        if can_gather_objects:
+            gathered_bucket_parts = accelerator.gather_object(bucket_fake_images_local)
+            gathered_fake_lists = accelerator.gather_object(fake_images_local)
+            gathered_prompt_lists = accelerator.gather_object(generation_prompts_local)
         else:
-            if accelerator.is_main_process:
-                os.makedirs(save_path, exist_ok=True)
+            gathered_bucket_parts = [bucket_fake_images_local]
+            gathered_fake_lists = [fake_images_local]
+            gathered_prompt_lists = [generation_prompts_local]
 
-            bucket_fake_images_local: Dict[int, List[torch.Tensor]] = {
-                bid: [] for bid in bucket_resolutions
-            }
-            fake_images_local: List[torch.Tensor] = []
-            generated_prompts_local: List[str] = []
-
-            for bucket_id, prompts_list in bucket_prompts.items():
-                total_prompts = len(prompts_list)
-                if total_prompts == 0:
+        if accelerator.is_main_process:
+            bucket_fake_images: Dict[int, List[torch.Tensor]] = {bid: [] for bid in bucket_resolutions}
+            for part in gathered_bucket_parts:
+                if not part:
                     continue
+                for bid, batches in part.items():
+                    bucket_fake_images[bid].extend(batches)
+            
+            fake_images_list: List[torch.Tensor] = []
+            for images in gathered_fake_lists:
+                if images:
+                    fake_images_list.extend(images)
+            
+            generation_prompts: List[str] = []
+            for prompts in gathered_prompt_lists:
+                if prompts:
+                    generation_prompts.extend(prompts)
 
-                chunk = math.ceil(total_prompts / max(1, num_processes))
-                start = chunk * process_index
-                end = min(start + chunk, total_prompts)
-                if start >= end:
+            # Save to local path and report generated images to swanlab
+            bucket_grid_paths = []
+            bucket_grid_captions: List[str] = []
+            for bucket_id, image_batches in bucket_fake_images.items():
+                if not image_batches:
                     continue
-
-                local_prompts = prompts_list[start:end]
+                bucket_images = torch.cat(image_batches, dim=0)
                 H, W = bucket_resolutions[bucket_id]
+                grid_path = os.path.join(save_path, f"samples/samples_step_{current_step:06d}_bucket{bucket_id}_{H}x{W}.png")
+                _ = make_image_grid(bucket_images[:9], save_path=grid_path, normalize=True, value_range=(0,1))
+                print(f"Saved samples to {grid_path}")
+                bucket_grid_paths.append(grid_path)
+                prompts_for_bucket = bucket_prompts.get(bucket_id, [])
+                prompts_for_bucket = prompts_for_bucket[:bucket_images.shape[0]]
+                bucket_grid_captions.append(format_prompt_caption(prompts_for_bucket[:9]))
 
-                for batch_start in range(0, len(local_prompts), batch_size):
-                    batch_prompts = local_prompts[
-                        batch_start : batch_start + batch_size
-                    ]
-                    txt, txt_mask, txt_pooled = encode_text(
-                        batch_prompts, text_encoder, processor, pooling
-                    )
+            for idx, (path, caption) in enumerate(zip(bucket_grid_paths, bucket_grid_captions)):
+                media = swanlab.Image(path, caption=caption) if caption else swanlab.Image(path)
+                accelerator.log({f"samples_{idx}": media}, step=current_step)
 
-                    sample_z0 = torch.randn(
-                        len(batch_prompts),
-                        16,
-                        H // 8,
-                        W // 8,
-                        device=accelerator.device,
-                    )
+            # Calculate metrics
+            if real_images_list and fake_images_list:
+                real = [torch.clamp(img, 0, 1) for img in real_images_list]
+                fake = [torch.clamp(img, 0, 1) for img in fake_images_list]
 
-                    def model_fn(
-                        x, t, txt=txt, txt_pooled=txt_pooled, txt_mask=txt_mask
-                    ):
-                        if isinstance(t, float):
-                            t_tensor = torch.tensor(t, device=x.device).expand(
-                                x.shape[0]
-                            )
-                        else:
-                            t_tensor = t
-                        return model(x, t_tensor, txt, txt_pooled, txt_mask)
+                # Resize to 299x299 for metric calculation
+                real = torch.stack([F.interpolate(img.unsqueeze(0), size=(299,299), mode="bicubic", align_corners=False).squeeze(0) for img in real])
+                fake = torch.stack([F.interpolate(img.unsqueeze(0), size=(299,299), mode="bicubic", align_corners=False).squeeze(0) for img in fake])
 
-                    with accelerator.autocast():
-                        samples = sample_ode(
-                            model_fn, sample_z0, steps=50, t_start=0.0, t_end=1.0
-                        )
+                real = real.clamp(0,1)
+                fake = fake.clamp(0,1)
 
-                    samples = samples.to(dtype=torch.bfloat16)
+                fid_score = calculate_fid(real, fake, device=accelerator.device, batch_size=batch_size)
+                metrics["fid"] = fid_score
+                print(f"Step {current_step} | FID: {fid_score:.4f}")
 
-                    # Denormalize: z = z_norm * std + mean
-                    samples = samples * vae_std + vae_mean
+                kid_score = calculate_kid(real, fake, device=accelerator.device, batch_size=batch_size)
+                metrics["kid"] = kid_score
+                print(f"Step {current_step} | KID: {kid_score:.4f}")
 
-                    samples = samples.unsqueeze(2)
-                    decoded = vae.decode(samples).sample.squeeze(2)
-                    decoded = torch.clamp((decoded + 1) / 2, 0, 1)
+                clip_score = calculate_clip_score(fake, generation_prompts, device=accelerator.device, batch_size=batch_size)
+                metrics["clip_score"] = clip_score
+                print(f"Step {current_step} | CLIP Score: {clip_score:.4f}")
 
-                    decoded_cpu = decoded.cpu().float()
-                    bucket_fake_images_local[bucket_id].append(decoded_cpu)
-                    for img, prompt in zip(decoded_cpu, batch_prompts):
-                        fake_images_local.append(img)
-                        generated_prompts_local.append(prompt)
+                accelerator.log(metrics, step=current_step)
 
-            if can_gather_objects:
-                gathered_bucket_parts = accelerator.gather_object(
-                    bucket_fake_images_local
-                )
-                gathered_fake_lists = accelerator.gather_object(fake_images_local)
-                gathered_prompt_lists = accelerator.gather_object(
-                    generated_prompts_local
-                )
             else:
-                gathered_bucket_parts = [bucket_fake_images_local]
-                gathered_fake_lists = [fake_images_local]
-                gathered_prompt_lists = [generated_prompts_local]
+                print("Insufficient data for metric computation.")
 
-            if accelerator.is_main_process:
-                bucket_fake_images: Dict[int, List[torch.Tensor]] = {
-                    bid: [] for bid in bucket_resolutions
-                }
-                for part in gathered_bucket_parts:
-                    if not part:
-                        continue
-                    for bid, batches in part.items():
-                        bucket_fake_images[bid].extend(batches)
-
-                fake_images_list: List[torch.Tensor] = []
-                for images in gathered_fake_lists:
-                    if images:
-                        fake_images_list.extend(images)
-
-                generated_prompts: List[str] = []
-                for prompts in gathered_prompt_lists:
-                    if prompts:
-                        generated_prompts.extend(prompts)
-
-                bucket_grid_paths = []
-                bucket_grid_captions: List[str] = []
-                for bucket_id, image_batches in bucket_fake_images.items():
-                    if not image_batches:
-                        continue
-                    bucket_images = torch.cat(image_batches, dim=0)
-                    H, W = bucket_resolutions[bucket_id]
-                    grid_path = os.path.join(
-                        save_path,
-                        f"samples_step_{current_step:06d}_bucket{bucket_id}_{H}x{W}.png",
-                    )
-                    _ = make_image_grid(
-                        bucket_images[:9],  # Only visualize 9 generations max
-                        save_path=grid_path,
-                        normalize=True,
-                        value_range=(0, 1),
-                    )
-                    print(f"Saved samples to {grid_path}")
-                    bucket_grid_paths.append(grid_path)
-                    prompts_for_bucket = bucket_prompts.get(bucket_id, [])
-                    prompts_for_bucket = prompts_for_bucket[: bucket_images.shape[0]]
-                    bucket_grid_captions.append(
-                        format_prompt_caption(prompts_for_bucket[:9])
-                    )
-
-                for idx, (path, caption) in enumerate(
-                    zip(bucket_grid_paths, bucket_grid_captions)
-                ):
-                    media = (
-                        swanlab.Image(path, caption=caption)
-                        if caption
-                        else swanlab.Image(path)
-                    )
-                    accelerator.log({f"samples_{idx}": media}, step=current_step)
-
-                if real_images and fake_images_list:
-                    real_processed = [
-                        torch.clamp((img + 1) / 2, 0, 1) for img in real_images
-                    ]
-                    fake_processed = [
-                        torch.clamp(img, 0, 1) for img in fake_images_list
-                    ]
-
-                    real_resized = torch.stack(
-                        [
-                            F.interpolate(
-                                img.unsqueeze(0),
-                                size=(256, 256),
-                                mode="bicubic",
-                                align_corners=False,
-                            ).squeeze(0)
-                            for img in real_processed
-                        ]
-                    )
-                    fake_resized = torch.stack(
-                        [
-                            F.interpolate(
-                                img.unsqueeze(0),
-                                size=(256, 256),
-                                mode="bicubic",
-                                align_corners=False,
-                            ).squeeze(0)
-                            for img in fake_processed
-                        ]
-                    )
-
-                    real_resized = real_resized.clamp(0, 1)
-                    fake_resized = fake_resized.clamp(0, 1)
-
-                    fid_score = calculate_fid(
-                        real_resized,
-                        fake_resized,
-                        device=accelerator.device,
-                        batch_size=batch_size,
-                    )
-                    metrics["fid"] = fid_score
-                    print(f"Step {current_step} | FID: {fid_score:.4f}")
-
-                    kid_score = calculate_kid(
-                        real_resized,
-                        fake_resized,
-                        device=accelerator.device,
-                        batch_size=batch_size,
-                    )
-                    metrics["kid"] = kid_score
-                    print(f"Step {current_step} | KID: {kid_score:.4f}")
-
-                    clip_score = calculate_clip_score(
-                        fake_resized,
-                        generated_prompts,
-                        device=accelerator.device,
-                        batch_size=batch_size,
-                    )
-                    metrics["clip_score"] = clip_score
-                    print(f"Step {current_step} | CLIP Score: {clip_score:.4f}")
-
-                    if metrics:
-                        accelerator.log(metrics, step=current_step)
-                else:
-                    print("Insufficient data for metric computation.")
-
-        metrics_payload = [metrics]
-        if can_broadcast_objects:
-            accelerator.broadcast_object_list(metrics_payload)
-        metrics = metrics_payload[0]
+    metrics_payload = [metrics]
+    if can_broadcast_objects:
+        accelerator.broadcast_object_list(metrics_payload)
+    metrics = metrics_payload[0]
 
     # Cleanup
     del vae
@@ -818,58 +695,39 @@ def run_evaluation_light(
 
     return metrics
 
-
 def run_evaluation_heavy(
     checkpoint_path: str,
     model_config: Dict[str, Any],
     vae_path: str,
     text_encoder_path: str,
     pooling: bool,
-    output_dir: str,
+    save_path: str,
     dataset_path: str = "./precomputed_dataset/heavy-eval@256p",
     num_fid_samples: int = 2000,
     num_clip_samples: int = 2000,
     batch_size: int = 32,
-    device: str = "cuda:0",
+    device: str = "cuda:0"
 ) -> Dict[str, float]:
-    """
-    Run the large-scale validation loop over the heavy-eval split.
-
-    Args:
-        checkpoint_path: Path to model checkpoint
-        model_config: Model configuration dictionary
-        dataset_path: Path to dataset (load_from_disk)
-        vae_path: Path to VAE
-        text_encoder_path: Path to text encoder
-        pooling: Whether to use pooled text embeddings
-        output_dir: Output directory
-        sample_ode_fn: Sampling function
-        num_fid_samples: Number of samples for FID calculation
-        num_clip_samples: Number of samples for CLIP calculation
-        batch_size: Batch size
-        device: Device to run on
-
-    Returns:
-        Dictionary of metrics
-    """
+    """Run the large-scale test loop over the heavy-eval split."""
     print(f"Running heavy evaluation on {checkpoint_path}...")
     # Imports
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
     from ..flow.solvers import sample_ode
     from .encode_text import encode_text
     from ..models.artflow import ArtFlow
-    from ..dataset.dataloader_utils import ResolutionBucketSampler
+    from ..dataset.dataloader_utils import ResolutionBucketSampler, collate_fn
+    from .vae_codec import get_vae_stats
 
     from datasets import load_from_disk
     from diffusers import AutoencoderKLQwenImage
     from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 
     # 1. Load Models
-    print("Loading models...")
-    # Load ArtFlow
+    print("Loading models:\n"
+          f"  diffusion model: {checkpoint_path},\n"
+          f"  vae: {vae_path},\n"
+          f"  text encoder: {text_encoder_path}...")
     model = ArtFlow(**model_config)
-    # Load state dict (handling potential accelerator wrapping)
     state_dict = torch.load(checkpoint_path, map_location="cpu")
     if "module" in state_dict:
         state_dict = state_dict["module"]
@@ -881,84 +739,67 @@ def run_evaluation_heavy(
         vae_path, torch_dtype=torch.bfloat16, local_files_only=True
     ).to(device)
 
+    # Get VAE stats for denormalization
+    vae_mean, vae_std = get_vae_stats(vae_path, device=device)
+    vae_mean = vae_mean.to(dtype=torch.bfloat16)
+    vae_std = vae_std.to(dtype=torch.bfloat16)
+
     text_encoder = Qwen3VLForConditionalGeneration.from_pretrained(
         text_encoder_path,
         dtype=torch.bfloat16,
         device_map=device,
-        low_cpu_mem_usage=True,
+        low_cpu_mem_usage=True
     )
     processor = AutoProcessor.from_pretrained(text_encoder_path)
 
     # 2. Load Dataset
     print(f"Loading dataset from {dataset_path}...")
     dataset = load_from_disk(dataset_path)
-
-    # Determine max samples needed
     num_samples = max(num_fid_samples, num_clip_samples)
 
-    # Select random subset if dataset is larger than num_samples
-    if len(dataset) > num_samples:
-        # Fixed seed for reproducibility
-        indices = np.random.RandomState(42).choice(
-            len(dataset), num_samples, replace=False
-        )
-        dataset = dataset.select(indices)
-    else:
-        num_samples = len(dataset)
+    if len(dataset) < num_samples:
         print(
-            f"Warning: Dataset size ({num_samples}) is smaller than requested samples ({num_fid_samples}/{num_clip_samples})"
+            f"Warning: Dataset size ({len(dataset)}) is smaller than requested samples ({num_samples})"
         )
+        num_samples = len(dataset)
+        print(f"Warning: Dataset size ({num_samples}) is smaller than requested samples ({num_fid_samples}/{num_clip_samples})")
+    else:
+        print(f"")
+        dataset = dataset.select(range(num_samples))
+
 
     # 3. Generation Loop
     print(f"Generating {num_samples} samples...")
-    generated_images_dir = os.path.join(output_dir, "generated_images")
+    generated_images_dir = os.path.join(save_path, "generated_images")
     os.makedirs(generated_images_dir, exist_ok=True)
 
     all_prompts = []
     all_fake_paths = []
-
-    # We need real images for FID
     real_images_list = []
     fake_images_list = []
 
-    print("Using ResolutionBucketSampler for variable resolution generation.")
-    sampler = ResolutionBucketSampler(dataset, batch_size=batch_size)
+    sampler = ResolutionBucketSampler(dataset, batch_size=batch_size, shuffle=False, drop_last=True)
     dataloader = DataLoader(
-        dataset, batch_sampler=sampler, num_workers=4, pin_memory=True
+        dataset, batch_sampler=sampler, num_workers=4, pin_memory=True, collate_fn=collate_fn
     )
 
     with torch.no_grad():
         for i, batch in enumerate(tqdm(dataloader, desc="Generating")):
-            # Get prompts
             prompts = [c[0] for c in batch["captions"]]
 
+            # Captions
             all_prompts.extend(prompts)
 
-            # Decode latents
-            latents = batch["latents"].to(device).to(torch.bfloat16)
-            if latents.ndim == 3:
-                latents = latents.unsqueeze(1)  # Add channel dim if missing
-
-            # VAE decode expects [B, C, H, W] or [B, C, 1, H, W] depending on VAE
-            # Based on run_evaluation_uncond, it uses unsqueeze(2)
-            latents = latents.unsqueeze(2)
+            # Real images
+            latents = batch["latents"].to(device).to(torch.bfloat16).unsqueeze(2)
             real_imgs = vae.decode(latents).sample.squeeze(2)
-            # Normalize to [0, 1]
-            real_imgs = (real_imgs + 1) / 2
-            real_imgs = torch.clamp(real_imgs, 0, 1)
-            real_imgs = real_imgs.cpu()
-
+            real_imgs = torch.clamp((real_imgs + 1) / 2, 0, 1).cpu()
             real_images_list.append(real_imgs)
 
-            # Encode text
-            txt, txt_mask, txt_pooled = encode_text(
-                prompts, text_encoder, processor, pooling
-            )
-
-            # Determine resolution and use latent shape
+            # Fake images
+            txt, txt_mask, txt_pooled = encode_text(prompts, text_encoder, processor, pooling)
             _, _, H_lat, W_lat = batch["latents"].shape
             H, W = H_lat * 8, W_lat * 8
-
             sample_z0 = torch.randn(len(prompts), 16, H // 8, W // 8, device=device)
 
             def model_fn(x, t):
@@ -967,53 +808,49 @@ def run_evaluation_heavy(
                 else:
                     t_tensor = t
                 return model(x, t_tensor, txt, txt_pooled, txt_mask)
-
-            samples = sample_ode(model_fn, sample_z0, steps=50, t_start=0.0, t_end=1.0)
-
-            # Decode
+            
+            device_type = "cuda" if "cuda" in device else "cpu"
+            with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+                samples = sample_ode(model_fn, sample_z0, steps=50, t_start=0.0, t_end=1.0, device=device)
+            
             samples = samples.to(dtype=torch.bfloat16)
+            
+            # Denormalize
+            samples = samples * vae_std + vae_mean
+
             samples = samples.unsqueeze(2)
-            images = vae.decode(samples).sample
-            images = images.squeeze(2)  # [B, C, H, W]
-
-            # Normalize to [0, 1]
-            images = (images + 1) / 2
-            images = torch.clamp(images, 0, 1)
-
-            fake_images_list.append(images.cpu())
+            fake_imgs = vae.decode(samples).sample.squeeze(2)
+            fake_imgs = torch.clamp((fake_imgs + 1) / 2, 0, 1).cpu()
+            fake_images_list.append(fake_imgs)
 
             # Save images
-            for j, img in enumerate(images):
+            for j, img in enumerate(fake_imgs):
                 idx = len(all_fake_paths)
-                save_path = os.path.join(generated_images_dir, f"sample_{idx:05d}.png")
-                torchvision.utils.save_image(img, save_path)
-                all_fake_paths.append(save_path)
+                save_path_img = os.path.join(generated_images_dir, f"sample_{idx:05d}.png")
+                torchvision.utils.save_image(img, save_path_img)
+                all_fake_paths.append(save_path_img)
 
     # 4. Calculate Metrics
     print("Calculating metrics...")
 
     # Concatenate all images
-    # Check if all shapes are same
     first_shape = fake_images_list[0].shape[-2:]
     all_same_shape = all(t.shape[-2:] == first_shape for t in fake_images_list)
 
     if not all_same_shape:
-        print(
-            "Variable resolutions detected. Resizing to 256x256 for metric calculation."
-        )
-        # Resize everything to 256x256
+        print("Variable resolutions detected. Resizing to 299x299 for metric calculation.")
         real_images_all = []
         fake_images_all = []
         for batch in real_images_list:
             real_images_all.append(
                 torch.nn.functional.interpolate(
-                    batch, size=(256, 256), mode="bicubic", align_corners=False
+                    batch, size=(299, 299), mode="bicubic", align_corners=False
                 )
             )
         for batch in fake_images_list:
             fake_images_all.append(
                 torch.nn.functional.interpolate(
-                    batch, size=(256, 256), mode="bicubic", align_corners=False
+                    batch, size=(299, 299), mode="bicubic", align_corners=False
                 )
             )
 
@@ -1027,10 +864,7 @@ def run_evaluation_heavy(
 
     # FID
     if num_fid_samples > 0:
-        print(
-            f"Calculating FID on {min(len(real_images_all), num_fid_samples)} samples..."
-        )
-        # Select subset
+        print(f"Calculating FID on {min(len(real_images_all), num_fid_samples)} samples...")
         real_subset = real_images_all[:num_fid_samples]
         fake_subset = fake_images_all[:num_fid_samples]
 
@@ -1043,11 +877,9 @@ def run_evaluation_heavy(
         print(f"FID: {fid_score:.4f}")
         metrics["fid"] = fid_score
 
-    # CLIP Score
+    # CLIP score
     if num_clip_samples > 0:
-        print(
-            f"Calculating CLIP Score on {min(len(fake_images_all), num_clip_samples)} samples..."
-        )
+        print(f"Calculating CLIP Score on {min(len(fake_images_all), num_clip_samples)} samples...")
         fake_subset = fake_images_all[:num_clip_samples]
         prompts_subset = all_prompts[:num_clip_samples]
 
@@ -1064,10 +896,6 @@ def run_evaluation_heavy(
     metrics["num_fid_samples"] = num_fid_samples
     metrics["num_clip_samples"] = num_clip_samples
 
-    # Save metrics
-    import json
-
-    with open(os.path.join(output_dir, "metrics.json"), "w") as f:
-        json.dump(metrics, f, indent=4)
-
     return metrics
+            
+            
