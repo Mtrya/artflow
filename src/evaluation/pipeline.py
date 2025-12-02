@@ -310,7 +310,7 @@ def run_evaluation_light(
                 real_images_list.append(img.cpu().float())
 
                 captions_list = item.get("captions", "")
-                prompt = captions_list[0]
+                prompt = captions_list[1] or captions_list[0]
 
                 bucket_id = int(item.get("resolution_bucket_id", 1))
                 bucket_prompts.setdefault(bucket_id, []).append(prompt)
@@ -617,7 +617,7 @@ def run_evaluation_heavy(
 
     with torch.no_grad():
         for i, batch in enumerate(tqdm(dataloader, desc="Generating")):
-            prompts = [c[0] for c in batch["captions"]]
+            prompts = [c[1] or c[0] for c in batch["captions"]]
 
             # Captions
             all_prompts.extend(prompts)

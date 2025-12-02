@@ -35,11 +35,31 @@ def main():
         print(f"  Loading {path}...")
         ds = load_from_disk(path)
         print(f"    -> {len(ds)} samples")
+        print(f"    -> Format: {ds.format}")
+        
+        # Reset format to None before concatenation to avoid conflicts
+        if ds.format is not None:
+            ds = ds.with_format(None)
+        
         datasets.append(ds)
 
     print("Concatenating datasets...")
     combined = concatenate_datasets(datasets)
     print(f"Combined dataset: {len(combined)} samples")
+    print(f"Format after concatenation: {combined.format}")
+    
+    # Set torch format to match precomputed datasets
+    print("Setting format to 'torch'...")
+    combined = combined.with_format("torch")
+    
+    # Verify the latents column type
+    if len(combined) > 0:
+        sample = combined[0]
+        print(f"Verification - Sample latents type: {type(sample['latents'])}")
+        if hasattr(sample['latents'], 'shape'):
+            print(f"Verification - Sample latents shape: {sample['latents'].shape}")
+        else:
+            print(f"WARNING: latents is not a tensor! Type: {type(sample['latents'])}")
 
     print(f"Saving to {args.output}...")
     combined.save_to_disk(args.output)
