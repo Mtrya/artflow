@@ -5,7 +5,6 @@ Stage 0: unconditional image generation with WikiArt Monet subset, for algorithm
 
 import argparse
 import os
-import sys
 
 import torch
 from torch.utils.data import DataLoader
@@ -14,14 +13,11 @@ from accelerate.utils import set_seed
 from tqdm.auto import tqdm
 from datasets import load_from_disk
 
-# Add parent directory to path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-from src.models.artflow_uncond import ArtFlowUncond
-from src.flow.paths import ScoreMatchingDiffusion, FlowMatchingDiffusion, FlowMatchingOT
-from src.flow.solvers import sample_ode, ScoreMatchingODE
-from src.utils.evaluation import run_evaluation_uncond
-from src.utils.vae_codec import get_vae_stats
+from ..models.artflow_uncond import ArtFlowUncond
+from ..flow.paths import ScoreMatchingDiffusion, FlowMatchingDiffusion, FlowMatchingOT
+from ..flow.solvers import sample_ode, ScoreMatchingODE
+from ..evaluation.pipeline import run_evaluation_uncond
+from ..utils.vae_codec import get_vae_stats
 
 
 def parse_args():
@@ -256,3 +252,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

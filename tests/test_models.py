@@ -239,7 +239,7 @@ def test_modulation_strategies():
             conditioning_scheme="pure",
             double_stream_depth=depth,
             single_stream_depth=0,
-            modulation_share=strategy,
+            double_stream_modulation=strategy,
         )
 
         out = model(x, t, txt)

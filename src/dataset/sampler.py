@@ -1,14 +1,38 @@
-"""DataLoader utilities for resolution bucket sampling and batching."""
+"""
+Custom samplers and collate functions for bucket-based batch sampling.
 
-from typing import List, Dict, Any
+Classes:
+- ResolutionBucketSampler: Sampler that groups samples by resolution bucket
+
+Functions:
+- collate_fn: Collate function for batching precomputed dataset samples
+"""
+
 import random
+from collections import defaultdict
+from typing import Any, Dict, List
 
 import torch
 from torch.utils.data import Sampler
 
 
 class ResolutionBucketSampler(Sampler):
-    def __init__(self, dataset, batch_size, num_replicas: int = 1, rank: int = 0, shuffle: bool = True, drop_last: bool = True):
+    """
+    Sampler that groups samples by resolution bucket for efficient batching.
+
+    Ensures all samples in a batch have the same resolution, which is required
+    for efficient GPU processing without padding.
+    """
+
+    def __init__(
+        self,
+        dataset,
+        batch_size: int,
+        num_replicas: int = 1,
+        rank: int = 0,
+        shuffle: bool = True,
+        drop_last: bool = True,
+    ):
         self.dataset = dataset
         self.batch_size = batch_size
         self.num_replicas = num_replicas
@@ -27,8 +51,6 @@ class ResolutionBucketSampler(Sampler):
             random.shuffle(indices)
 
         # 2. Group by resolution bucket
-        from collections import defaultdict
-
         buckets = defaultdict(list)
 
         # Optimization: Fetch all bucket IDs at once if possible
@@ -69,8 +91,6 @@ class ResolutionBucketSampler(Sampler):
 
     def __len__(self):
         # Count only complete batches per bucket
-        from collections import defaultdict
-
         buckets = defaultdict(list)
 
         # Optimization: Fetch all bucket IDs at once if possible
@@ -132,3 +152,4 @@ def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
     }
 
     return batch_dict
+

@@ -1,7 +1,7 @@
 import unittest
 import torch
 from torch.utils.data import Dataset
-from src.dataset.dataloader_utils import ResolutionBucketSampler, collate_fn
+from src.dataset.sampler import ResolutionBucketSampler, collate_fn
 
 
 class MockDataset(Dataset):

@@ -1,6 +1,9 @@
+"""
+Training script for ArtFlow Stage 1: Conditional Generation with Architecture Ablation
+"""
+
 import os
 import argparse
-import sys
 import warnings
 import math
 from copy import deepcopy
@@ -12,18 +15,15 @@ from accelerate.utils import ProjectConfiguration, set_seed
 from tqdm.auto import tqdm
 from datasets import load_from_disk
 from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
-
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-# Import project modules
-from src.models.artflow import ArtFlow
-from src.dataset.dataloader_utils import ResolutionBucketSampler, collate_fn
-from src.utils.encode_text import encode_text
-from src.utils.precompute_engine import sample_caption
-from src.utils.vae_codec import get_vae_stats
-from src.flow.paths import FlowMatchingOT
-from src.utils.evaluation import run_evaluation_light
 from transformers.optimization import get_scheduler
+
+from ..models.artflow import ArtFlow
+from ..dataset.sampler import ResolutionBucketSampler, collate_fn
+from ..dataset.captions import sample_caption
+from ..utils.encode_text import encode_text
+from ..utils.vae_codec import get_vae_stats
+from ..flow.paths import FlowMatchingOT
+from ..evaluation.pipeline import run_evaluation_light
 
 # Suppress specific warning about RMSNorm dtype mismatch in mixed precision
 warnings.filterwarnings("ignore", message="Mismatch dtype between input and weight")
@@ -150,13 +150,6 @@ def parse_args():
         help="Gradient accumulation steps",
     )
     parser.add_argument(
-        "--mixed_precision",
-        type=str,
-        default="bf16",
-        choices=["no", "fp16", "bf16"],
-        help="Mixed precision",
-    )
-    parser.add_argument(
         "--max_grad_norm", type=float, default=1.0, help="Max gradient norm"
     )
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size per GPU")
@@ -196,6 +189,11 @@ def parse_args():
         help="Conditioning scheme",
     )
     parser.add_argument(
+        "--qkv_bias",
+        action="store_true",
+        help="Enable QKV bias",
+    )
+    parser.add_argument(
         "--double_stream_modulation",
         type=str,
         default="none",
@@ -228,7 +226,7 @@ def main():
     )
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
-        mixed_precision=args.mixed_precision,
+        mixed_precision="bf16",
         log_with="swanlab",
         project_config=project_config,
     )
@@ -250,7 +248,7 @@ def main():
     accelerator.print(f"Loading Text Encoder: {args.text_encoder_path}")
     text_encoder = Qwen3VLForConditionalGeneration.from_pretrained(
         args.text_encoder_path,
-        torch_dtype=torch.bfloat16 if args.mixed_precision == "bf16" else torch.float32,
+        torch_dtype=torch.bfloat16,
         device_map=accelerator.device,
         local_files_only=True,
     )
@@ -262,11 +260,7 @@ def main():
     # Load VAE Stats
     accelerator.print(f"Loading VAE Stats from {args.vae_path}")
     vae_mean, vae_std = get_vae_stats(args.vae_path, device=accelerator.device)
-    if args.mixed_precision == "bf16":
-        vae_mean = vae_mean.to(dtype=torch.bfloat16)
-        vae_std = vae_std.to(dtype=torch.bfloat16)
-    elif args.mixed_precision == "fp16":
-        vae_mean = vae_mean.to(dtype=torch.float16)
+    vae_mean, vae_std = vae_mean.to(torch.bfloat16), vae_std.to(torch.bfloat16)
 
     # Load Model
     accelerator.print("Initializing ArtFlow Model...")
@@ -277,6 +271,7 @@ def main():
         single_stream_depth=args.single_stream_depth,
         mlp_ratio=args.mlp_ratio,
         conditioning_scheme=args.conditioning_scheme,
+        qkv_bias=args.qkv_bias,
         double_stream_modulation=args.double_stream_modulation,
         single_stream_modulation=args.single_stream_modulation,
         ffn_type=args.ffn_type,
@@ -469,3 +464,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

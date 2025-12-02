@@ -19,7 +19,7 @@ from src.models.dit_blocks import (
     DoubleStreamDiTBlock,
     UnconditionalAttention,
     UnconditionalDiTBlock,
-    FeedForward,
+    GatedFeedForward,
     modulate,
 )
 
@@ -153,15 +153,15 @@ def test_msrope():
 
 
 def test_feedforward():
-    """Test FeedForward module"""
-    print_test_header("FeedForward")
+    """Test GatedFeedForward module"""
+    print_test_header("GatedFeedForward")
 
     dim = 512
     hidden_dim = 2048
     batch_size = 2
     seq_len = 16
 
-    model = FeedForward(dim=dim, hidden_dim=hidden_dim)
+    model = GatedFeedForward(dim=dim, hidden_dim=hidden_dim)
     x = torch.randn(batch_size, seq_len, dim)
 
     output = model(x)
@@ -217,16 +217,14 @@ def test_single_stream_attention():
     dim = 512
     num_heads = 4  # head_dim = 128
     batch_size = 2
-    seq_len = 100
+    img_hw = (8, 8)  # 64 image tokens
+    txt_seq_len = 36  # 36 text tokens, total = 100
+    total_seq_len = img_hw[0] * img_hw[1] + txt_seq_len
 
     model = SingleStreamAttention(dim=dim, num_heads=num_heads, rope_axes_dim=[64, 64])
-    x = torch.randn(batch_size, seq_len, dim)
+    x = torch.randn(batch_size, total_seq_len, dim)
 
-    # Generate dummy frequencies
-    # head_dim = 128, so we need 128/2 = 64 complex frequencies
-    freqs = torch.randn(seq_len, 64, dtype=torch.complex64)
-
-    output = model(x, freqs)
+    output = model(x, img_hw, txt_seq_len)
 
     # Check shape preservation
     shape_correct = output.shape == x.shape
@@ -239,9 +237,9 @@ def test_single_stream_attention():
     print_test_result(modified, "Attention transformation applied")
 
     # Test with attention mask
-    mask = torch.ones(batch_size, 1, 1, seq_len, dtype=torch.bool)
-    mask[:, :, :, 50:] = False  # Mask second half
-    output_masked = model(x, freqs, attention_mask=mask)
+    txt_mask = torch.ones(batch_size, txt_seq_len)
+    txt_mask[:, 18:] = 0  # Mask second half of text
+    output_masked = model(x, img_hw, txt_seq_len, txt_attention_mask=txt_mask)
     mask_applied = not torch.allclose(output, output_masked)
     print_test_result(mask_applied, "Attention mask affects output")
 
@@ -493,7 +491,7 @@ def run_all_tests():
     results["TimestepEmbeddings"] = test_timestep_embeddings()
     results["apply_rotary_emb"] = test_apply_rotary_emb()
     results["MSRoPE"] = test_msrope()
-    results["FeedForward"] = test_feedforward()
+    results["GatedFeedForward"] = test_feedforward()
     results["modulate"] = test_modulate()
     results["SingleStreamAttention"] = test_single_stream_attention()
     results["SingleStreamDiTBlock"] = test_single_stream_dit_block()

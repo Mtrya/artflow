@@ -4,17 +4,12 @@ Downloads images, resizes them, and encodes them with VAE.
 """
 
 import argparse
-import os
-import sys
 import ast
 from typing import Dict, Tuple
 
 from datasets import load_dataset
 
-# Add parent directory to path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-from src.utils.precompute_engine import precompute
+from ..dataset.precompute import precompute
 
 
 def parse_resolution_buckets(bucket_str: str) -> Dict[int, Tuple[int, int]]:
@@ -95,6 +90,7 @@ def parse_args():
         "--range", type=int, default=-1, help="Range of images to process (for testing)"
     )
     parser.add_argument("--device", type=str, default="cuda", help="Device to use")
+    parser.add_argument("--non_zh_drop_prob", type=float, default=0.0, help="Probability of dropping non-zh samples")
     return parser.parse_args()
 
 
@@ -133,6 +129,7 @@ def main():
         resolution_buckets=buckets,
         batch_size=args.batch_size,
         device=args.device,
+        non_zh_drop_prob=args.non_zh_drop_prob,
     )
     print(f"Saving processed dataset to {args.output_dir}...")
     processed_dataset.save_to_disk(args.output_dir)
@@ -141,3 +138,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

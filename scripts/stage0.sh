@@ -33,7 +33,7 @@ DEPTH=8
 NUM_HEADS=8
 
 # Launch training
-python scripts/train_stage0.py \
+python -m src.train.stage0 \
     --run_name "artflow-stage0-fm-ot" \
     --output_dir $OUTPUT_DIR \
     --precomputed_dataset_path $PRECOMPUTED_PATH \

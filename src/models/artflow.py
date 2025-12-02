@@ -228,21 +228,38 @@ if __name__ == "__main__":
             inputs = (x, t, txt, txt_pooled)
 
             params = sum(p.numel() for p in model.parameters())
-            flops = FlopCountAnalysis(model, inputs).total()
+            #flops = FlopCountAnalysis(model, inputs).total()
 
             print(f"Params: {params:,}")
-            print(f"FLOPs: {flops:.2e}")
+            #print(f"FLOPs: {flops:.2e}")
             return True
         except Exception as e:
             print(f"Failed: {e}")
             return False
 
     base_config = {
-        "hidden_size": 512,
+        "hidden_size": 640,
         "num_heads": 8,
-        "double_stream_depth": 8,
-        "single_stream_depth": 0,
+        "double_stream_depth": 2,
+        "single_stream_depth": 14,
+        "mlp_ratio": 2.67,
         "conditioning_scheme": "pure",
-        "modulation_share": "none",
+        "qkv_bias": False,
+        "double_stream_modulation": "layer",
+        "single_stream_modulation": "layer",
+        "ffn_type": "gated",
     }
     test_variant("Base", base_config)
+
+    """final_config = {
+        "hidden_size": 1120,
+        "num_heads": 14,
+        "double_stream_depth": 8,
+        "single_stream_depth": 16,
+        "mlp_ratio": 2.667,
+        "conditioning_scheme": "pure",
+        "double_stream_modulation": "layer",
+        "single_stream_modulation": "layer",
+        "ffn_type": "gated"
+    }
+    test_variant("Final", final_config)"""

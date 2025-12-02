@@ -1,13 +1,10 @@
-"""Utils module - encoding, VAE codec, precomputation, and dataloader utilities."""
+"""Utils module - encoding and VAE codec utilities."""
 
 # Text encoding
 from .encode_text import encode_text
 
 # VAE codec
 from .vae_codec import encode_image, decode_latents, get_vae_stats
-
-# Precomputation engine
-from .precompute_engine import precompute, sample_caption
 
 __all__ = [
     # Text encoding
@@ -16,7 +13,4 @@ __all__ = [
     "encode_image",
     "decode_latents",
     "get_vae_stats",
-    # Precomputation
-    "precompute",
-    "sample_caption",
 ]

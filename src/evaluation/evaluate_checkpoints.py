@@ -6,12 +6,9 @@ Thin wrapper that discovers checkpoints and calls run_evaluation_heavy.
 import argparse
 import json
 import os
-import sys
 from glob import glob
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-from src.utils.evaluation import run_evaluation_heavy
+from .pipeline import run_evaluation_heavy
 
 
 def discover_checkpoints(checkpoint_pattern: str) -> list:
@@ -59,13 +56,7 @@ def main():
         help="Path to evaluation dataset",
     )
     parser.add_argument(
-        "--num_fid_samples",
-        type=int,
-        default=2000,
-        help="Number of samples for FID",
-    )
-    parser.add_argument(
-        "--num_clip_samples",
+        "--num_samples",
         type=int,
         default=2000,
         help="Number of samples for CLIP",
@@ -118,8 +109,7 @@ def main():
                 pooling=args.pooling,
                 save_path=checkpoint_dir,
                 dataset_path=args.dataset_path,
-                num_fid_samples=args.num_fid_samples,
-                num_clip_samples=args.num_clip_samples,
+                num_samples=args.num_samples,
                 batch_size=args.batch_size,
                 device=args.device,
             )
@@ -138,3 +128,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
