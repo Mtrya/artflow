@@ -18,7 +18,8 @@ EVAL_SAMPLES=32
 EVAL_BS=8
 
 # Training configuration
-PRECOMPUTED_PATH="./precomputed_dataset/wikiart-captions@256p"
+# Dataset mix: "path1:weight1 path2:weight2" or single "path"
+DATASET_MIX="./precomputed_dataset/wikiart-captions@256p:0.9 ./precomputed_dataset/face-caption-hq@256p:0.1"
 TEXT_ENCODER_PATH="Qwen/Qwen3-VL-2B-Instruct"
 LR=3e-4
 MIN_LR=1e-6
@@ -40,7 +41,7 @@ accelerate launch -m src.train.stage1 \
     --eval_interval $EVAL_INTERVAL \
     --num_eval_samples $EVAL_SAMPLES \
     --eval_batch_size $EVAL_BS \
-    --dataset_path $PRECOMPUTED_PATH \
+    --dataset_mix "$DATASET_MIX" \
     --text_encoder_path $TEXT_ENCODER_PATH \
     --learning_rate $LR \
     --lr_scheduler_type $LR_SCHEDULER \

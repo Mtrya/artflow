@@ -13,13 +13,13 @@ from torch.utils.data import DataLoader
 from accelerate import Accelerator
 from accelerate.utils import ProjectConfiguration, set_seed
 from tqdm.auto import tqdm
-from datasets import load_from_disk
 from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 from transformers.optimization import get_scheduler
 
 from ..models.artflow import ArtFlow
 from ..dataset.sampler import ResolutionBucketSampler, collate_fn
 from ..dataset.captions import sample_caption
+from ..dataset.mix import parse_dataset_mix, load_mixed_dataset, get_dataset_weights
 from ..utils.encode_text import encode_text
 from ..utils.vae_codec import get_vae_stats
 from ..flow.paths import FlowMatchingOT
@@ -100,10 +100,10 @@ def parse_args():
 
     # Training Config
     parser.add_argument(
-        "--dataset_path",
+        "--dataset_mix",
         type=str,
         required=True,
-        help="Path to precomputed dataset",
+        help="Dataset mix spec: 'path1:weight1 path2:weight2' or single 'path'",
     )
     parser.add_argument(
         "--text_encoder_path",
@@ -305,9 +305,20 @@ def main():
 
     ema_model = deepcopy(model) if args.use_ema else None
 
-    # Dataset
-    accelerator.print(f"Loading dataset from {args.dataset_path}")
-    dataset = load_from_disk(args.dataset_path)
+    # Dataset (with optional mixing)
+    accelerator.print(f"Parsing dataset mix: {args.dataset_mix}")
+    dataset_entries = parse_dataset_mix(args.dataset_mix)
+    dataset_weights = get_dataset_weights(dataset_entries)
+
+    for entry in dataset_entries:
+        accelerator.print(f"  - {entry.alias}: weight={entry.weight:.3f}, path={entry.path}")
+
+    # Load and concatenate datasets
+    dataset = load_mixed_dataset(dataset_entries, shuffle_seed=args.seed)
+    accelerator.print(f"Total samples: {len(dataset)}")
+
+    # Determine if we're in multi-dataset mode
+    is_multi_dataset = len(dataset_entries) > 1
 
     # Sampler & Loader
     sampler = ResolutionBucketSampler(
@@ -315,6 +326,7 @@ def main():
         batch_size=args.batch_size,
         num_replicas=accelerator.num_processes,
         rank=accelerator.process_index,
+        dataset_weights=dataset_weights if is_multi_dataset else None,
     )
     dataloader = DataLoader(
         dataset,
@@ -338,6 +350,11 @@ def main():
     # Probability Path
     algorithm = FlowMatchingOT()
 
+    # Per-dataset telemetry (for multi-dataset mode)
+    dataset_aliases = [entry.alias for entry in dataset_entries]
+    dataset_sample_counts = {alias: 0 for alias in dataset_aliases}
+    telemetry_log_interval = 100  # Log per-dataset stats every N steps
+
     # Training Loop
     global_step = 0
     progress_bar = tqdm(
@@ -356,6 +373,12 @@ def main():
             batch = next(train_iter)
 
         with accelerator.accumulate(model):
+            # Track per-dataset samples (multi-dataset mode)
+            if "dataset_ids" in batch:
+                for ds_id in batch["dataset_ids"].tolist():
+                    alias = dataset_aliases[ds_id]
+                    dataset_sample_counts[alias] += 1
+
             # 1. Text Encoding (On-the-fly)
             captions_list = batch["captions"]  # List[List[str]]
 
@@ -414,14 +437,22 @@ def main():
             progress_bar.update(1)
 
             if accelerator.is_main_process:
-                accelerator.log(
-                    {
-                        "train/loss": loss.item(),
-                        "train/stage": stage,
-                        "train/lr": optimizer.param_groups[0]["lr"],
-                    },
-                    step=global_step,
-                )
+                log_dict = {
+                    "train/loss": loss.item(),
+                    "train/stage": stage,
+                    "train/lr": optimizer.param_groups[0]["lr"],
+                }
+
+                # Per-dataset telemetry (log periodically)
+                if is_multi_dataset and global_step % telemetry_log_interval == 0:
+                    total_samples = sum(dataset_sample_counts.values())
+                    if total_samples > 0:
+                        for alias, count in dataset_sample_counts.items():
+                            ratio = count / total_samples
+                            log_dict[f"data/{alias}_ratio"] = ratio
+                            log_dict[f"data/{alias}_count"] = count
+
+                accelerator.log(log_dict, step=global_step)
 
             # Checkpointing
             if global_step % args.checkpoint_interval == 0:
