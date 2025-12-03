@@ -98,8 +98,34 @@ def precompute(
 
         # Track drop counts for summary
         dropped_lang = len(skip_indices)
-        dropped_download = 0
+        dropped_fetch_timeout = 0
+        dropped_fetch_error = 0
+        dropped_invalid_image = 0
         dropped_resolution = 0
+        dropped_bucket_error = 0
+        dropped_vae = 0
+
+        def _log_dropped_samples():
+            total_dropped = (
+                dropped_lang
+                + dropped_fetch_timeout
+                + dropped_fetch_error
+                + dropped_invalid_image
+                + dropped_resolution
+                + dropped_bucket_error
+                + dropped_vae
+            )
+            if total_dropped > 0:
+                print(
+                    f"Batch: {total_dropped}/{batch_len} dropped "
+                    f"(lang={dropped_lang}, "
+                    f"fetch_timeout={dropped_fetch_timeout}, "
+                    f"fetch_error={dropped_fetch_error}, "
+                    f"invalid_image={dropped_invalid_image}, "
+                    f"resolution={dropped_resolution}, "
+                    f"bucket_error={dropped_bucket_error}, "
+                    f"vae={dropped_vae})"
+                )
 
         # Group by resolution bucket: (bucket_id, resolution) -> list of (original_idx, image)
         batches_by_bucket = {}
@@ -121,13 +147,15 @@ def precompute(
                     # If this times out, the sample is dropped
                     image = future.result(timeout=10.0)
                 except concurrent.futures.TimeoutError:
-                    dropped_download += 1
-                    image = None
+                    dropped_fetch_timeout += 1
+                    continue
                 except Exception:
-                    dropped_download += 1
-                    image = None
+                    dropped_fetch_error += 1
+                    continue
 
                 if image is None:
+                    # _fetch_image failed silently (e.g. bad URL, corrupt image)
+                    dropped_invalid_image += 1
                     continue
 
                 # 2. Find bucket and resize if original resolution is sufficient
@@ -148,17 +176,11 @@ def precompute(
                         batches_by_bucket[key] = []
                     batches_by_bucket[key].append((idx, resized_image))
                 except Exception:
+                    dropped_bucket_error += 1
                     continue
 
-        # Print batch summary if any samples were dropped
-        total_dropped = dropped_lang + dropped_download + dropped_resolution
-        if total_dropped > 0:
-            print(
-                f"Batch: {total_dropped}/{batch_len} dropped "
-                f"(lang={dropped_lang}, download={dropped_download}, resolution={dropped_resolution})"
-            )
-
         if not batches_by_bucket:
+            _log_dropped_samples()
             return {"latents": [], "captions": [], "resolution_bucket_id": []}
 
         # 3. Compute latents per bucket
@@ -176,21 +198,18 @@ def precompute(
 
                 for i, original_idx in enumerate(batch_indices):
                     latents_map[original_idx] = batch_latents[i]
-                    bucket_ids_map[original_idx] = bucket_id
-
-                # Explicitly delete intermediate tensors and images
-                del batch_latents
-                del batch_images
-                del batch_indices
+                    bucket_ids_map[original_idx] = int(bucket_id)
 
             except Exception as e:
                 print(f"Error encoding batch for resolution {resolution}: {e}")
+                dropped_vae += len(batch_indices)
                 continue
 
         # Clear the batches_by_bucket dict to free PIL images
         del batches_by_bucket
 
         if not latents_map:
+            _log_dropped_samples()
             return {"latents": [], "captions": [], "resolution_bucket_id": []}
 
         # 4. Gather results in order
@@ -240,6 +259,9 @@ def precompute(
                 current_captions.extend(processed_items)
 
             valid_captions_list.append(current_captions)
+
+        # Batch summary including all accounted drop reasons
+        _log_dropped_samples()
 
         # Clear the maps to free memory before returning
         del latents_map
