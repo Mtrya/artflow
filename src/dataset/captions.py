@@ -36,6 +36,8 @@ def clean_caption(text: str) -> str:
         "The image shows a painting of ",
         "The image shows a drawing of ",
         "The image shows ",
+        "In the image, ",
+        "In the picture, "
     ]
     for prefix in prefixes:
         if text.startswith(prefix):
