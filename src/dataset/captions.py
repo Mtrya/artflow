@@ -7,6 +7,7 @@ Functions:
 - sample_caption: Curriculum-based caption sampling for training
 """
 
+import re
 import random
 from typing import List
 
@@ -14,8 +15,24 @@ import numpy as np
 
 
 def _estimate_token_counts(texts: List[str]) -> List[int]:
-    """Approximate token counts assuming ~1.3 tokens per word for English prose."""
-    return [int(len(text.split()) * 1.3) for text in texts]
+    """
+    Approximate token counts based on first character for language determination.
+    - English and similar: ~1.3 tokens per word
+    - Chinese and similar: ~0.6 token per character
+    This method should be extremely fast but has low accuracy for language detection or token approximation.
+    """
+    results = []
+    for text in texts:
+        if not text:
+            results.append(0)
+            continue
+
+        first_char = text[0]
+        if re.match(r'[a-zA-Z]', first_char):
+            results.append(int(len(text.split()) * 1.3))
+        else:
+            results.append(int(len(text) * 0.6))
+    return results
 
 
 def clean_caption(text: str) -> str:

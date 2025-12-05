@@ -50,6 +50,8 @@ def precompute(
     batch_size: int = 50,
     device: str = "cuda",
     non_zh_drop_prob: float = 0.0,
+    resolution_tolerence: float = 1.0,
+    max_caption_tokens: int = 1024,
 ) -> Dataset:
     """
     Stateless precomputation of image latents and caption preparation.
@@ -67,6 +69,8 @@ def precompute(
         non_zh_drop_prob: Probability of dropping samples where LANGUAGE field
                           is not "zh". Only applies if dataset has LANGUAGE field.
                           Default 0.0 means no language filtering.
+        max_caption_tokens: Maximum estimated tokens for any single caption.
+                            Samples with longer captions will be dropped.
 
     Returns:
         Processed dataset with 'latents', 'captions', and 'resolution_bucket_id'.
@@ -74,6 +78,7 @@ def precompute(
     """
     from diffusers import AutoencoderKLQwenImage
     from ..utils.vae_codec import encode_image
+    from .captions import _estimate_token_counts
 
     # Load VAE
     print(f"Loading VAE from {vae_path}...")
@@ -87,54 +92,94 @@ def precompute(
         images_raw = batch[image_field]
         batch_len = len(images_raw)
 
-        # Language filter: randomly drop non-zh samples if LANGUAGE field exists
-        languages = batch.get("LANGUAGE", [None] * batch_len)
+        # --- Pre-fetch filtering ---
         skip_indices = set()
+        processed_captions_map = {}
+
+        # 1. Language filter
+        languages = batch.get("LANGUAGE", [None] * batch_len)
         if non_zh_drop_prob > 0.0:
             for idx, lang in enumerate(languages):
                 if lang is not None and lang != "zh":
                     if random.random() < non_zh_drop_prob:
                         skip_indices.add(idx)
-
-        # Track drop counts for summary
         dropped_lang = len(skip_indices)
+
+        # 2. Resolution filter (if metadata available)
+        widths = batch.get("WIDTH") or batch.get("width", [None] * batch_len)
+        heights = batch.get("HEIGHT") or batch.get("height", [None] * batch_len)
+        for idx in range(batch_len):
+            if idx in skip_indices:
+                continue
+            width, height = widths[idx], heights[idx]
+            if isinstance(width, int) and isinstance(height, int):
+                try:
+                    _, resolution = get_resolution_bucket(width, height, resolution_buckets)
+                    if width < resolution[0] * resolution_tolerence or height < resolution[1] * resolution_tolerence:
+                        skip_indices.add(idx)
+                except Exception:
+                    skip_indices.add(idx)
+        dropped_resolution_pre = len(skip_indices) - dropped_lang
+
+        # 3. Caption length filter (drop too short or too long captions)
+        for idx in range(batch_len):
+            if idx in skip_indices:
+                continue
+
+            current_captions = []
+            for field in caption_fields:
+                if field not in batch or batch[field][idx] is None:
+                    continue
+                val = batch[field][idx]
+                # Simplified caption extraction logic
+                items_to_process = []
+                if field == "human_caption_hq" and isinstance(val, list) and len(val) > 1 and "value" in val[1]:
+                    items_to_process.append(val[1]["value"])
+                elif field == "artist":
+                    items_to_process.append(format_artist_name(val))
+                elif isinstance(val, str):
+                    items_to_process.append(val)
+                elif isinstance(val, list):
+                    items_to_process.extend(item for item in val if isinstance(item, str))
+
+                for item in items_to_process:
+                    if text_fn:
+                        current_captions.append(text_fn(item))
+                    else:
+                        current_captions.append(item)
+
+            token_counts = _estimate_token_counts(current_captions)
+            if not current_captions or not any(count > 0 for count in token_counts):
+                # Drop samples with effectively empty captions
+                skip_indices.add(idx)
+            elif any(count > max_caption_tokens for count in token_counts):
+                # Drop samples with at least one overly long caption
+                skip_indices.add(idx)
+            else:
+                processed_captions_map[idx] = current_captions
+
+        dropped_caption_length = len(skip_indices) - dropped_lang - dropped_resolution_pre
+        
+        # --- Image Fetching and Processing ---
         dropped_fetch_timeout = 0
         dropped_fetch_error = 0
         dropped_invalid_image = 0
-        dropped_resolution = 0
+        dropped_resolution_post = 0
         dropped_bucket_error = 0
         dropped_vae = 0
 
         def _log_dropped_samples():
-            total_dropped = (
-                dropped_lang
-                + dropped_fetch_timeout
-                + dropped_fetch_error
-                + dropped_invalid_image
-                + dropped_resolution
-                + dropped_bucket_error
-                + dropped_vae
-            )
+            total_dropped = len(skip_indices) + dropped_fetch_timeout + dropped_fetch_error + dropped_invalid_image + dropped_resolution_post + dropped_bucket_error + dropped_vae
             if total_dropped > 0:
                 print(
                     f"Batch: {total_dropped}/{batch_len} dropped "
-                    f"(lang={dropped_lang}, "
-                    f"fetch_timeout={dropped_fetch_timeout}, "
-                    f"fetch_error={dropped_fetch_error}, "
-                    f"invalid_image={dropped_invalid_image}, "
-                    f"resolution={dropped_resolution}, "
-                    f"bucket_error={dropped_bucket_error}, "
-                    f"vae={dropped_vae})"
+                    f"(lang={dropped_lang}, res_pre={dropped_resolution_pre}, caption={dropped_caption_length}, "
+                    f"fetch_timeout={dropped_fetch_timeout}, fetch_err={dropped_fetch_error}, invalid_img={dropped_invalid_image}, "
+                    f"res_post={dropped_resolution_post}, bucket_err={dropped_bucket_error}, vae={dropped_vae})"
                 )
 
-        # Group by resolution bucket: (bucket_id, resolution) -> list of (original_idx, image)
         batches_by_bucket = {}
-
-        # Parallel fetch with timeout per image (skip filtered indices)
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=min(batch_len, 50)
-        ) as executor:
-            # Submit tasks only for non-skipped samples
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(batch_len, 50)) as executor:
             futures = {
                 idx: executor.submit(_fetch_image, img_data)
                 for idx, img_data in enumerate(images_raw)
@@ -143,8 +188,6 @@ def precompute(
 
             for idx, future in futures.items():
                 try:
-                    # Enforce strict timeout on the entire fetch operation
-                    # If this times out, the sample is dropped
                     image = future.result(timeout=10.0)
                 except concurrent.futures.TimeoutError:
                     dropped_fetch_timeout += 1
@@ -154,23 +197,17 @@ def precompute(
                     continue
 
                 if image is None:
-                    # _fetch_image failed silently (e.g. bad URL, corrupt image)
                     dropped_invalid_image += 1
                     continue
 
-                # 2. Find bucket and resize if original resolution is sufficient
                 width, height = image.size
                 try:
-                    bucket_id, resolution = get_resolution_bucket(
-                        width, height, resolution_buckets
-                    )
-
-                    if width < resolution[0] or height < resolution[1]:
-                        dropped_resolution += 1
+                    bucket_id, resolution = get_resolution_bucket(width, height, resolution_buckets)
+                    if width < resolution[0] * resolution_tolerence or height < resolution[1] * resolution_tolerence:
+                        dropped_resolution_post += 1
                         continue
-
+                    
                     resized_image = image.resize(resolution, Image.BICUBIC)
-
                     key = (bucket_id, resolution)
                     if key not in batches_by_bucket:
                         batches_by_bucket[key] = []
@@ -183,91 +220,38 @@ def precompute(
             _log_dropped_samples()
             return {"latents": [], "captions": [], "resolution_bucket_id": []}
 
-        # 3. Compute latents per bucket
-        latents_map = {}  # original_idx -> latent
-        bucket_ids_map = {}  # original_idx -> bucket_id
-
+        latents_map = {}
+        bucket_ids_map = {}
         for (bucket_id, resolution), items in batches_by_bucket.items():
             batch_indices = [item[0] for item in items]
             batch_images = [item[1] for item in items]
-
             try:
                 with torch.no_grad():
-                    # encode_image expects a list of PIL images
                     batch_latents = encode_image(batch_images, vae).detach().cpu()
-
                 for i, original_idx in enumerate(batch_indices):
                     latents_map[original_idx] = batch_latents[i]
                     bucket_ids_map[original_idx] = int(bucket_id)
-
             except Exception as e:
                 print(f"Error encoding batch for resolution {resolution}: {e}")
                 dropped_vae += len(batch_indices)
-                continue
-
-        # Clear the batches_by_bucket dict to free PIL images
         del batches_by_bucket
 
         if not latents_map:
             _log_dropped_samples()
             return {"latents": [], "captions": [], "resolution_bucket_id": []}
 
-        # 4. Gather results in order
         valid_latents = []
         valid_captions_list = []
         valid_bucket_ids = []
-
-        # Sort by original index to maintain relative order (optional but good for determinism)
         sorted_indices = sorted(latents_map.keys())
 
         for original_idx in sorted_indices:
             valid_latents.append(latents_map[original_idx])
             valid_bucket_ids.append(bucket_ids_map[original_idx])
+            valid_captions_list.append(processed_captions_map[original_idx])
 
-            # Gather items from caption fields
-            current_captions = []
-            for field in caption_fields:
-                if field not in batch or batch[field][original_idx] is None:
-                    continue
-
-                val = batch[field][original_idx]
-                processed_items = []
-
-                if field == "human_caption_hq":
-                    item = val[1]["value"]
-                    if text_fn and isinstance(item, str):
-                        processed_items.append(text_fn(item))
-                    elif isinstance(item, str):
-                        processed_items.append(item)
-                elif field == "artist":
-                    if text_fn:
-                        val = text_fn(val)
-                    processed_items.append(format_artist_name(val))
-                elif isinstance(val, str):
-                    if text_fn:
-                        processed_items.append(text_fn(val))
-                    else:
-                        processed_items.append(val)
-                elif isinstance(val, list):
-                    for item in val:
-                        if isinstance(item, str):
-                            if text_fn:
-                                processed_items.append(text_fn(item))
-                            else:
-                                processed_items.append(item)
-
-                current_captions.extend(processed_items)
-
-            valid_captions_list.append(current_captions)
-
-        # Batch summary including all accounted drop reasons
         _log_dropped_samples()
-
-        # Clear the maps to free memory before returning
-        del latents_map
-        del bucket_ids_map
-
-        # Force garbage collection and clear CUDA cache
+        del latents_map, bucket_ids_map, processed_captions_map
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -278,11 +262,8 @@ def precompute(
             "resolution_bucket_id": valid_bucket_ids,
         }
 
-    # Determine columns to remove
     columns_to_keep = {"latents", "captions", "resolution_bucket_id"}
-    columns_to_remove = [
-        col for col in dataset.column_names if col not in columns_to_keep
-    ]
+    columns_to_remove = [col for col in dataset.column_names if col not in columns_to_keep]
 
     print("Starting precomputation...")
     processed_dataset = dataset.map(
@@ -293,16 +274,11 @@ def precompute(
         desc="Precomputing latents and captions",
     )
 
-    # Clean up VAE from GPU memory
     print("Cleaning up VAE from GPU memory...")
     del vae
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    # Set format to torch
-    # We don't specify columns so that all columns are returned.
     processed_dataset = processed_dataset.with_format("torch")
-
     return processed_dataset
-

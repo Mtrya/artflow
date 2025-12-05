@@ -7,7 +7,7 @@ import argparse
 import ast
 from typing import Dict, Tuple
 
-from datasets import load_dataset
+from datasets import load_dataset, load_from_disk
 
 from ..dataset.precompute import precompute
 
@@ -91,6 +91,8 @@ def parse_args():
     )
     parser.add_argument("--device", type=str, default="cuda", help="Device to use")
     parser.add_argument("--non_zh_drop_prob", type=float, default=0.0, help="Probability of dropping non-zh samples")
+    parser.add_argument("--resolution_tolerence", type=float, default=1.0, help="Tolerance factor for resolution dropping")
+    parser.add_argument("--max_caption_tokens", type=int, default=1024, help="Maximum caption tokens to allow")
     return parser.parse_args()
 
 
@@ -103,7 +105,12 @@ def main():
     else:
         split = args.split
 
-    dataset = load_dataset(args.dataset_name, split=split)
+    try:
+        print("Trying to load dataset from disk...")
+        dataset = load_from_disk(args.dataset_name)
+    except FileNotFoundError:
+        print(f"Trying to load dataset from Hugging Face...")
+        dataset = load_dataset(args.dataset_name, split=split)
 
     # Process caption fields
     raw_caption_fields = args.caption_fields
@@ -130,6 +137,8 @@ def main():
         batch_size=args.batch_size,
         device=args.device,
         non_zh_drop_prob=args.non_zh_drop_prob,
+        resolution_tolerence=args.resolution_tolerence,
+        max_caption_tokens=args.max_caption_tokens,
     )
     print(f"Saving processed dataset to {args.output_dir}...")
     processed_dataset.save_to_disk(args.output_dir)
@@ -138,4 +147,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
