@@ -14,12 +14,12 @@ export SWANLAB_LOG_DIR="./output/swanlog"
 VAE_PATH="REPA-E/e2e-qwenimage-vae"
 CHECKPOINT_INTERVAL=6000
 EVAL_INTERVAL=1000
-EVAL_SAMPLES=32
-EVAL_BS=8
+EVAL_SAMPLES=256
+EVAL_BS=16
 
 # Training configuration
 # Dataset mix: "path1:weight1 path2:weight2" or single "path"
-DATASET_MIX="./precomputed_dataset/wikiart-captions@256p:0.9 ./precomputed_dataset/face-caption-hq@256p:0.1"
+DATASET_MIX="./precomputed_dataset/mixed-art@256p:0.9 ./precomputed_dataset/face-caption-hq@256p:0.1"
 TEXT_ENCODER_PATH="Qwen/Qwen3-VL-2B-Instruct"
 LR=3e-4
 MIN_LR=1e-6
@@ -33,8 +33,8 @@ EMA_INTERVAL=1
 BATCH_SIZE=16
 NUM_WORKERS=4
 
-accelerate launch -m src.train.stage1 \
-    --run_name "base" \
+accelerate launch -m src.train.train \
+    --run_name "baseline" \
     --output_dir $OUTPUT_DIR \
     --vae_path $VAE_PATH \
     --checkpoint_interval $CHECKPOINT_INTERVAL \
@@ -57,11 +57,11 @@ accelerate launch -m src.train.stage1 \
     --ema_update_interval $EMA_INTERVAL \
     --hidden_size 640 \
     --num_heads 8 \
-    --double_stream_depth 2 \
-    --single_stream_depth 10 \
+    --double_stream_depth 0 \
+    --single_stream_depth 12 \
     --mlp_ratio 2.67 \
     --conditioning_scheme "pure" \
     --qkv_bias \
-    --double_stream_modulation "layer" \
-    --single_stream_modulation "layer" \
+    --double_stream_modulation "none" \
+    --single_stream_modulation "none" \
     --ffn_type "gated"

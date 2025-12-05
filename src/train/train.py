@@ -245,11 +245,12 @@ def main():
         )
 
     # Load Text Encoder (Frozen, on GPU)
+    # Each rank loads its own copy on its assigned device for parallel text encoding
     accelerator.print(f"Loading Text Encoder: {args.text_encoder_path}")
     text_encoder = Qwen3VLForConditionalGeneration.from_pretrained(
         args.text_encoder_path,
         torch_dtype=torch.bfloat16,
-        device_map=accelerator.device,
+        device_map={"": accelerator.device},  # Pin to current rank's device
         local_files_only=True,
     )
     text_encoder.eval()
@@ -352,8 +353,13 @@ def main():
 
     # Per-dataset telemetry (for multi-dataset mode)
     dataset_aliases = [entry.alias for entry in dataset_entries]
-    dataset_sample_counts = {alias: 0 for alias in dataset_aliases}
     telemetry_log_interval = 100  # Log per-dataset stats every N steps
+
+    # Initialize telemetry tensors for distributed synchronization
+    telemetry_tensors = {
+        alias: torch.zeros(1, dtype=torch.long, device=accelerator.device)
+        for alias in dataset_aliases
+    }
 
     # Training Loop
     global_step = 0
@@ -377,7 +383,7 @@ def main():
             if "dataset_ids" in batch:
                 for ds_id in batch["dataset_ids"].tolist():
                     alias = dataset_aliases[ds_id]
-                    dataset_sample_counts[alias] += 1
+                    telemetry_tensors[alias] += 1
 
             # 1. Text Encoding (On-the-fly)
             captions_list = batch["captions"]  # List[List[str]]
@@ -445,12 +451,26 @@ def main():
 
                 # Per-dataset telemetry (log periodically)
                 if is_multi_dataset and global_step % telemetry_log_interval == 0:
-                    total_samples = sum(dataset_sample_counts.values())
+                    # Synchronize telemetry across all GPUs
+                    synchronized_counts = {}
+                    total_samples = 0
+
+                    for alias in dataset_aliases:
+                        # Reduce (sum) across all processes
+                        synced_tensor = accelerator.reduce(telemetry_tensors[alias], reduction="sum")
+                        count = synced_tensor.item()
+                        synchronized_counts[alias] = count
+                        total_samples += count
+
                     if total_samples > 0:
-                        for alias, count in dataset_sample_counts.items():
+                        for alias, count in synchronized_counts.items():
                             ratio = count / total_samples
                             log_dict[f"data/{alias}_ratio"] = ratio
                             log_dict[f"data/{alias}_count"] = count
+
+                    # Reset telemetry counters for next interval
+                    for alias in dataset_aliases:
+                        telemetry_tensors[alias].zero_()
 
                 accelerator.log(log_dict, step=global_step)
 

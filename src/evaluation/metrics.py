@@ -129,7 +129,7 @@ def calculate_kid(
 def calculate_clip_score(
     images: torch.Tensor,
     prompts: Union[str, List[str]],
-    model_name_or_path: str = "openai/clip-vit-base-patch16",
+    model_name_or_path: str = "openai/clip-vit-base-patch16", # or "OFA-Sys/chinese-clip-vit-base-patch16"
     device: Optional[torch.device] = None,
     batch_size: int = 32,
 ) -> float:
