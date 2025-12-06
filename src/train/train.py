@@ -46,17 +46,23 @@ def build_linear_cosine_scheduler(
     num_training_steps: int,
     min_learning_rate: float,
     base_learning_rate: float,
+    start_learning_rate: float = 1e-6,
 ) -> torch.optim.lr_scheduler.LambdaLR:
     warmup_steps = max(num_warmup_steps, 0)
     total_steps = max(num_training_steps, warmup_steps + 1)
     if base_learning_rate <= 0:
         raise ValueError("Base learning rate must be positive for cosine scheduler")
-    clamped_min_lr = min(min_learning_rate, base_learning_rate)
-    min_ratio = clamped_min_lr / base_learning_rate
+    
+    # Calculate ratios
+    min_ratio = min(min_learning_rate, base_learning_rate) / base_learning_rate
+    start_ratio = min(start_learning_rate, base_learning_rate) / base_learning_rate
 
     def lr_lambda(current_step: int) -> float:
         if current_step < warmup_steps:
-            return current_step / max(1, warmup_steps)
+            # Linear warmup from start_ratio to 1.0
+            progress = current_step / max(1, warmup_steps)
+            return start_ratio + (1.0 - start_ratio) * progress
+            
         progress = (current_step - warmup_steps) / max(1, total_steps - warmup_steps)
         progress = min(max(progress, 0.0), 1.0)
         cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
@@ -74,6 +80,12 @@ def parse_args():
         "--output_dir", type=str, default="output", help="Output directory"
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Path to checkpoint directory to resume from (loads weights+optimizer, resets step)",
+    )
 
     # Evaluation Config
     parser.add_argument(
@@ -115,6 +127,12 @@ def parse_args():
         "--learning_rate", type=float, default=1e-4, help="Learning rate"
     )
     parser.add_argument(
+        "--start_learning_rate",
+        type=float,
+        default=1e-6,
+        help="Initial learning rate for linear warmup",
+    )
+    parser.add_argument(
         "--lr_scheduler_type",
         type=str,
         default="linear_cosine",
@@ -142,6 +160,18 @@ def parse_args():
     )
     parser.add_argument(
         "--max_steps", type=int, default=50000, help="Total training steps"
+    )
+    parser.add_argument(
+        "--curriculum_start",
+        type=float,
+        default=0.0,
+        help="Start value for caption sampling stage (0.0-1.0)",
+    )
+    parser.add_argument(
+        "--curriculum_end",
+        type=float,
+        default=1.0,
+        help="End value for caption sampling stage (0.0-1.0)",
     )
     parser.add_argument(
         "--gradient_accumulation_steps",
@@ -239,7 +269,7 @@ def main():
     if accelerator.is_main_process:
         os.makedirs(args.output_dir, exist_ok=True)
         accelerator.init_trackers(
-            project_name="artflow-stage1",
+            project_name="artflow",
             config=vars(args),
             init_kwargs={"swanlab": {"experiment_name": args.run_name}},
         )
@@ -295,6 +325,7 @@ def main():
             num_training_steps=args.max_steps,
             min_learning_rate=args.min_learning_rate,
             base_learning_rate=args.learning_rate,
+            start_learning_rate=args.start_learning_rate,
         )
     else:
         lr_scheduler = get_scheduler(
@@ -339,6 +370,24 @@ def main():
 
     # Prepare
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
+
+    # Resume Logic
+    if args.resume:
+        accelerator.print(f"Resuming from checkpoint: {args.resume}")
+        accelerator.load_state(args.resume)
+        
+        # Reset scheduler and global step for new stage
+        # Note: accelerator.load_state loads the scheduler state too, so we need to reset it
+        # We want to keep optimizer state (e.g., momentum) but restart the schedule
+        if hasattr(lr_scheduler, 'last_epoch'):
+            lr_scheduler.last_epoch = -1
+        
+        # Force optimizer learning rate to start_lr (scheduler step will handle this, 
+        # but good to be explicit if we want to ensure it starts right)
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = args.start_learning_rate
+            
+        accelerator.print("Resumed model/optimizer state. Resetting global_step and scheduler.")
 
     if ema_model is not None:
         dtype = next(accelerator.unwrap_model(model).parameters()).dtype
@@ -389,7 +438,10 @@ def main():
             captions_list = batch["captions"]  # List[List[str]]
 
             # Curriculum Sampling
-            stage = global_step / args.max_steps
+            # Map global_step/max_steps (0..1) to curriculum_start..curriculum_end
+            progress = global_step / args.max_steps
+            stage = args.curriculum_start + (args.curriculum_end - args.curriculum_start) * progress
+            
             selected_captions = [
                 sample_caption(caps, stage=stage) for caps in captions_list
             ]

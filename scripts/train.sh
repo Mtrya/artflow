@@ -22,6 +22,7 @@ EVAL_BS=16
 DATASET_MIX="./precomputed_dataset/mixed-art@256p:0.9 ./precomputed_dataset/face-caption-hq@256p:0.1"
 TEXT_ENCODER_PATH="Qwen/Qwen3-VL-2B-Instruct"
 LR=3e-4
+START_LR=1e-6
 MIN_LR=1e-6
 LR_SCHEDULER="linear_cosine"
 LR_WARMUP_STEPS=2000
@@ -32,6 +33,8 @@ EMA_DECAY=0.99
 EMA_INTERVAL=1
 BATCH_SIZE=16
 NUM_WORKERS=4
+CURRICULUM_START=0.0
+CURRICULUM_END=1.0
 
 accelerate launch -m src.train.train \
     --run_name "baseline" \
@@ -44,10 +47,13 @@ accelerate launch -m src.train.train \
     --dataset_mix "$DATASET_MIX" \
     --text_encoder_path $TEXT_ENCODER_PATH \
     --learning_rate $LR \
+    --start_learning_rate $START_LR \
     --lr_scheduler_type $LR_SCHEDULER \
     --lr_warmup_steps $LR_WARMUP_STEPS \
     --min_learning_rate $MIN_LR \
     --max_steps $MAX_STEPS \
+    --curriculum_start $CURRICULUM_START \
+    --curriculum_end $CURRICULUM_END \
     --gradient_accumulation_steps $GRAD_ACCUM_STEPS \
     --max_grad_norm $MAX_GRAD_NORM \
     --batch_size $BATCH_SIZE \
