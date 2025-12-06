@@ -27,6 +27,7 @@ from typing import List, Optional
 
 import torch
 import torch.nn as nn
+from transformers import ChineseCLIPModel, CLIPProcessor
 
 
 class RewardModel(nn.Module):
@@ -95,8 +96,8 @@ class RewardModel(nn.Module):
 
 def extract_clip_features(
     images: torch.Tensor,
-    clip_model: nn.Module,
-    processor: Optional[any] = None,
+    clip_model: ChineseCLIPModel,
+    processor: CLIPProcessor,
     feature_layers: Optional[List[int]] = None,
     device: Optional[torch.device] = None,
 ) -> torch.Tensor:
@@ -106,7 +107,7 @@ def extract_clip_features(
     Args:
         images: [B, 3, H, W] images in [0, 1] or [0, 255] range
         clip_model: CLIP model (e.g., ChineseCLIPModel)
-        processor: CLIP processor (optional, will use default normalization if None)
+        processor: CLIP processor
         feature_layers: List of layer indices to extract. If None, uses [12, 18, 23]
         device: Device to run on
         

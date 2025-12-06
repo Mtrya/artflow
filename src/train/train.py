@@ -442,6 +442,25 @@ def main():
 
             progress_bar.update(1)
 
+            # Per-dataset telemetry (log periodically)
+            synchronized_counts = None
+            if is_multi_dataset and global_step % telemetry_log_interval == 0:
+                synchronized_counts = {}
+                total_samples = 0
+
+                for alias in dataset_aliases:
+                    # Reduce (sum) across all processes to avoid deadlocks
+                    synced_tensor = accelerator.reduce(
+                        telemetry_tensors[alias], reduction="sum"
+                    )
+                    count = synced_tensor.item()
+                    synchronized_counts[alias] = count
+                    total_samples += count
+
+                # Reset telemetry counters on every rank for the next interval
+                for alias in dataset_aliases:
+                    telemetry_tensors[alias].zero_()
+
             if accelerator.is_main_process:
                 log_dict = {
                     "train/loss": loss.item(),
@@ -449,28 +468,13 @@ def main():
                     "train/lr": optimizer.param_groups[0]["lr"],
                 }
 
-                # Per-dataset telemetry (log periodically)
-                if is_multi_dataset and global_step % telemetry_log_interval == 0:
-                    # Synchronize telemetry across all GPUs
-                    synchronized_counts = {}
-                    total_samples = 0
-
-                    for alias in dataset_aliases:
-                        # Reduce (sum) across all processes
-                        synced_tensor = accelerator.reduce(telemetry_tensors[alias], reduction="sum")
-                        count = synced_tensor.item()
-                        synchronized_counts[alias] = count
-                        total_samples += count
-
+                if synchronized_counts is not None:
+                    total_samples = sum(synchronized_counts.values())
                     if total_samples > 0:
                         for alias, count in synchronized_counts.items():
                             ratio = count / total_samples
                             log_dict[f"data/{alias}_ratio"] = ratio
                             log_dict[f"data/{alias}_count"] = count
-
-                    # Reset telemetry counters for next interval
-                    for alias in dataset_aliases:
-                        telemetry_tensors[alias].zero_()
 
                 accelerator.log(log_dict, step=global_step)
 
