@@ -326,6 +326,7 @@ class ImageScorer:
 
             valid, reason = self._check_image_quality(img)
             if not valid:
+                print(f"Image {hash_str} rejected: {reason}")
                 continue
 
             img_resized = img.resize((640, 640), Image.LANCZOS)

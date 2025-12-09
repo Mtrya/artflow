@@ -33,7 +33,7 @@ def _fetch_image(image_data: Union[str, Image.Image]) -> Optional[Image.Image]:
 
         if isinstance(image_data, str):
             try:
-                response = requests.get(image_data, timeout=(2, 7))
+                response = requests.get(image_data, timeout=(4, 20))
                 response.raise_for_status()
                 image = Image.open(io.BytesIO(response.content))
                 image.load()  # Verify it's a valid image
@@ -60,6 +60,7 @@ def precompute(
     device: str = "cuda",
     non_zh_drop_prob: float = 0.0,
     resolution_tolerence: float = 1.0,
+    min_caption_tokens: int = 1,
     max_caption_tokens: int = 1024,
 ) -> Dataset:
     """
@@ -158,8 +159,8 @@ def precompute(
                         current_captions.append(item)
 
             token_counts = _estimate_token_counts(current_captions)
-            if not current_captions or not any(count > 0 for count in token_counts):
-                # Drop samples with effectively empty captions
+            if not current_captions or not any(count > min_caption_tokens for count in token_counts):
+                # Drop samples with no captions or all captions too short
                 skip_indices.add(idx)
             elif any(count > max_caption_tokens for count in token_counts):
                 # Drop samples with at least one overly long caption
@@ -197,7 +198,7 @@ def precompute(
 
             for idx, future in futures.items():
                 try:
-                    image = future.result(timeout=10.0)
+                    image = future.result(timeout=18.0)
                 except concurrent.futures.TimeoutError:
                     dropped_fetch_timeout += 1
                     continue
