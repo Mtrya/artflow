@@ -42,6 +42,7 @@ class ImageScorer:
         min_resolution: int = 640,
         aspect_ratio_min: float = 0.8,
         aspect_ratio_max: float = 1.25,
+        dataset_configs: Optional[List[Dict[str, Any]]] = None,
     ):
         self.dataset_name = dataset_name
         self.image_field = image_field
@@ -51,6 +52,10 @@ class ImageScorer:
         self.aspect_ratio_min = aspect_ratio_min
         self.aspect_ratio_max = aspect_ratio_max
 
+        self.dataset_configs = dataset_configs or [
+            {"name": dataset_name, "image_field": image_field, "weight": 1.0}
+        ]
+
         # Create directories
         self.images_dir = self.output_dir / "images"
         self.images_dir.mkdir(parents=True, exist_ok=True)
@@ -59,7 +64,9 @@ class ImageScorer:
         self.prompts_file = self.output_dir / "prompts.jsonl"
 
         # State
-        self.dataset = None
+        self.datasets: List[Dict[str, Any]] = []
+        self.total_weight = 0.0
+        self.cumulative_weights: List[float] = []
         self.scored_hashes = self._load_scored_hashes()
         self.current_item = None
         self.current_image: Optional[Image.Image] = None  # Keep image in memory
@@ -235,72 +242,109 @@ class ImageScorer:
             f.write(json.dumps(data, ensure_ascii=False) + "\n")
 
     def load_dataset(self):
-        """Load dataset and prepare random sampling."""
-        print(f"Loading dataset: {self.dataset_name}")
-        self.dataset = load_dataset(self.dataset_name, split="train")
-        print(f"Dataset loaded: {len(self.dataset)} examples")
+        """Load all datasets and prepare weighted random sampling."""
+        self.datasets = []
+        self.total_weight = 0.0
+        self.cumulative_weights = []
+
+        for cfg in self.dataset_configs:
+            name = cfg["name"]
+            image_field = cfg["image_field"]
+            weight = float(cfg.get("weight", 1.0))
+            if weight <= 0:
+                continue
+
+            print(f"Loading dataset: {name}")
+            dataset = load_dataset(name, split="train")
+            length = len(dataset)
+            print(f"Dataset loaded: {length} examples")
+
+            self.datasets.append(
+                {
+                    "name": name,
+                    "image_field": image_field,
+                    "weight": weight,
+                    "dataset": dataset,
+                    "length": length,
+                }
+            )
+            self.total_weight += weight
+            self.cumulative_weights.append(self.total_weight)
+
+        if not self.datasets:
+            raise ValueError("No valid datasets loaded")
+
+    def _choose_dataset(self) -> Dict[str, Any]:
+        """Select a dataset according to configured weights."""
+        if not self.datasets:
+            raise ValueError("Datasets not loaded")
+
+        r = random.random() * self.total_weight
+        for entry, cumulative in zip(self.datasets, self.cumulative_weights):
+            if r <= cumulative:
+                return entry
+        return self.datasets[-1]
 
     def get_next_image(self) -> Tuple[Optional[Image.Image], Optional[Dict]]:
         """Get next valid image for scoring (keeps in memory, doesn't save yet)."""
-        if self.dataset is None:
-            return None, {"error": "Dataset not loaded"}
+        if not self.datasets:
+            return None, {"error": "Datasets not loaded"}
 
-        max_attempts = 1000
+        max_attempts = 2000
         attempts = 0
 
         while attempts < max_attempts:
             attempts += 1
 
-            # Check if we've reached target
             if len(self.scored_hashes) >= self.target_samples:
                 return None, {"status": f"Target reached: {self.target_samples} images scored"}
 
-            # Random sample
-            index = random.randint(0, len(self.dataset) - 1)
-            hash_str = self._generate_hash(self.dataset_name, index)
+            entry = self._choose_dataset()
+            dataset = entry["dataset"]
+            image_field = entry["image_field"]
+            dataset_name = entry["name"]
+            length = entry["length"]
 
-            # Skip if already scored
+            index = random.randint(0, length - 1)
+            hash_str = self._generate_hash(dataset_name, index)
+
             if hash_str in self.scored_hashes:
                 continue
 
-            # Skip if image already exists (orphaned from previous session)
             if self._check_image_exists(hash_str):
                 continue
 
-            # Fetch item
-            item = self.dataset[index]
-            image_data = item.get(self.image_field)
+            item = dataset[index]
+            image_data = item.get(image_field)
 
             if image_data is None:
                 continue
 
-            # Fetch image
             img = self._fetch_image(image_data)
             if img is None:
                 continue
 
-            # Check quality
             valid, reason = self._check_image_quality(img)
             if not valid:
                 continue
 
-            # Resize to 640x640 for display (but don't save yet!)
             img_resized = img.resize((640, 640), Image.LANCZOS)
 
-            # Store current item info and image in memory
             self.current_item = {
                 "hash": hash_str,
-                "dataset_name": self.dataset_name,
+                "dataset_name": dataset_name,
                 "index": index,
             }
-            self.current_image = img_resized  # Keep in memory
+            self.current_image = img_resized
 
             info = {
                 "hash": hash_str,
                 "index": index,
+                "dataset": dataset_name,
                 "scored": len(self.scored_hashes),
                 "target": self.target_samples,
                 "progress": f"{len(self.scored_hashes)}/{self.target_samples}",
+                "reason": reason,
             }
 
             return img_resized, info
@@ -333,8 +377,7 @@ class ImageScorer:
             return next_img, info, "normal"
 
         # Score = 5.0: keep in memory and show "Create Prompt" button
-        # Do NOT auto-generate, wait for user to click button
-        return None, {"status": "Click 'Create Prompt' to generate prompts"}, "create_prompt"
+        return self.current_image, {"status": "Click 'Create Prompt' to generate prompts"}, "create_prompt"
 
     def create_prompts(self) -> Tuple[Optional[str], bool]:
         """Generate prompts for current 5-star image."""
@@ -401,10 +444,10 @@ def create_gradio_interface(scorer: ImageScorer):
                     score_4 = gr.Button("⭐⭐⭐⭐ 4", variant="secondary")
                     score_5 = gr.Button("⭐⭐⭐⭐⭐ 5", variant="primary")
 
-        # Create Prompt button (hidden by default, shown after score=5.0)
-        with gr.Row(visible=False) as create_prompt_section:
-            create_prompt_btn = gr.Button("🎨 Create Prompt", variant="primary", size="lg")
-            skip_prompt_btn = gr.Button("Skip → Next Image", variant="secondary")
+        # Create Prompt button (always visible, disabled until 5-star)
+        with gr.Row(visible=True) as create_prompt_section:
+            create_prompt_btn = gr.Button("🎨 Create Prompt", variant="primary", size="lg", interactive=False)
+            skip_prompt_btn = gr.Button("Skip → Next Image", variant="secondary", interactive=False)
 
         # Prompt review section (hidden by default)
         with gr.Row(visible=False) as prompt_section:
@@ -417,44 +460,175 @@ def create_gradio_interface(scorer: ImageScorer):
                 prompt_input = gr.Textbox(
                     label="Select prompts to keep (comma-separated, e.g., '1,2,3')",
                     placeholder="1,2,3",
+                    interactive=False,
                 )
-                submit_prompts_btn = gr.Button("Submit Selection & Next Image")
+                submit_prompts_btn = gr.Button("Submit Selection & Next Image", interactive=False)
 
         # State to track UI mode: "normal", "create_prompt", or "review_prompts"
         ui_mode = gr.State("normal")
 
+        def button_states(
+            scoring_enabled: bool,
+            create_enabled: bool,
+            skip_enabled: bool,
+            submit_enabled: bool,
+        ) -> List[Any]:
+            scoring_update = gr.update(interactive=scoring_enabled)
+            return [
+                scoring_update,
+                scoring_update,
+                scoring_update,
+                scoring_update,
+                scoring_update,
+                scoring_update,
+                gr.update(interactive=create_enabled),
+                gr.update(interactive=skip_enabled),
+                gr.update(interactive=submit_enabled),
+            ]
+
+        def pack_output(
+            img,
+            info,
+            mode,
+            create_visible,
+            prompt_visible,
+            prompts_text,
+            prompt_input_update,
+            buttons: List[Any],
+        ) -> List[Any]:
+            return [
+                img,
+                info,
+                mode,
+                create_visible,
+                prompt_visible,
+                prompts_text,
+                prompt_input_update,
+                *buttons,
+            ]
+
         def load_first_image():
             img, info = scorer.get_next_image()
-            return img, info, "normal", gr.Row(visible=False), gr.Row(visible=False)
+            buttons = button_states(scoring_enabled=True, create_enabled=False, skip_enabled=False, submit_enabled=False)
+            return pack_output(
+                img,
+                info,
+                "normal",
+                gr.Row(visible=True),
+                gr.Row(visible=False),
+                "",
+                gr.update(value="", interactive=False),
+                buttons,
+            )
 
         def handle_score(score_val):
             img, info, mode = scorer.score_image(score_val)
 
             if mode == "create_prompt":
                 # Show "Create Prompt" button
-                return None, info, "create_prompt", gr.Row(visible=True), gr.Row(visible=False), ""
+                buttons = button_states(
+                    scoring_enabled=False,
+                    create_enabled=True,
+                    skip_enabled=True,
+                    submit_enabled=False,
+                )
+                return pack_output(
+                    img,
+                    info,
+                    "create_prompt",
+                    gr.Row(visible=True),
+                    gr.Row(visible=False),
+                    "",
+                    gr.update(value="", interactive=False),
+                    buttons,
+                )
             else:
-                # Normal flow, next image
-                return img, info, "normal", gr.Row(visible=False), gr.Row(visible=False), ""
+                buttons = button_states(
+                    scoring_enabled=True,
+                    create_enabled=False,
+                    skip_enabled=False,
+                    submit_enabled=False,
+                )
+                return pack_output(
+                    img,
+                    info,
+                    "normal",
+                    gr.Row(visible=True),
+                    gr.Row(visible=False),
+                    "",
+                    gr.update(value="", interactive=False),
+                    buttons,
+                )
 
         def handle_create_prompt():
+            # Step 1: disable all while generating
+            busy_buttons = button_states(False, False, False, False)
+            yield pack_output(
+                gr.update(),
+                {"status": "Generating prompts..."},
+                "create_prompt",
+                gr.Row(visible=True),
+                gr.Row(visible=False),
+                "Generating prompts...",
+                gr.update(value="", interactive=False),
+                busy_buttons,
+            )
+
             prompts_text, success = scorer.create_prompts()
             if success:
-                # Show prompt review section
-                return "review_prompts", gr.Row(visible=False), gr.Row(visible=True), prompts_text
+                ready_buttons = button_states(False, False, False, True)
+                yield pack_output(
+                    gr.update(),
+                    {"status": "Review generated prompts"},
+                    "review_prompts",
+                    gr.Row(visible=True),
+                    gr.Row(visible=True),
+                    prompts_text,
+                    gr.update(value="", interactive=True),
+                    ready_buttons,
+                )
             else:
-                # Failed, move to next
                 img, info = scorer.skip_prompt_generation()
-                return "normal", gr.Row(visible=False), gr.Row(visible=False), prompts_text
+                normal_buttons = button_states(True, False, False, False)
+                yield pack_output(
+                    img,
+                    info,
+                    "normal",
+                    gr.Row(visible=True),
+                    gr.Row(visible=False),
+                    prompts_text,
+                    gr.update(value="", interactive=False),
+                    normal_buttons,
+                )
 
         def handle_skip_prompt():
             # Skip prompt generation, move to next image
             img, info = scorer.skip_prompt_generation()
-            return img, info, "normal", gr.Row(visible=False), gr.Row(visible=False), "", ""
+            buttons = button_states(True, False, False, False)
+            return pack_output(
+                img,
+                info,
+                "normal",
+                gr.Row(visible=True),
+                gr.Row(visible=False),
+                "",
+                gr.update(value="", interactive=False),
+                buttons,
+            )
 
         def handle_prompt_submission(selected):
             img, info = scorer.save_prompts_decision(selected)
-            return img, info, "normal", gr.Row(visible=False), gr.Row(visible=False), "", ""
+            buttons = button_states(True, False, False, False)
+            return pack_output(
+                img,
+                info,
+                "normal",
+                gr.Row(visible=True),
+                gr.Row(visible=False),
+                "",
+                gr.update(value="", interactive=False),
+                buttons,
+            )
 
         def make_score_handler(score_val: float):
             def _handler():
@@ -464,7 +638,24 @@ def create_gradio_interface(scorer: ImageScorer):
         # Load first image on start
         demo.load(
             load_first_image,
-            outputs=[image_display, info_display, ui_mode, create_prompt_section, prompt_section],
+            outputs=[
+                image_display,
+                info_display,
+                ui_mode,
+                create_prompt_section,
+                prompt_section,
+                prompts_display,
+                prompt_input,
+                score_0,
+                score_1,
+                score_2,
+                score_3,
+                score_4,
+                score_5,
+                create_prompt_btn,
+                skip_prompt_btn,
+                submit_prompts_btn,
+            ],
         )
 
         # Score buttons
@@ -485,26 +676,87 @@ def create_gradio_interface(scorer: ImageScorer):
                     create_prompt_section,
                     prompt_section,
                     prompts_display,
+                    prompt_input,
+                    score_0,
+                    score_1,
+                    score_2,
+                    score_3,
+                    score_4,
+                    score_5,
+                    create_prompt_btn,
+                    skip_prompt_btn,
+                    submit_prompts_btn,
                 ],
             )
 
         # Create Prompt button
         create_prompt_btn.click(
             handle_create_prompt,
-            outputs=[ui_mode, create_prompt_section, prompt_section, prompts_display],
+            outputs=[
+                image_display,
+                info_display,
+                ui_mode,
+                create_prompt_section,
+                prompt_section,
+                prompts_display,
+                prompt_input,
+                score_0,
+                score_1,
+                score_2,
+                score_3,
+                score_4,
+                score_5,
+                create_prompt_btn,
+                skip_prompt_btn,
+                submit_prompts_btn,
+            ],
         )
 
         # Skip Prompt button
         skip_prompt_btn.click(
             handle_skip_prompt,
-            outputs=[image_display, info_display, ui_mode, create_prompt_section, prompt_section, prompts_display, prompt_input],
+            outputs=[
+                image_display,
+                info_display,
+                ui_mode,
+                create_prompt_section,
+                prompt_section,
+                prompts_display,
+                prompt_input,
+                score_0,
+                score_1,
+                score_2,
+                score_3,
+                score_4,
+                score_5,
+                create_prompt_btn,
+                skip_prompt_btn,
+                submit_prompts_btn,
+            ],
         )
 
         # Prompt submission
         submit_prompts_btn.click(
             handle_prompt_submission,
             inputs=[prompt_input],
-            outputs=[image_display, info_display, ui_mode, create_prompt_section, prompt_section, prompts_display, prompt_input],
+            outputs=[
+                image_display,
+                info_display,
+                ui_mode,
+                create_prompt_section,
+                prompt_section,
+                prompts_display,
+                prompt_input,
+                score_0,
+                score_1,
+                score_2,
+                score_3,
+                score_4,
+                score_5,
+                create_prompt_btn,
+                skip_prompt_btn,
+                submit_prompts_btn,
+            ],
         )
 
     return demo
@@ -558,14 +810,31 @@ def export_prompts_to_dataset(output_dir: str):
     print(f"Saved prompts dataset to {dataset_path}")
 
 
+def _parse_dataset_arg(raw: str) -> Dict[str, Any]:
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    data: Dict[str, Any] = {}
+    for part in parts:
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        data[key.strip()] = value.strip()
+
+    if "name" not in data or "image_field" not in data:
+        raise argparse.ArgumentTypeError("--dataset requires name and image_field, e.g., name=...,image_field=...,weight=1.0")
+
+    data["weight"] = float(data.get("weight", 1.0))
+    return data
+
+
 def main():
     parser = argparse.ArgumentParser(description="Manual image scoring with VLM integration")
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
     # Score command
     score_parser = subparsers.add_parser("score", help="Start scoring interface")
-    score_parser.add_argument("--dataset_name", type=str, required=True, help="HuggingFace dataset name")
-    score_parser.add_argument("--image_field", type=str, required=True, help="Field name for images")
+    score_parser.add_argument("--dataset_name", type=str, required=False, help="HuggingFace dataset name (legacy single dataset)")
+    score_parser.add_argument("--image_field", type=str, required=False, help="Field name for images (legacy single dataset)")
+    score_parser.add_argument("--dataset", dest="datasets", action="append", type=_parse_dataset_arg, help="Repeatable dataset config: name=...,image_field=...,weight=1.0")
     score_parser.add_argument("--target_samples", type=int, default=5000, help="Target number of samples to score")
     score_parser.add_argument("--output_dir", type=str, default="./scored_images", help="Output directory")
     score_parser.add_argument("--min_resolution", type=int, default=640, help="Minimum resolution (shorter side)")
@@ -584,21 +853,32 @@ def main():
     args = parser.parse_args()
 
     if args.command == "score":
-        # Create scorer
+        dataset_configs: Optional[List[Dict[str, Any]]] = None
+
+        if args.datasets:
+            dataset_configs = args.datasets
+            primary = dataset_configs[0]
+            dataset_name = primary["name"]
+            image_field = primary["image_field"]
+        else:
+            if not args.dataset_name or not args.image_field:
+                raise ValueError("Provide either --dataset (repeatable) or legacy --dataset_name and --image_field")
+            dataset_name = args.dataset_name
+            image_field = args.image_field
+
         scorer = ImageScorer(
-            dataset_name=args.dataset_name,
-            image_field=args.image_field,
+            dataset_name=dataset_name,
+            image_field=image_field,
             target_samples=args.target_samples,
             output_dir=args.output_dir,
             min_resolution=args.min_resolution,
             aspect_ratio_min=args.aspect_ratio_min,
             aspect_ratio_max=args.aspect_ratio_max,
+            dataset_configs=dataset_configs,
         )
 
-        # Load dataset
         scorer.load_dataset()
 
-        # Create and launch interface
         demo = create_gradio_interface(scorer)
         demo.launch(server_port=args.port, share=False)
 
