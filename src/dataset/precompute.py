@@ -14,7 +14,10 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 import requests
 import torch
 from datasets import Dataset
-from PIL import Image
+from PIL import Image, PngImagePlugin
+
+# Increase PIL's text chunk limit to handle large ICC profiles
+PngImagePlugin.MAX_TEXT_CHUNK = 32 * 1024 * 1024  # 32MB limit
 
 from .buckets import get_resolution_bucket
 from .captions import clean_caption, format_artist_name
@@ -24,17 +27,23 @@ def _fetch_image(image_data: Union[str, Image.Image]) -> Optional[Image.Image]:
     """
     Fetch image from URL or return PIL Image.
     """
-    if isinstance(image_data, Image.Image):
-        return image_data
+    try:
+        if isinstance(image_data, Image.Image):
+            return image_data.convert("RGB")
 
-    if isinstance(image_data, str):
-        try:
-            response = requests.get(image_data, timeout=(2, 7))
-            response.raise_for_status()
-            image = Image.open(io.BytesIO(response.content))
-            image.load()  # Verify it's a valid image
-            return image.convert("RGB")
-        except Exception:
+        if isinstance(image_data, str):
+            try:
+                response = requests.get(image_data, timeout=(2, 7))
+                response.raise_for_status()
+                image = Image.open(io.BytesIO(response.content))
+                image.load()  # Verify it's a valid image
+                return image.convert("RGB")
+            except Exception:
+                return None
+    except ValueError as e:
+        # Handle PNG ICC profile decompression error
+        if "Decompressed data too large for PngImagePlugin.MAX_TEXT_CHUNK" in str(e):
+            # Skip this image if still too large
             return None
 
     return None

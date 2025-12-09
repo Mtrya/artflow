@@ -168,7 +168,7 @@ class ImageScorer:
 
             instruction = """你是一位二十世纪的艺术策展人。请仔细观察这张图像,它会给你带来什么灵感?
 
-请基于这张图像的启发,想象5个完全不同的艺术场景。每个场景都应该:
+请基于这张图像的启发,想象3个完全不同的艺术场景。每个场景都应该:
 1. 是独特的想象,而不是描述这张图片本身
 2. 包含详细的视觉细节(风格、纹理、光影、色调等)
 3. 控制在77个token以内
@@ -178,7 +178,7 @@ class ImageScorer:
 请以JSON格式返回,包含一个prompts数组,每个元素是一个场景描述字符串。
 
 示例格式:
-{"prompts": ["描述1", "描述2", "描述3", "描述4", "描述5"]}"""
+{"prompts": ["描述1", "描述2", "描述3"]}"""
 
             payload = {
                 "model": "Qwen/Qwen3-VL-30B-A3B-Instruct",
@@ -307,10 +307,10 @@ class ImageScorer:
 
         return None, {"error": f"Failed to find valid image after {max_attempts} attempts"}
 
-    def score_image(self, score: float) -> Tuple[Optional[Image.Image], Dict, Optional[str]]:
-        """Score current image and handle prompt generation for 5-star images."""
+    def score_image(self, score: float) -> Tuple[Optional[Image.Image], Dict, str]:
+        """Score current image. For 5-star images, keep item in memory for prompt generation."""
         if self.current_item is None or self.current_image is None:
-            return None, {"error": "No current image"}, None
+            return None, {"error": "No current image"}, "normal"
 
         hash_str = self.current_item["hash"]
         dataset_name = self.current_item["dataset_name"]
@@ -330,21 +330,33 @@ class ImageScorer:
 
             # Get next image
             next_img, info = self.get_next_image()
-            return next_img, info, None
+            return next_img, info, "normal"
 
-        # Score = 5.0: generate prompts using in-memory image
+        # Score = 5.0: keep in memory and show "Create Prompt" button
+        # Do NOT auto-generate, wait for user to click button
+        return None, {"status": "Click 'Create Prompt' to generate prompts"}, "create_prompt"
+
+    def create_prompts(self) -> Tuple[Optional[str], bool]:
+        """Generate prompts for current 5-star image."""
+        if self.current_item is None or self.current_image is None:
+            return "No current image", False
+
         prompts = self._call_vlm_api(self.current_image)
 
         if prompts:
             self.pending_prompts = prompts
             prompts_text = "\n\n".join([f"{i+1}. {p}" for i, p in enumerate(prompts)])
-            return None, {"status": "Review prompts below"}, prompts_text
+            return prompts_text, True
         else:
-            # Failed to generate prompts, move on
-            self.current_item = None
-            self.current_image = None
-            next_img, info = self.get_next_image()
-            return next_img, info, "Prompt generation failed"
+            return "Prompt generation failed", False
+
+    def skip_prompt_generation(self) -> Tuple[Optional[Image.Image], Dict]:
+        """Skip prompt generation and move to next image."""
+        # Clean up and get next
+        self.current_item = None
+        self.current_image = None
+        self.pending_prompts = None
+        return self.get_next_image()
 
     def save_prompts_decision(self, selected_indices: str) -> Tuple[Optional[Image.Image], Dict]:
         """Save selected prompts and get next image."""
@@ -382,61 +394,82 @@ def create_gradio_interface(scorer: ImageScorer):
                 info_display = gr.JSON(label="Info")
 
                 with gr.Row():
+                    score_0 = gr.Button("❌ 0", variant="stop")
                     score_1 = gr.Button("⭐ 1", variant="secondary")
                     score_2 = gr.Button("⭐⭐ 2", variant="secondary")
                     score_3 = gr.Button("⭐⭐⭐ 3", variant="secondary")
                     score_4 = gr.Button("⭐⭐⭐⭐ 4", variant="secondary")
                     score_5 = gr.Button("⭐⭐⭐⭐⭐ 5", variant="primary")
 
+        # Create Prompt button (hidden by default, shown after score=5.0)
+        with gr.Row(visible=False) as create_prompt_section:
+            create_prompt_btn = gr.Button("🎨 Create Prompt", variant="primary", size="lg")
+            skip_prompt_btn = gr.Button("Skip → Next Image", variant="secondary")
+
         # Prompt review section (hidden by default)
         with gr.Row(visible=False) as prompt_section:
             with gr.Column():
                 prompts_display = gr.Textbox(
                     label="Generated Prompts (Review and select)",
-                    lines=15,
+                    lines=10,
                     interactive=False,
                 )
                 prompt_input = gr.Textbox(
-                    label="Select prompts to keep (comma-separated, e.g., '1,3,5')",
-                    placeholder="1,2,3,4,5",
+                    label="Select prompts to keep (comma-separated, e.g., '1,2,3')",
+                    placeholder="1,2,3",
                 )
                 submit_prompts_btn = gr.Button("Submit Selection & Next Image")
 
-        # State to track if we're in prompt review mode
-        prompt_mode = gr.State(False)
+        # State to track UI mode: "normal", "create_prompt", or "review_prompts"
+        ui_mode = gr.State("normal")
 
         def load_first_image():
             img, info = scorer.get_next_image()
-            return img, info, False, gr.Row(visible=False)
+            return img, info, "normal", gr.Row(visible=False), gr.Row(visible=False)
 
-        def handle_score(score_val, current_prompt_mode):
-            img, info, prompts_text = scorer.score_image(score_val)
+        def handle_score(score_val):
+            img, info, mode = scorer.score_image(score_val)
 
-            if prompts_text:
-                # Enter prompt review mode
-                return None, info, True, gr.Row(visible=True), prompts_text
+            if mode == "create_prompt":
+                # Show "Create Prompt" button
+                return None, info, "create_prompt", gr.Row(visible=True), gr.Row(visible=False), ""
             else:
                 # Normal flow, next image
-                return img, info, False, gr.Row(visible=False), ""
+                return img, info, "normal", gr.Row(visible=False), gr.Row(visible=False), ""
+
+        def handle_create_prompt():
+            prompts_text, success = scorer.create_prompts()
+            if success:
+                # Show prompt review section
+                return "review_prompts", gr.Row(visible=False), gr.Row(visible=True), prompts_text
+            else:
+                # Failed, move to next
+                img, info = scorer.skip_prompt_generation()
+                return "normal", gr.Row(visible=False), gr.Row(visible=False), prompts_text
+
+        def handle_skip_prompt():
+            # Skip prompt generation, move to next image
+            img, info = scorer.skip_prompt_generation()
+            return img, info, "normal", gr.Row(visible=False), gr.Row(visible=False), "", ""
 
         def handle_prompt_submission(selected):
             img, info = scorer.save_prompts_decision(selected)
-            return img, info, False, gr.Row(visible=False), "", ""
+            return img, info, "normal", gr.Row(visible=False), gr.Row(visible=False), "", ""
 
         def make_score_handler(score_val: float):
-            def _handler(current_prompt_mode: bool):
-                return handle_score(score_val, current_prompt_mode)
-
+            def _handler():
+                return handle_score(score_val)
             return _handler
 
         # Load first image on start
         demo.load(
             load_first_image,
-            outputs=[image_display, info_display, prompt_mode, prompt_section],
+            outputs=[image_display, info_display, ui_mode, create_prompt_section, prompt_section],
         )
 
         # Score buttons
         for button, value in [
+            (score_0, 0.0),
             (score_1, 1.0),
             (score_2, 2.0),
             (score_3, 3.0),
@@ -445,21 +478,33 @@ def create_gradio_interface(scorer: ImageScorer):
         ]:
             button.click(
                 make_score_handler(value),
-                inputs=[prompt_mode],
                 outputs=[
                     image_display,
                     info_display,
-                    prompt_mode,
+                    ui_mode,
+                    create_prompt_section,
                     prompt_section,
                     prompts_display,
                 ],
             )
 
+        # Create Prompt button
+        create_prompt_btn.click(
+            handle_create_prompt,
+            outputs=[ui_mode, create_prompt_section, prompt_section, prompts_display],
+        )
+
+        # Skip Prompt button
+        skip_prompt_btn.click(
+            handle_skip_prompt,
+            outputs=[image_display, info_display, ui_mode, create_prompt_section, prompt_section, prompts_display, prompt_input],
+        )
+
         # Prompt submission
         submit_prompts_btn.click(
             handle_prompt_submission,
             inputs=[prompt_input],
-            outputs=[image_display, info_display, prompt_mode, prompt_section, prompts_display, prompt_input],
+            outputs=[image_display, info_display, ui_mode, create_prompt_section, prompt_section, prompts_display, prompt_input],
         )
 
     return demo
