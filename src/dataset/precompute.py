@@ -122,7 +122,7 @@ def precompute(
             if idx in skip_indices:
                 continue
             width, height = widths[idx], heights[idx]
-            if isinstance(width, int) and isinstance(height, int):
+            if isinstance(width, int) and isinstance(height, int) and width > 1 and height > 1:
                 try:
                     _, resolution = get_resolution_bucket(width, height, resolution_buckets)
                     if width < resolution[0] * resolution_tolerence or height < resolution[1] * resolution_tolerence:

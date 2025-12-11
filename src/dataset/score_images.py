@@ -173,22 +173,23 @@ class ImageScorer:
                 "Content-Type": "application/json",
             }
 
-            instruction = """你是一位二十世纪的艺术策展人。请仔细观察这张图像,它会给你带来什么灵感?
+            instruction = """你是一位二十世纪的艺术策展人。请仔细观察这张图像，它会给你带来什么灵感?
 
-请基于这张图像的启发,想象3个完全不同的艺术场景。每个场景都应该:
-1. 是独特的想象,而不是描述这张图片本身
-2. 包含详细的视觉细节(风格、纹理、光影、色调等)
-3. 控制在77个token以内
+请让你的思绪以这张图像为起点，慢慢扩散到从古到今的各个时代，以及从东亚到西欧的各大洲的各种文化，充分发挥你的想象力，想象4个完全不同的艺术场景并描述它们。每个描述都应该:
+1. 是独特的想象，而不是描述这张图片本身
+2. 用详细的视觉细节来描述这一场景(风格、纹理、光影、色调等)，而不是过度依赖具体地名来形成意象
+3. 控制在1至3句话
 4. 用中文描述
-5. 不包含过于现代的意象
+5. 至多有一个描述包含现代意象
+6. 描述必须是合理、现实的，不能过于超现实或迷幻
 
-请以JSON格式返回,包含一个prompts数组,每个元素是一个场景描述字符串。
+请以JSON格式返回，包含一个prompts列表，每个元素是一个场景描述字符串。
 
 示例格式:
-{"prompts": ["描述1", "描述2", "描述3"]}"""
+{"prompts": ["描述1。", "描述2。", "描述3。", "描述4。"]}"""
 
             payload = {
-                "model": "Qwen/Qwen3-VL-30B-A3B-Instruct",
+                "model": "Qwen/Qwen3-VL-32B-Instruct",
                 "messages": [
                     {
                         "role": "user",
@@ -202,8 +203,9 @@ class ImageScorer:
                     }
                 ],
                 "max_tokens": 1024,
-                "temperature": 0.8,
-                "response_format": {"type": "json_object"},
+                "temperature": 0.83,
+                #"enable_thinking": False,
+                #"response_format": {"type": "json_object"},
             }
 
             response = requests.post(url, headers=headers, json=payload, timeout=60)
@@ -211,8 +213,30 @@ class ImageScorer:
 
             result = response.json()
             content = result["choices"][0]["message"]["content"]
-            prompts_data = json.loads(content)
-            return prompts_data.get("prompts", [])
+
+            # Parse JSON content; attempt a simple repair if the model returns extra text.
+            try:
+                prompts_data = json.loads(content)
+            except json.JSONDecodeError:
+                # Attempt to extract JSON substring
+                import re
+                match = re.search(r'\{.*\}', content, re.DOTALL)
+                if match:
+                    json_str = match.group(0)
+                    try:
+                        prompts_data = json.loads(json_str)
+                    except Exception as e:
+                        print(f"Failed to repair JSON: {e}\nRaw content: {content}")
+                        return None
+                else:
+                    print(f"Could not find valid JSON in model response: {content}")
+                    return None
+
+            prompts = prompts_data.get("prompts")
+            if not isinstance(prompts, list):
+                print(f"Invalid prompts structure: {prompts_data}")
+                return None
+            return prompts
 
         except Exception as e:
             print(f"VLM API call failed: {e}")
@@ -402,20 +426,16 @@ class ImageScorer:
         self.pending_prompts = None
         return self.get_next_image()
 
-    def save_prompts_decision(self, selected_indices: str) -> Tuple[Optional[Image.Image], Dict]:
+    def save_prompts_decision(self, selected_prompts: List[str]) -> Tuple[Optional[Image.Image], Dict]:
         """Save selected prompts and get next image."""
         if self.pending_prompts is None or self.current_item is None:
             return None, {"error": "No pending prompts"}
 
-        # Parse selected indices
-        if selected_indices.strip():
+        if selected_prompts:
             try:
-                indices = [int(x.strip()) - 1 for x in selected_indices.split(",")]
-                selected = [self.pending_prompts[i] for i in indices if 0 <= i < len(self.pending_prompts)]
-                if selected:
-                    self._save_prompts(self.current_item["hash"], selected)
+                self._save_prompts(self.current_item["hash"], selected_prompts)
             except Exception as e:
-                print(f"Failed to parse indices: {e}")
+                print(f"Failed to save selected prompts: {e}")
 
         # Clean up and get next
         self.current_item = None
@@ -453,14 +473,10 @@ def create_gradio_interface(scorer: ImageScorer):
         # Prompt review section (hidden by default)
         with gr.Row(visible=False) as prompt_section:
             with gr.Column():
-                prompts_display = gr.Textbox(
-                    label="Generated Prompts (Review and select)",
-                    lines=10,
-                    interactive=False,
-                )
-                prompt_input = gr.Textbox(
-                    label="Select prompts to keep (comma-separated, e.g., '1,2,3')",
-                    placeholder="1,2,3",
+                prompt_selector = gr.CheckboxGroup(
+                    label="Click prompts to select/deselect",
+                    choices=[],
+                    value=[],
                     interactive=False,
                 )
                 submit_prompts_btn = gr.Button("Submit Selection & Next Image", interactive=False)
@@ -493,8 +509,7 @@ def create_gradio_interface(scorer: ImageScorer):
             mode,
             create_visible,
             prompt_visible,
-            prompts_text,
-            prompt_input_update,
+            prompt_selector_update,
             buttons: List[Any],
         ) -> List[Any]:
             return [
@@ -503,8 +518,7 @@ def create_gradio_interface(scorer: ImageScorer):
                 mode,
                 create_visible,
                 prompt_visible,
-                prompts_text,
-                prompt_input_update,
+                prompt_selector_update,
                 *buttons,
             ]
 
@@ -517,8 +531,7 @@ def create_gradio_interface(scorer: ImageScorer):
                 "normal",
                 gr.Row(visible=True),
                 gr.Row(visible=False),
-                "",
-                gr.update(value="", interactive=False),
+                gr.update(choices=[], value=[], interactive=False),
                 buttons,
             )
 
@@ -539,8 +552,7 @@ def create_gradio_interface(scorer: ImageScorer):
                     "create_prompt",
                     gr.Row(visible=True),
                     gr.Row(visible=False),
-                    "",
-                    gr.update(value="", interactive=False),
+                    gr.update(choices=[], value=[], interactive=False),
                     buttons,
                 )
             else:
@@ -556,8 +568,7 @@ def create_gradio_interface(scorer: ImageScorer):
                     "normal",
                     gr.Row(visible=True),
                     gr.Row(visible=False),
-                    "",
-                    gr.update(value="", interactive=False),
+                    gr.update(choices=[], value=[], interactive=False),
                     buttons,
                 )
 
@@ -570,12 +581,11 @@ def create_gradio_interface(scorer: ImageScorer):
                 "create_prompt",
                 gr.Row(visible=True),
                 gr.Row(visible=False),
-                "Generating prompts...",
-                gr.update(value="", interactive=False),
+                gr.update(choices=[], value=[], interactive=False),
                 busy_buttons,
             )
 
-            prompts_text, success = scorer.create_prompts()
+            _, success = scorer.create_prompts()
             if success:
                 ready_buttons = button_states(False, False, False, True)
                 yield pack_output(
@@ -584,8 +594,7 @@ def create_gradio_interface(scorer: ImageScorer):
                     "review_prompts",
                     gr.Row(visible=True),
                     gr.Row(visible=True),
-                    prompts_text,
-                    gr.update(value="", interactive=True),
+                    gr.update(choices=scorer.pending_prompts or [], value=[], interactive=True),
                     ready_buttons,
                 )
             else:
@@ -597,8 +606,7 @@ def create_gradio_interface(scorer: ImageScorer):
                     "normal",
                     gr.Row(visible=True),
                     gr.Row(visible=False),
-                    prompts_text,
-                    gr.update(value="", interactive=False),
+                    gr.update(choices=[], value=[], interactive=False),
                     normal_buttons,
                 )
 
@@ -612,8 +620,7 @@ def create_gradio_interface(scorer: ImageScorer):
                 "normal",
                 gr.Row(visible=True),
                 gr.Row(visible=False),
-                "",
-                gr.update(value="", interactive=False),
+                gr.update(choices=[], value=[], interactive=False),
                 buttons,
             )
 
@@ -626,8 +633,7 @@ def create_gradio_interface(scorer: ImageScorer):
                 "normal",
                 gr.Row(visible=True),
                 gr.Row(visible=False),
-                "",
-                gr.update(value="", interactive=False),
+                gr.update(choices=[], value=[], interactive=False),
                 buttons,
             )
 
@@ -645,8 +651,7 @@ def create_gradio_interface(scorer: ImageScorer):
                 ui_mode,
                 create_prompt_section,
                 prompt_section,
-                prompts_display,
-                prompt_input,
+                prompt_selector,
                 score_0,
                 score_1,
                 score_2,
@@ -676,8 +681,7 @@ def create_gradio_interface(scorer: ImageScorer):
                     ui_mode,
                     create_prompt_section,
                     prompt_section,
-                    prompts_display,
-                    prompt_input,
+                    prompt_selector,
                     score_0,
                     score_1,
                     score_2,
@@ -699,8 +703,7 @@ def create_gradio_interface(scorer: ImageScorer):
                 ui_mode,
                 create_prompt_section,
                 prompt_section,
-                prompts_display,
-                prompt_input,
+                prompt_selector,
                 score_0,
                 score_1,
                 score_2,
@@ -722,8 +725,7 @@ def create_gradio_interface(scorer: ImageScorer):
                 ui_mode,
                 create_prompt_section,
                 prompt_section,
-                prompts_display,
-                prompt_input,
+                prompt_selector,
                 score_0,
                 score_1,
                 score_2,
@@ -739,15 +741,14 @@ def create_gradio_interface(scorer: ImageScorer):
         # Prompt submission
         submit_prompts_btn.click(
             handle_prompt_submission,
-            inputs=[prompt_input],
+            inputs=[prompt_selector],
             outputs=[
                 image_display,
                 info_display,
                 ui_mode,
                 create_prompt_section,
                 prompt_section,
-                prompts_display,
-                prompt_input,
+                prompt_selector,
                 score_0,
                 score_1,
                 score_2,
