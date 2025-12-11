@@ -63,6 +63,7 @@ def precompute(
     min_caption_tokens: int = 1,
     max_caption_tokens: int = 1024,
     min_aesthetic_score: float = 0.0,
+    min_watermark_prob: float = 0.6,
 ) -> Dataset:
     """
     Stateless precomputation of image latents and caption preparation.
@@ -108,37 +109,47 @@ def precompute(
         # --- Pre-fetch filtering ---
         skip_indices = set()
         processed_captions_map = {}
-
-        # 1. Language filter
+        
+        # Pre-load all metadata fields
         languages = batch.get("LANGUAGE", [None] * batch_len)
-        if non_zh_drop_prob > 0.0:
-            for idx, lang in enumerate(languages):
+        widths = batch.get("WIDTH") or batch.get("width", [None] * batch_len)
+        heights = batch.get("HEIGHT") or batch.get("height", [None] * batch_len)
+        aesthetic_scores = batch.get("aesthetic_score") or batch.get("aesthetic", [None] * batch_len)
+        watermark = batch.get("watermark") or batch.get("pwatermark", [0.0] * batch_len)
+        
+        # Track drop reasons
+        dropped_lang = 0
+        dropped_resolution_pre = 0
+        dropped_caption_length = 0
+        dropped_aesthetic = 0
+        dropped_watermark = 0
+        
+        # Single-pass filtering
+        for idx in range(batch_len):
+            # 1. Language filter
+            if non_zh_drop_prob > 0.0:
+                lang = languages[idx]
                 if lang is not None and lang != "zh":
                     if random.random() < non_zh_drop_prob:
                         skip_indices.add(idx)
-        dropped_lang = len(skip_indices)
-
-        # 2. Resolution filter (if metadata available)
-        widths = batch.get("WIDTH") or batch.get("width", [None] * batch_len)
-        heights = batch.get("HEIGHT") or batch.get("height", [None] * batch_len)
-        for idx in range(batch_len):
-            if idx in skip_indices:
-                continue
+                        dropped_lang += 1
+                        continue
+            
+            # 2. Resolution filter (if metadata available)
             width, height = widths[idx], heights[idx]
             if isinstance(width, int) and isinstance(height, int) and width > 1 and height > 1:
                 try:
                     _, resolution = get_resolution_bucket(width, height, resolution_buckets)
                     if width < resolution[0] * resolution_tolerance or height < resolution[1] * resolution_tolerance:
                         skip_indices.add(idx)
+                        dropped_resolution_pre += 1
+                        continue
                 except Exception:
                     skip_indices.add(idx)
-        dropped_resolution_pre = len(skip_indices) - dropped_lang
-
-        # 3. Caption length filter (drop too short or too long captions)
-        for idx in range(batch_len):
-            if idx in skip_indices:
-                continue
-
+                    dropped_resolution_pre += 1
+                    continue
+            
+            # 3. Caption length filter
             current_captions = []
             for field in caption_fields:
                 if field not in batch or batch[field][idx] is None:
@@ -163,25 +174,36 @@ def precompute(
 
             token_counts = _estimate_token_counts(current_captions)
             if not current_captions or not any(count > min_caption_tokens for count in token_counts):
-                # Drop samples with no captions or all captions too short
                 skip_indices.add(idx)
-            elif any(count > max_caption_tokens for count in token_counts):
-                # Drop samples with at least one overly long caption
-                skip_indices.add(idx)
-            else:
-                processed_captions_map[idx] = current_captions
-
-        dropped_caption_length = len(skip_indices) - dropped_lang - dropped_resolution_pre
-
-        # 4. Aesthetic score filter
-        aesthetic_scores = batch.get("aesthetic_score") or batch.get("aesthetic", [None] * batch_len)
-        for idx in range(batch_len):
-            if idx in skip_indices:
+                dropped_caption_length += 1
                 continue
+            elif any(count > max_caption_tokens for count in token_counts):
+                skip_indices.add(idx)
+                dropped_caption_length += 1
+                continue
+            
+            # 4. Aesthetic score filter
             score = aesthetic_scores[idx]
             if score is not None and score < min_aesthetic_score:
                 skip_indices.add(idx)
-        dropped_aesthetic = len(skip_indices) - dropped_lang - dropped_resolution_pre - dropped_caption_length
+                dropped_aesthetic += 1
+                continue
+            
+            # 5. Watermark filter
+            p = watermark[idx]
+            if isinstance(p, bool):
+                if not p:
+                    skip_indices.add(idx)
+                    dropped_watermark += 1
+                    continue
+            elif isinstance(p, (int, float)):
+                if p < min_watermark_prob:
+                    skip_indices.add(idx)
+                    dropped_watermark += 1
+                    continue
+            
+            # All filters passed - store captions
+            processed_captions_map[idx] = current_captions
         
         # --- Image Fetching and Processing ---
         dropped_fetch_timeout = 0
@@ -196,7 +218,7 @@ def precompute(
             if total_dropped > 0:
                 print(
                     f"Batch: {total_dropped}/{batch_len} dropped "
-                    f"(lang={dropped_lang}, res_pre={dropped_resolution_pre}, caption={dropped_caption_length}, "
+                    f"(lang={dropped_lang}, res_pre={dropped_resolution_pre}, caption={dropped_caption_length}, watermark={dropped_watermark}, "
                     f"fetch_timeout={dropped_fetch_timeout}, fetch_err={dropped_fetch_error}, invalid_img={dropped_invalid_image}, "
                     f"res_post={dropped_resolution_post}, bucket_err={dropped_bucket_error}, vae={dropped_vae}, aes={dropped_aesthetic})"
                 )

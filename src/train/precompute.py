@@ -95,6 +95,7 @@ def parse_args():
     parser.add_argument("--min_caption_tokens", type=int, default=1, help="Minimum caption tokens to allow")
     parser.add_argument("--max_caption_tokens", type=int, default=1024, help="Maximum caption tokens to allow")
     parser.add_argument("--min_aesthetic_score", type=float, default=0.0, help="Minimum aesthetic score to allow")
+    parser.add_argument("--min_watermark_prob", type=float, default=0.6, help="Minimum watermark probability to allow")
     return parser.parse_args()
 
 
@@ -142,7 +143,8 @@ def main():
         resolution_tolerance=args.resolution_tolerance,
         min_caption_tokens=args.min_caption_tokens,
         max_caption_tokens=args.max_caption_tokens,
-        min_aesthetic_score=args.min_aesthetic_score
+        min_aesthetic_score=args.min_aesthetic_score,
+        min_watermark_prob=args.min_watermark_prob
     )
     print(f"Saving processed dataset to {args.output_dir}...")
     processed_dataset.save_to_disk(args.output_dir)
