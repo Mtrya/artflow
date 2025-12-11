@@ -59,9 +59,10 @@ def precompute(
     batch_size: int = 50,
     device: str = "cuda",
     non_zh_drop_prob: float = 0.0,
-    resolution_tolerence: float = 1.0,
+    resolution_tolerance: float = 1.0,
     min_caption_tokens: int = 1,
     max_caption_tokens: int = 1024,
+    min_aesthetic_score: float = 0.0,
 ) -> Dataset:
     """
     Stateless precomputation of image latents and caption preparation.
@@ -81,6 +82,8 @@ def precompute(
                           Default 0.0 means no language filtering.
         max_caption_tokens: Maximum estimated tokens for any single caption.
                             Samples with longer captions will be dropped.
+        min_aesthetic_score: Minimum aesthetic score for samples.
+                            Samples with lower aesthetic scores will be dropped.
 
     Returns:
         Processed dataset with 'latents', 'captions', and 'resolution_bucket_id'.
@@ -125,7 +128,7 @@ def precompute(
             if isinstance(width, int) and isinstance(height, int) and width > 1 and height > 1:
                 try:
                     _, resolution = get_resolution_bucket(width, height, resolution_buckets)
-                    if width < resolution[0] * resolution_tolerence or height < resolution[1] * resolution_tolerence:
+                    if width < resolution[0] * resolution_tolerance or height < resolution[1] * resolution_tolerance:
                         skip_indices.add(idx)
                 except Exception:
                     skip_indices.add(idx)
@@ -169,6 +172,16 @@ def precompute(
                 processed_captions_map[idx] = current_captions
 
         dropped_caption_length = len(skip_indices) - dropped_lang - dropped_resolution_pre
+
+        # 4. Aesthetic score filter
+        aesthetic_scores = batch.get("aesthetic_score") or batch.get("aesthetic", [None] * batch_len)
+        for idx in range(batch_len):
+            if idx in skip_indices:
+                continue
+            score = aesthetic_scores[idx]
+            if score is not None and score < min_aesthetic_score:
+                skip_indices.add(idx)
+        dropped_aesthetic = len(skip_indices) - dropped_lang - dropped_resolution_pre - dropped_caption_length
         
         # --- Image Fetching and Processing ---
         dropped_fetch_timeout = 0
@@ -185,7 +198,7 @@ def precompute(
                     f"Batch: {total_dropped}/{batch_len} dropped "
                     f"(lang={dropped_lang}, res_pre={dropped_resolution_pre}, caption={dropped_caption_length}, "
                     f"fetch_timeout={dropped_fetch_timeout}, fetch_err={dropped_fetch_error}, invalid_img={dropped_invalid_image}, "
-                    f"res_post={dropped_resolution_post}, bucket_err={dropped_bucket_error}, vae={dropped_vae})"
+                    f"res_post={dropped_resolution_post}, bucket_err={dropped_bucket_error}, vae={dropped_vae}, aes={dropped_aesthetic})"
                 )
 
         batches_by_bucket = {}
@@ -213,7 +226,7 @@ def precompute(
                 width, height = image.size
                 try:
                     bucket_id, resolution = get_resolution_bucket(width, height, resolution_buckets)
-                    if width < resolution[0] * resolution_tolerence or height < resolution[1] * resolution_tolerence:
+                    if width < resolution[0] * resolution_tolerance or height < resolution[1] * resolution_tolerance:
                         dropped_resolution_post += 1
                         continue
                     

@@ -12,15 +12,15 @@ TARGET_SAMPLES=5000
 
 # Repeatable dataset specs: name=...,image_field=...,weight=...
 DATASETS=(
-  "name=kaupane/wikiart-captions-monet,image_field=image,weight=0.2"
-  "name=CaptionEmporium/laion-pop-llama3.2-11b,image_field=url,weight=0.4"
-  "name=OpenFace-CQUPT/HumanCaption-10M,image_field=url,weight=0.4"
+  "name=kaupane/wikiart-captions,image_field=image,weight=0.1"
+  "name=kaupane/relaion-art-recap-zh,image_field=url,weight=0.45"
+  "name=kaupane/vintage-photography-captions,image_field=image_url,weight=0.45"
 )
 
 # Quality filters
-MIN_RESOLUTION=640
-ASPECT_RATIO_MIN=0.8
-ASPECT_RATIO_MAX=1.25
+MIN_RESOLUTION=512
+ASPECT_RATIO_MIN=0.6
+ASPECT_RATIO_MAX=1.67
 
 # Output
 OUTPUT_DIR="./scored_images"

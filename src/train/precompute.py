@@ -91,8 +91,10 @@ def parse_args():
     )
     parser.add_argument("--device", type=str, default="cuda", help="Device to use")
     parser.add_argument("--non_zh_drop_prob", type=float, default=0.0, help="Probability of dropping non-zh samples")
-    parser.add_argument("--resolution_tolerence", type=float, default=1.0, help="Tolerance factor for resolution dropping")
+    parser.add_argument("--resolution_tolerance", type=float, default=1.0, help="Tolerance factor for resolution dropping")
+    parser.add_argument("--min_caption_tokens", type=int, default=1, help="Minimum caption tokens to allow")
     parser.add_argument("--max_caption_tokens", type=int, default=1024, help="Maximum caption tokens to allow")
+    parser.add_argument("--min_aesthetic_score", type=float, default=0.0, help="Minimum aesthetic score to allow")
     return parser.parse_args()
 
 
@@ -137,8 +139,10 @@ def main():
         batch_size=args.batch_size,
         device=args.device,
         non_zh_drop_prob=args.non_zh_drop_prob,
-        resolution_tolerence=args.resolution_tolerence,
+        resolution_tolerance=args.resolution_tolerance,
+        min_caption_tokens=args.min_caption_tokens,
         max_caption_tokens=args.max_caption_tokens,
+        min_aesthetic_score=args.min_aesthetic_score
     )
     print(f"Saving processed dataset to {args.output_dir}...")
     processed_dataset.save_to_disk(args.output_dir)
