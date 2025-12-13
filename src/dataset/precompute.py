@@ -161,6 +161,13 @@ def precompute(
                     items_to_process.append(val[1]["value"])
                 elif field == "artist":
                     items_to_process.append(format_artist_name(val))
+                elif field == "json":
+                    if isinstance(val, dict) and "caption" in val:
+                        items_to_process.append(val.get("caption"))
+                    elif "captionEn" in val:
+                        items_to_process.append(val.get("captionEn"))
+                    elif "captionJp" in val:
+                        items_to_process.append(val.get("captionJp"))
                 elif isinstance(val, str):
                     items_to_process.append(val)
                 elif isinstance(val, list):
@@ -192,12 +199,12 @@ def precompute(
             # 5. Watermark filter
             p = watermark[idx]
             if isinstance(p, bool):
-                if not p:
+                if p and min_watermark_prob < 1.0:
                     skip_indices.add(idx)
                     dropped_watermark += 1
                     continue
             elif isinstance(p, (int, float)):
-                if p < min_watermark_prob:
+                if p > min_watermark_prob:
                     skip_indices.add(idx)
                     dropped_watermark += 1
                     continue

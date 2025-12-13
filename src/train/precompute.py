@@ -103,16 +103,20 @@ def main():
     args = parse_args()
 
     print(f"Loading dataset {args.dataset_name}...")
-    if args.range > 0:
-        split = f"{args.split}[:{args.range}]"
-    else:
-        split = args.split
-
+    
     try:
         print("Trying to load dataset from disk...")
         dataset = load_from_disk(args.dataset_name)
+        # Apply range selection after loading from disk
+        if args.range > 0:
+            dataset = dataset.select(range(min(args.range, len(dataset))))
     except FileNotFoundError:
         print(f"Trying to load dataset from Hugging Face...")
+        # For HuggingFace, use split syntax
+        if args.range > 0:
+            split = f"{args.split}[:{args.range}]"
+        else:
+            split = args.split
         dataset = load_dataset(args.dataset_name, split=split)
 
     # Process caption fields

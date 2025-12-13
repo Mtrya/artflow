@@ -5,16 +5,15 @@
 
 export PYTHONPATH=.venv/bin/python
 
-# Dataset configuration (supports multiple datasets with weights)
-DATASET_NAME="kaupane/wikiart-captions"  # legacy single-dataset fields retained for compatibility
 IMAGE_FIELD="image"
 TARGET_SAMPLES=5000
 
 # Repeatable dataset specs: name=...,image_field=...,weight=...
 DATASETS=(
-  "name=kaupane/wikiart-captions,image_field=image,weight=0.1"
-  "name=kaupane/relaion-art-recap-zh,image_field=url,weight=0.45"
-  "name=kaupane/vintage-photography-captions,image_field=image_url,weight=0.45"
+  "name=kaupane/wikiart-captions,image_field=image,weight=0.2"
+  "name=kaupane/relaion-art-recap-zh,image_field=url,weight=0.3"
+  "name=kaupane/vintage-photography-captions,image_field=image_url,weight=0.3"
+  "name=kaupane/human-recaption,image_field=image_url,weight=0.2"
 )
 
 # Quality filters
