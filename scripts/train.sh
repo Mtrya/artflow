@@ -19,7 +19,7 @@ EVAL_BS=16
 
 # Training configuration
 # Dataset mix: "path1:weight1 path2:weight2" or single "path"
-DATASET_MIX="./precomputed_dataset/mixed-art@256p:0.9 ./precomputed_dataset/face-caption-hq@256p:0.1"
+DATASET_MIX="./precomputed_dataset/mixed-art@256p:0.9 ./precomputed_dataset/mixed-portrait@256p:0.1"
 TEXT_ENCODER_PATH="Qwen/Qwen3-VL-2B-Instruct"
 LR=3e-4
 START_LR=1e-6
@@ -27,11 +27,11 @@ MIN_LR=1e-6
 LR_SCHEDULER="linear_cosine"
 LR_WARMUP_STEPS=2000
 MAX_STEPS=24000
-GRAD_ACCUM_STEPS=4
+GRAD_ACCUM_STEPS=5
 MAX_GRAD_NORM=1.0
 EMA_DECAY=0.99
 EMA_INTERVAL=1
-BATCH_SIZE=16
+BATCH_SIZE=12
 NUM_WORKERS=4
 CURRICULUM_START=0.0
 CURRICULUM_END=1.0
@@ -54,6 +54,7 @@ accelerate launch -m src.train.train \
     --max_steps $MAX_STEPS \
     --curriculum_start $CURRICULUM_START \
     --curriculum_end $CURRICULUM_END \
+    --caption_dropout_prob 0.1 \
     --gradient_accumulation_steps $GRAD_ACCUM_STEPS \
     --max_grad_norm $MAX_GRAD_NORM \
     --batch_size $BATCH_SIZE \
@@ -62,9 +63,9 @@ accelerate launch -m src.train.train \
     --ema_decay $EMA_DECAY \
     --ema_update_interval $EMA_INTERVAL \
     --hidden_size 640 \
-    --num_heads 8 \
+    --num_heads 10 \
     --double_stream_depth 0 \
-    --single_stream_depth 12 \
+    --single_stream_depth 10 \
     --mlp_ratio 2.67 \
     --conditioning_scheme "pure" \
     --qkv_bias \

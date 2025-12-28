@@ -174,6 +174,12 @@ def parse_args():
         help="End value for caption sampling stage (0.0-1.0)",
     )
     parser.add_argument(
+        "--caption_dropout_prob",
+        type=float,
+        default=0.1,
+        help="Probability of dropping a caption for classifier-free guidance",
+    )
+    parser.add_argument(
         "--gradient_accumulation_steps",
         type=int,
         default=1,
@@ -445,6 +451,15 @@ def main():
             selected_captions = [
                 sample_caption(caps, stage=stage) for caps in captions_list
             ]
+
+            if args.caption_dropout_prob > 0:
+                drop_mask = torch.rand(len(selected_captions), device=latents.device) < args.caption_dropout_prob
+                if drop_mask.all():
+                    keep_idx = torch.randint(len(selected_captions), (1,), device=latents.device)
+                    drop_mask[keep_idx] = False
+                for i, drop in enumerate(drop_mask.tolist()):
+                    if drop:
+                        selected_captions[i] = ""
 
             # Encode
             txt, txt_mask, txt_pooled = encode_text(

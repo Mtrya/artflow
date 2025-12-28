@@ -251,15 +251,15 @@ if __name__ == "__main__":
     }
     test_variant("Base", base_config)
 
-    """final_config = {
+    config = {
         "hidden_size": 1120,
         "num_heads": 14,
-        "double_stream_depth": 8,
-        "single_stream_depth": 16,
+        "double_stream_depth": 0,
+        "single_stream_depth": 28,
         "mlp_ratio": 2.667,
         "conditioning_scheme": "pure",
         "double_stream_modulation": "layer",
-        "single_stream_modulation": "layer",
+        "single_stream_modulation": "none",
         "ffn_type": "gated"
     }
-    test_variant("Final", final_config)"""
+    test_variant("Test", config)
