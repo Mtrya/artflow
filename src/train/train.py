@@ -440,7 +440,15 @@ def main():
                     alias = dataset_aliases[ds_id]
                     telemetry_tensors[alias] += 1
 
-            # 1. Text Encoding (On-the-fly)
+            # 1. Prepare Inputs
+            latents = batch["latents"]
+
+            # Normalize latents: z_norm = (z - mean) / std
+            latents = (latents - vae_mean) / vae_std
+
+            t = torch.rand(latents.shape[0], device=latents.device)
+
+            # 2. Text Encoding (On-the-fly)
             captions_list = batch["captions"]  # List[List[str]]
 
             # Curriculum Sampling
@@ -468,14 +476,6 @@ def main():
                 processor,
                 pooling=(args.conditioning_scheme == "fused"),
             )
-
-            # 2. Prepare Inputs
-            latents = batch["latents"]
-
-            # Normalize latents: z_norm = (z - mean) / std
-            latents = (latents - vae_mean) / vae_std
-
-            t = torch.rand(latents.shape[0], device=latents.device)
 
             # Flow Matching
             z1 = latents
