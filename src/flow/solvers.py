@@ -123,7 +123,7 @@ def sample_ode(
     solver_instance: Optional[Solver] = None,
     t_start: float = 0.0,
     t_end: float = 1.0,
-    device: str = "cuda",
+    device: Optional[Union[str, torch.device]] = None,
     return_intermediates: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, List[torch.Tensor]]]:
     """Sample using ODE solver."""
@@ -136,7 +136,8 @@ def sample_ode(
     else:
         raise ValueError(f"Unknown solver: {solver}")
 
-    x = z0.to(device)
+    target_device = torch.device(device) if device is not None else z0.device
+    x = z0.to(target_device)
     dt = (t_end - t_start) / steps
     t = t_start
 

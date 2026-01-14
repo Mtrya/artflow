@@ -5,7 +5,8 @@ Functions:
 - calculate_fid: Frechet Inception Distance
 - calculate_kid: Kernel Inception Distance
 - calculate_clip_score: CLIP Score for text-image alignment
-- calculate_reward_score: Reward model score for artistic preference
+- calculate_rm_score: Reward model score for artistic preference
+- calculate_combined_reward: Combined CLIP + RM reward for Flow-GRPO
 """
 
 import gc
@@ -181,14 +182,14 @@ def calculate_clip_score(
     return val
 
 
-def _calculate_rm_score(
+def _calculate_rm_score_from_features(
     clip_features: torch.Tensor,
     checkpoint_path: str,
     device: Optional[torch.device] = None,
     batch_size: int = 32,
 ) -> float:
     """
-    Calculate reward model score for artistic preference using pre-extracted features.
+    Internal helper: Calculate reward model score using pre-extracted features.
     
     Args:
         clip_features: [B, hidden_size * num_layers] pre-extracted CLIP features
@@ -244,6 +245,87 @@ def _calculate_rm_score(
     torch.cuda.empty_cache()
     
     return torch.cat(all_scores, dim=0).mean().item()
+
+
+def calculate_rm_score(
+    images: torch.Tensor,
+    checkpoint_path: str,
+    clip_model_name: str = "OFA-Sys/chinese-clip-vit-large-patch14-336px",
+    feature_layers: Optional[List[int]] = None,
+    device: Optional[torch.device] = None,
+    batch_size: int = 32,
+) -> float:
+    """
+    Calculate reward model score for artistic preference.
+    
+    Args:
+        images: Tensor of shape [B, C, H, W], values in [0, 1] or [0, 255] (uint8)
+        checkpoint_path: Path to trained reward model checkpoint
+        clip_model_name: CLIP model for feature extraction
+        feature_layers: Layers to extract features from (e.g., [12, 18, 23])
+        device: Device to run calculation on
+        batch_size: Batch size for processing
+        
+    Returns:
+        Average reward score (float) across all images
+    """
+    if device is None:
+        device = images.device
+    
+    from transformers import ChineseCLIPModel, CLIPProcessor
+    from ..models.reward_model import extract_clip_features
+    
+    # Load CLIP model for feature extraction
+    clip_model = ChineseCLIPModel.from_pretrained(clip_model_name).to(device)
+    clip_processor = CLIPProcessor.from_pretrained(clip_model_name)
+    clip_model.eval()
+    
+    # Load reward model config
+    checkpoint_dir = Path(checkpoint_path).parent
+    config_path = checkpoint_dir / "config.json"
+    
+    if config_path.exists():
+        import json
+        with open(config_path, "r") as f:
+            config = json.load(f)
+            if feature_layers is None:
+                feature_layers = config.get("feature_layers", [12, 18, 23])
+    else:
+        if feature_layers is None:
+            feature_layers = [12, 18, 23]
+    
+    # Convert images to [0, 255] range
+    if images.max() <= 1:
+        images = (images * 255.0).to(torch.uint8)
+    
+    # Extract features in batches
+    rm_features_list = []
+    
+    with torch.no_grad():
+        for i in range(0, len(images), batch_size):
+            img_batch = images[i : i + batch_size].to(device)
+            
+            # Extract multi-layer image features
+            img_features_multilayer = extract_clip_features(
+                img_batch, clip_model, clip_processor, feature_layers, device
+            )
+            
+            rm_features_list.append(img_features_multilayer.cpu())
+    
+    # Concatenate all features
+    all_rm_features = torch.cat(rm_features_list, dim=0).to(device)
+    
+    # Calculate reward model score
+    rm_score = _calculate_rm_score_from_features(
+        all_rm_features, checkpoint_path, device, batch_size
+    )
+    
+    # Cleanup
+    del clip_model
+    gc.collect()
+    torch.cuda.empty_cache()
+    
+    return rm_score
 
 
 def calculate_combined_reward(
@@ -360,7 +442,7 @@ def calculate_combined_reward(
     all_rm_features = torch.cat(rm_features_list, dim=0).to(device)
     
     # Calculate reward model score
-    rm_score = _calculate_rm_score(
+    rm_score = _calculate_rm_score_from_features(
         all_rm_features, reward_checkpoint, device, batch_size
     )
     

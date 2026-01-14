@@ -239,9 +239,9 @@ if __name__ == "__main__":
 
     base_config = {
         "hidden_size": 640,
-        "num_heads": 8,
-        "double_stream_depth": 2,
-        "single_stream_depth": 14,
+        "num_heads": 10,
+        "double_stream_depth": 0,
+        "single_stream_depth": 10,
         "mlp_ratio": 2.67,
         "conditioning_scheme": "pure",
         "qkv_bias": False,
@@ -251,15 +251,15 @@ if __name__ == "__main__":
     }
     test_variant("Base", base_config)
 
-    config = {
-        "hidden_size": 1120,
-        "num_heads": 14,
+    ditxl_config = {
+        "hidden_size": 1152,
+        "num_heads": 16,
         "double_stream_depth": 0,
         "single_stream_depth": 28,
         "mlp_ratio": 2.667,
         "conditioning_scheme": "pure",
         "double_stream_modulation": "layer",
-        "single_stream_modulation": "none",
+        "single_stream_modulation": "layer",
         "ffn_type": "gated"
     }
-    test_variant("Test", config)
+    test_variant("DiT-XL/2", ditxl_config) # ~560M params = ~100M less than DiT-XL/2 because of modulation sharing

@@ -74,9 +74,9 @@ def encode_text(
         outputs = model.model(
             input_ids=inputs.input_ids,
             attention_mask=inputs.attention_mask,
-            output_hidden_states=True,
+            output_hidden_states=False,
         )
-        hidden = outputs.hidden_states[-1]
+        hidden = outputs.last_hidden_state
 
     sequences = _extract_masked_hidden(hidden, inputs.attention_mask)
     trimmed = [_trim_sequence(seq) for seq in sequences]

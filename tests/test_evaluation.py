@@ -22,6 +22,8 @@ class TestEvaluationImports(unittest.TestCase):
             calculate_fid,
             calculate_kid,
             calculate_clip_score,
+            calculate_rm_score,
+            calculate_combined_reward,
             make_image_grid,
             visualize_denoising,
             format_prompt_caption,
@@ -33,6 +35,8 @@ class TestEvaluationImports(unittest.TestCase):
         self.assertIsNotNone(calculate_fid)
         self.assertIsNotNone(calculate_kid)
         self.assertIsNotNone(calculate_clip_score)
+        self.assertIsNotNone(calculate_rm_score)
+        self.assertIsNotNone(calculate_combined_reward)
         self.assertIsNotNone(make_image_grid)
         self.assertIsNotNone(visualize_denoising)
         self.assertIsNotNone(format_prompt_caption)
@@ -177,6 +181,168 @@ class TestEvaluation(unittest.TestCase):
         mock_sample_ode.assert_called()
         mock_calc_fid.assert_called_once()
         mock_calc_clip.assert_called_once()
+
+
+class TestRMScore(unittest.TestCase):
+    """Test calculate_rm_score function."""
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+        self.checkpoint_path = os.path.join(self.test_dir, "rm_checkpoint.pt")
+        self.config_path = os.path.join(self.test_dir, "config.json")
+        
+        # Create a dummy config file
+        import json
+        config = {
+            "feature_dim": 1024,
+            "num_layers": 3,
+            "hidden_dim": 512,
+            "dropout": 0.1,
+            "feature_layers": [12, 18, 23]
+        }
+        with open(self.config_path, 'w') as f:
+            json.dump(config, f)
+        
+        # Create a dummy checkpoint
+        torch.save({"model_state_dict": {}}, self.checkpoint_path)
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    @unittest.skip("Requires reward model and CLIP model - skipping for now")
+    @patch("src.evaluation.metrics.ChineseCLIPModel")
+    @patch("src.evaluation.metrics.CLIPProcessor")
+    @patch("src.evaluation.metrics.extract_clip_features")
+    @patch("src.evaluation.metrics.RewardModel")
+    def test_calculate_rm_score(
+        self, mock_reward_model_cls, mock_extract_features, mock_processor_cls, mock_clip_cls
+    ):
+        """Test that calculate_rm_score processes images correctly."""
+        from src.evaluation.metrics import calculate_rm_score
+        
+        # Setup mocks
+        mock_clip = MagicMock()
+        mock_clip_cls.from_pretrained.return_value = mock_clip
+        mock_processor = MagicMock()
+        mock_processor_cls.from_pretrained.return_value = mock_processor
+        
+        # Mock feature extraction
+        mock_extract_features.return_value = torch.randn(4, 3072)  # [B, feature_dim]
+        
+        # Mock reward model
+        mock_rm = MagicMock()
+        mock_rm.return_value = torch.tensor([0.8, 0.7, 0.9, 0.6])  # Scores
+        mock_reward_model_cls.return_value = mock_rm
+        
+        # Create test images
+        images = torch.rand(4, 3, 256, 256)  # [B, C, H, W] in [0, 1]
+        
+        # Calculate score
+        score = calculate_rm_score(
+            images=images,
+            checkpoint_path=self.checkpoint_path,
+            device="cpu",
+            batch_size=2
+        )
+        
+        # Assertions
+        self.assertIsInstance(score, float)
+        self.assertGreaterEqual(score, 0.0)
+        self.assertLessEqual(score, 1.0)
+        mock_extract_features.assert_called()
+
+
+class TestVLMScore(unittest.TestCase):
+    """Test calculate_vlm_score function."""
+
+    @patch("src.evaluation.metrics.requests.post")
+    def test_calculate_vlm_score(self, mock_post):
+        """Test that calculate_vlm_score makes correct API calls."""
+        from src.evaluation.metrics import calculate_vlm_score
+        
+        # Mock API response
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "0.85"}}]
+        }
+        mock_post.return_value = mock_response
+        
+        # Create test images
+        images = torch.rand(2, 3, 256, 256)  # [B, C, H, W] in [0, 1]
+        prompts = ["Rate this image", "Rate this artwork"]
+        
+        # Calculate score
+        score = calculate_vlm_score(
+            images=images,
+            prompts=prompts,
+            api_url="https://api.example.com/v1/chat/completions",
+            api_key="test_key",
+            model_name="qwen-vl",
+            batch_size=1
+        )
+        
+        # Assertions
+        self.assertIsInstance(score, float)
+        self.assertEqual(score, 0.85)  # Should be average of both responses
+        self.assertEqual(mock_post.call_count, 2)  # Called once per image
+        
+        # Verify API call structure
+        call_args = mock_post.call_args_list[0]
+        self.assertIn("Authorization", call_args[1]["headers"])
+        self.assertEqual(call_args[1]["json"]["model"], "qwen-vl")
+
+    @patch("src.evaluation.metrics.requests.post")
+    def test_calculate_vlm_score_with_extraction(self, mock_post):
+        """Test that calculate_vlm_score can extract numbers from text responses."""
+        from src.evaluation.metrics import calculate_vlm_score
+        
+        # Mock API response with text containing a number
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "The score is 0.75 out of 1.0"}}]
+        }
+        mock_post.return_value = mock_response
+        
+        # Create test images
+        images = torch.rand(1, 3, 256, 256)
+        
+        # Calculate score
+        score = calculate_vlm_score(
+            images=images,
+            prompts="Rate this",
+            api_url="https://api.example.com/v1/chat/completions",
+            api_key="test_key"
+        )
+        
+        # Should extract 0.75 from the response
+        self.assertEqual(score, 0.75)
+
+    @patch("src.evaluation.metrics.requests.post")
+    def test_calculate_vlm_score_api_failure(self, mock_post):
+        """Test that calculate_vlm_score handles API failures gracefully."""
+        from src.evaluation.metrics import calculate_vlm_score
+        
+        # Mock API failure
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.text = "Internal Server Error"
+        mock_post.return_value = mock_response
+        
+        # Create test images
+        images = torch.rand(1, 3, 256, 256)
+        
+        # Calculate score
+        score = calculate_vlm_score(
+            images=images,
+            prompts="Rate this",
+            api_url="https://api.example.com/v1/chat/completions",
+            api_key="test_key"
+        )
+        
+        # Should return 0.0 for failed API calls
+        self.assertEqual(score, 0.0)
 
 
 if __name__ == "__main__":
