@@ -249,6 +249,7 @@ def run_evaluation_light(
     dataset_path: str = "./precomputed_dataset/light-eval@256p",
     num_samples: int = 16,
     batch_size: int = 16,
+    compute_metrics: bool = False,
     bucket_resolutions={
         1: (256, 256),
         2: (336, 192),
@@ -442,8 +443,8 @@ def run_evaluation_light(
                 )
                 accelerator.log({f"samples_{idx}": media}, step=current_step)
 
-            # Calculate metrics
-            if real_images_list and fake_images_list:
+            # Calculate metrics (optional, controlled by compute_metrics flag)
+            if compute_metrics and real_images_list and fake_images_list:
                 real = [torch.clamp(img, 0, 1) for img in real_images_list]
                 fake = [torch.clamp(img, 0, 1) for img in fake_images_list]
 
@@ -497,20 +498,23 @@ def run_evaluation_light(
 
                 accelerator.log(metrics, step=current_step)
 
-            else:
+            elif compute_metrics:
                 print("Insufficient data for metric computation.")
 
-    metrics_payload = [metrics]
-    if can_broadcast_objects:
-        accelerator.broadcast_object_list(metrics_payload)
-    metrics = metrics_payload[0]
+    if compute_metrics:
+        metrics_payload = [metrics]
+        if can_broadcast_objects:
+            accelerator.broadcast_object_list(metrics_payload)
+        metrics = metrics_payload[0]
 
     # Cleanup
     del vae
     gc.collect()
-    torch.cuda.empty_cache()
+    for i in range(torch.cuda.device_count()):
+        with torch.cuda.device(i):
+            torch.cuda.empty_cache()
 
-    return metrics
+    return {}
 
 
 def run_evaluation_heavy(

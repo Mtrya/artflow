@@ -3,6 +3,7 @@ Training script for ArtFlow Stage 1: Conditional Generation with Architecture Ab
 """
 
 import os
+import gc
 import argparse
 import warnings
 import math
@@ -70,6 +71,12 @@ def build_linear_cosine_scheduler(
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
+def sample_logit_normal_timesteps(batch_size, device, mu=0.0, sigma=1.0):
+    """Sample timesteps from a logit-normal distribution."""
+    logit = mu + sigma * torch.randn(batch_size, device=device)
+    t = torch.sigmoid(logit)
+    return t
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train ArtFlow Stage 1")
@@ -108,6 +115,11 @@ def parse_args():
     )
     parser.add_argument(
         "--eval_batch_size", type=int, default=16, help="Batch size used in evaluation"
+    )
+    parser.add_argument(
+        "--eval_compute_metrics",
+        action="store_true",
+        help="Compute FID/KID/CLIP metrics during evaluation (slower)",
     )
 
     # Training Config
@@ -203,6 +215,35 @@ def parse_args():
         type=int,
         default=1,
         help="Steps between EMA updates",
+    )
+    parser.add_argument(
+        "--use_logit_normal_sampling",
+        action="store_true",
+        help="Use logit-normal distribution for timestep sampling instead of uniform",
+    )
+    parser.add_argument(
+        "--logit_normal_mu",
+        type=float,
+        default=0.0,
+        help="Mean (mu) for logit-normal timestep sampling",
+    )
+    parser.add_argument(
+        "--logit_normal_sigma",
+        type=float,
+        default=1.0,
+        help="Standard deviation (sigma) for logit-normal timestep sampling",
+    )
+    parser.add_argument(
+        "--telemetry_log_interval",
+        type=int,
+        default=125,
+        help="Log per-dataset telemetry every N steps",
+    )
+    parser.add_argument(
+        "--cache_clear_interval",
+        type=int,
+        default=125,
+        help="Clear CUDA cache every N steps",
     )
 
     # Model Config
@@ -408,7 +449,6 @@ def main():
 
     # Per-dataset telemetry (for multi-dataset mode)
     dataset_aliases = [entry.alias for entry in dataset_entries]
-    telemetry_log_interval = 100  # Log per-dataset stats every N steps
 
     # Initialize telemetry tensors for distributed synchronization
     telemetry_tensors = {
@@ -446,7 +486,13 @@ def main():
             # Normalize latents: z_norm = (z - mean) / std
             latents = (latents - vae_mean) / vae_std
 
-            t = torch.rand(latents.shape[0], device=latents.device)
+            if args.use_logit_normal_sampling:
+                t = sample_logit_normal_timesteps(
+                    latents.shape[0], latents.device,
+                    mu=args.logit_normal_mu, sigma=args.logit_normal_sigma
+                )
+            else:
+                t = torch.rand(latents.shape[0], device=latents.device)
 
             # 2. Text Encoding (On-the-fly)
             captions_list = batch["captions"]  # List[List[str]]
@@ -511,7 +557,7 @@ def main():
 
             # Per-dataset telemetry (log periodically)
             synchronized_counts = None
-            if is_multi_dataset and global_step % telemetry_log_interval == 0:
+            if is_multi_dataset and global_step % args.telemetry_log_interval == 0:
                 synchronized_counts = {}
                 total_samples = 0
 
@@ -527,6 +573,13 @@ def main():
                 # Reset telemetry counters on every rank for the next interval
                 for alias in dataset_aliases:
                     telemetry_tensors[alias].zero_()
+
+            # CUDA cache clearing (independent of telemetry)
+            if global_step % args.cache_clear_interval == 0:
+                gc.collect()
+                for i in range(torch.cuda.device_count()):
+                    with torch.cuda.device(i):
+                        torch.cuda.empty_cache()
 
             if accelerator.is_main_process:
                 log_dict = {
@@ -577,6 +630,7 @@ def main():
                     pooling=(args.conditioning_scheme == "fused"),
                     num_samples=args.num_eval_samples,
                     batch_size=args.eval_batch_size,
+                    compute_metrics=args.eval_compute_metrics,
                 )
                 model.train()
 
