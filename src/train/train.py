@@ -234,6 +234,12 @@ def parse_args():
         help="Standard deviation (sigma) for logit-normal timestep sampling",
     )
     parser.add_argument(
+        "--vp_shift",
+        type=float,
+        default=1.0,
+        help="Shift parameter for VP-SDE diffusion path",
+    )
+    parser.add_argument(
         "--telemetry_log_interval",
         type=int,
         default=125,
@@ -526,7 +532,7 @@ def main():
             # Flow Matching
             z1 = latents
             z0 = torch.randn_like(z1)
-            z_t = algorithm.sample_zt(z0, z1, t)
+            z_t = algorithm.sample_zt(z0, z1, t, args.vp_shift)
 
             # Forward
             model_output = model(

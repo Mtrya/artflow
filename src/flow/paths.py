@@ -143,8 +143,10 @@ class FlowMatchingDiffusion(BaseAlgorithm):
         return velocity
 
     def sample_zt(
-        self, z0: torch.Tensor, z1: torch.Tensor, t: torch.Tensor
+        self, z0: torch.Tensor, z1: torch.Tensor, t: torch.Tensor, shift: float = 1.0,
     ) -> torch.Tensor:
+        t = (shift * t) / (1 + (shift - 1) * t)
+
         if t.dim() == 1:
             t = t.view(-1, 1, 1, 1)
 
@@ -153,8 +155,8 @@ class FlowMatchingDiffusion(BaseAlgorithm):
         )
         mean_coeff = torch.exp(log_mean_coeff)
         std = torch.sqrt(1.0 - torch.exp(2.0 * log_mean_coeff))
-        z_t = mean_coeff * z1 + std * z0
-        return z_t
+
+        return mean_coeff * z1 + std * z0
 
     def compute_loss(
         self,
