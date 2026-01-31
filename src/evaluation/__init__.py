@@ -8,8 +8,6 @@ from .metrics import (
     calculate_fid,
     calculate_kid,
     calculate_clip_score,
-    calculate_rm_score,
-    calculate_combined_reward,
 )
 from .visualize import make_image_grid, visualize_denoising, format_prompt_caption
 from .pipeline import run_evaluation_uncond, run_evaluation_light, run_evaluation_heavy
@@ -18,8 +16,6 @@ __all__ = [
     "calculate_fid",
     "calculate_kid",
     "calculate_clip_score",
-    "calculate_rm_score",
-    "calculate_combined_reward",
     "make_image_grid",
     "visualize_denoising",
     "format_prompt_caption",
