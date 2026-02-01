@@ -311,7 +311,7 @@ def run_evaluation_light(
                 real_images_list.append(img.cpu().float())
 
                 captions_list = item.get("captions", "")
-                prompt = captions_list[1] or captions_list[0]
+                prompt = captions_list[1] if len(captions_list) > 1 else captions_list[0]
 
                 bucket_id = int(item.get("resolution_bucket_id", 1))
                 bucket_prompts.setdefault(bucket_id, []).append(prompt)

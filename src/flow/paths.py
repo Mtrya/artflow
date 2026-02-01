@@ -17,7 +17,7 @@ from abc import ABC, abstractmethod
 class BaseAlgorithm(ABC):
     @abstractmethod
     def sample_zt(
-        self, z0: torch.Tensor, z1: torch.Tensor, t: torch.Tensor
+        self, z0: torch.Tensor, z1: torch.Tensor, t: torch.Tensor, shift: float=1.0
     ) -> torch.Tensor:
         """
         Sample z_t from the probability path p_t(z_t | z0, z1).
@@ -68,7 +68,7 @@ class ScoreMatchingDiffusion(BaseAlgorithm):
         return std
 
     def sample_zt(
-        self, z0: torch.Tensor, z1: torch.Tensor, t: torch.Tensor
+        self, z0: torch.Tensor, z1: torch.Tensor, t: torch.Tensor, shift: float=1.0
     ) -> torch.Tensor:
         if t.dim() == 1:
             t = t.view(-1, 1, 1, 1)
@@ -175,8 +175,9 @@ class FlowMatchingOT(BaseAlgorithm):
     """
 
     def sample_zt(
-        self, z0: torch.Tensor, z1: torch.Tensor, t: torch.Tensor
+        self, z0: torch.Tensor, z1: torch.Tensor, t: torch.Tensor, shift: float=1.0
     ) -> torch.Tensor:
+        t = (shift * t) / (1 + (shift - 1) * t)
         if t.dim() == 1:
             t = t.view(-1, 1, 1, 1)
 
