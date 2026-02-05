@@ -111,6 +111,9 @@ def parse_args():
         "--eval_interval", type=int, default=1000, help="Run evaluation every N steps"
     )
     parser.add_argument(
+        "--eval_dataset_path", type=str, default="./precomputed_dataset/light-eval@256p", help="Evaluation dataset path"
+    )
+    parser.add_argument(
         "--num_eval_samples", type=int, default=16, help="Evaluate on M samples"
     )
     parser.add_argument(
@@ -634,6 +637,7 @@ def main():
                     text_encoder=text_encoder,
                     processor=processor,
                     pooling=(args.conditioning_scheme == "fused"),
+                    dataset_path=args.eval_dataset_path,
                     num_samples=args.num_eval_samples,
                     batch_size=args.eval_batch_size,
                     compute_metrics=args.eval_compute_metrics,

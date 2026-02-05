@@ -291,7 +291,7 @@ def run_evaluation_light(
         bucket_prompts: Dict[int, List[str]] = {bid: [] for bid in bucket_resolutions}
 
         if accelerator.is_main_process:
-            dataset = load_from_disk(dataset_path)
+            dataset = load_from_disk(dataset_path).shuffle(seed=42)
             if num_samples is not None:
                 num_eval = min(num_samples, len(dataset))
                 end_idx = current_step % (len(dataset) - num_eval) + num_eval
