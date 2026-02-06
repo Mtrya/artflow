@@ -12,38 +12,52 @@ export SWANLAB_LOG_DIR="./output/swanlog"
 
 # Evaluation configuration
 VAE_PATH="REPA-E/e2e-qwenimage-vae"
-CHECKPOINT_INTERVAL=6000
-EVAL_INTERVAL=1000
-EVAL_SAMPLES=256
-EVAL_BS=16
+EVAL_DATASET_PATH="./precomputed_dataset/light-eval@640p"
+CHECKPOINT_INTERVAL=1000
+EVAL_INTERVAL=400
+EVAL_SAMPLES=80
+EVAL_BS=10
+EVAL_BUCKET_RESOLUTIONS="640x640,840x480,480x840,720x560,560x720"
 
 # Training configuration
-# Dataset mix: "path1:weight1 path2:weight2" or single "path"
-DATASET_MIX="./precomputed_dataset/mixed-art@256p:0.9 ./precomputed_dataset/mixed-portrait@256p:0.1"
+DATASET_MIX="./precomputed_dataset/world@640p:0.3 ./precomputed_dataset/distills@640p:0.3 ./precomputed_dataset/art@640p:0.2 ./precomputed_dataset/portrait@640p:0.2"
 TEXT_ENCODER_PATH="Qwen/Qwen3-VL-2B-Instruct"
-LR=3e-4
-START_LR=1e-6
-MIN_LR=1e-6
+START_LR=0.4e-4
+LR=0.4e-4
+MIN_LR=0.1e-4
 LR_SCHEDULER="linear_cosine"
-LR_WARMUP_STEPS=2000
-MAX_STEPS=24000
-GRAD_ACCUM_STEPS=5
+LR_WARMUP_STEPS=0000
+MAX_STEPS=10_000
+GRAD_ACCUM_STEPS=7
 MAX_GRAD_NORM=1.0
-EMA_DECAY=0.99
+EMA_DECAY=0.9999
 EMA_INTERVAL=1
-BATCH_SIZE=12
-NUM_WORKERS=4
-CURRICULUM_START=0.0
+BATCH_SIZE=6
+NUM_WORKERS=16
+CURRICULUM_START=1.0
 CURRICULUM_END=1.0
+SEED=42
+USE_LOGIT_NORMAL=true
+LOGIT_NORMAL_MU=0.0
+LOGIT_NORMAL_SIGMA=1.0
+VP_SHIFT=1.8
+TELEMETRY_LOG_INTERVAL=500
+CACHE_CLEAR_INTERVAL=200
+
+RUN_NAME="stage2_5"
+RESUME_PATH="output/stage2_4/checkpoint_step_025000"
 
 accelerate launch -m src.train.train \
-    --run_name "baseline" \
+    --run_name $RUN_NAME \
     --output_dir $OUTPUT_DIR \
+    --seed $SEED \
     --vae_path $VAE_PATH \
     --checkpoint_interval $CHECKPOINT_INTERVAL \
     --eval_interval $EVAL_INTERVAL \
+    --eval_dataset_path $EVAL_DATASET_PATH \
     --num_eval_samples $EVAL_SAMPLES \
     --eval_batch_size $EVAL_BS \
+    --bucket_resolutions "$EVAL_BUCKET_RESOLUTIONS" \
     --dataset_mix "$DATASET_MIX" \
     --text_encoder_path $TEXT_ENCODER_PATH \
     --learning_rate $LR \
@@ -62,13 +76,20 @@ accelerate launch -m src.train.train \
     --use_ema \
     --ema_decay $EMA_DECAY \
     --ema_update_interval $EMA_INTERVAL \
-    --hidden_size 640 \
-    --num_heads 10 \
+    --use_logit_normal \
+    --logit_normal_mu $LOGIT_NORMAL_MU \
+    --logit_normal_sigma $LOGIT_NORMAL_SIGMA \
+    --vp_shift $VP_SHIFT \
+    --telemetry_log_interval $TELEMETRY_LOG_INTERVAL \
+    --cache_clear_interval $CACHE_CLEAR_INTERVAL \
+    --hidden_size 1152 \
+    --num_heads 16 \
     --double_stream_depth 0 \
-    --single_stream_depth 10 \
+    --single_stream_depth 28 \
     --mlp_ratio 2.67 \
     --conditioning_scheme "pure" \
     --qkv_bias \
     --double_stream_modulation "none" \
-    --single_stream_modulation "none" \
-    --ffn_type "gated"
+    --single_stream_modulation "layer" \
+    --ffn_type "gated" \
+    --resume $RESUME_PATH

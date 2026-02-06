@@ -425,7 +425,7 @@ def run_evaluation_light(
                     f"samples/samples_step_{current_step:06d}_bucket{bucket_id}_{H}x{W}.png",
                 )
                 _ = make_image_grid(
-                    bucket_images[:9], save_path=grid_path, normalize=True, value_range=(0, 1)
+                    bucket_images[:4], save_path=grid_path, normalize=True, value_range=(0, 1)
                 )
                 print(f"Saved samples to {grid_path}")
                 bucket_grid_paths.append(grid_path)

@@ -120,6 +120,12 @@ def parse_args():
         "--eval_batch_size", type=int, default=16, help="Batch size used in evaluation"
     )
     parser.add_argument(
+        "--bucket_resolutions",
+        type=str,
+        default="256x256,336x192,192x336,288x224,224x288",
+        help="Comma-separated WxH bucket resolutions (e.g. '256x256,336x192,192x336')",
+    )
+    parser.add_argument(
         "--eval_compute_metrics",
         action="store_true",
         help="Compute FID/KID/CLIP metrics during evaluation (slower)",
@@ -301,6 +307,15 @@ def parse_args():
         help="FFN type",
     )
     return parser.parse_args()
+
+
+def parse_bucket_resolutions(spec: str) -> dict:
+    """Parse 'WxH,WxH,...' into {1: (W,H), 2: (W,H), ...}."""
+    result = {}
+    for i, entry in enumerate(spec.split(","), start=1):
+        w, h = entry.strip().split("x")
+        result[i] = (int(w), int(h))
+    return result
 
 
 def main():
@@ -641,6 +656,7 @@ def main():
                     num_samples=args.num_eval_samples,
                     batch_size=args.eval_batch_size,
                     compute_metrics=args.eval_compute_metrics,
+                    bucket_resolutions=parse_bucket_resolutions(args.bucket_resolutions),
                 )
                 model.train()
 
