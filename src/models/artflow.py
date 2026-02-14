@@ -39,7 +39,7 @@ class ArtFlow(nn.Module):
         self,
         patch_size: int = 2,
         in_channels: int = 16,
-        txt_in_features: int = 2048,
+        txt_in_features: int = 1024,
         # Configuration
         hidden_size: int = 1152,
         num_heads: int = 16,
@@ -218,9 +218,9 @@ if __name__ == "__main__":
             model = ArtFlow(**config)
             x = torch.randn(1, 16, 64, 64)  # Smaller size for quick test
             t = torch.randint(0, 1000, (1,))
-            txt = torch.randn(1, 77, 2048)
+            txt = torch.randn(1, 77, 1024)
             txt_pooled = (
-                torch.randn(1, 2048)
+                torch.randn(1, 1024)
                 if config.get("conditioning_scheme") == "fused"
                 else None
             )
@@ -245,8 +245,8 @@ if __name__ == "__main__":
         "mlp_ratio": 2.67,
         "conditioning_scheme": "pure",
         "qkv_bias": False,
-        "double_stream_modulation": "layer",
-        "single_stream_modulation": "layer",
+        "double_stream_modulation": "none",
+        "single_stream_modulation": "none",
         "ffn_type": "gated",
     }
     test_variant("Base", base_config)
@@ -258,8 +258,8 @@ if __name__ == "__main__":
         "single_stream_depth": 28,
         "mlp_ratio": 2.667,
         "conditioning_scheme": "pure",
-        "double_stream_modulation": "layer",
-        "single_stream_modulation": "layer",
+        "double_stream_modulation": "none",
+        "single_stream_modulation": "none",
         "ffn_type": "gated"
     }
-    test_variant("DiT-XL/2", ditxl_config) # ~560M params = ~100M less than DiT-XL/2 because of modulation sharing
+    test_variant("DiT-XL/2", ditxl_config) # ~673M params
