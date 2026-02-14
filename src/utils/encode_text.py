@@ -1,9 +1,9 @@
-"""Prompt-aware helper to encode text using Qwen3-VL."""
+"""Prompt-aware helper to encode text using a Qwen3 causal LM."""
 
 from typing import List, Optional, Tuple
 
 import torch
-from transformers import AutoProcessor, PreTrainedTokenizerBase, Qwen3VLForConditionalGeneration
+from transformers import PreTrainedTokenizerBase
 
 
 MAX_SEQUENCE_LENGTH = 1024
@@ -14,13 +14,6 @@ PROMPT_TEMPLATE = (
     "<|im_start|>user\n{user_prompt}<|im_end|>\n"
     "<|im_start|>assistant\n"
 )
-
-
-def _get_tokenizer(processor: AutoProcessor) -> PreTrainedTokenizerBase:
-    tokenizer = getattr(processor, "tokenizer", None)
-    if tokenizer is None:
-        raise ValueError("Processor must expose a tokenizer for prompt templating.")
-    return tokenizer
 
 
 def _extract_masked_hidden(hidden_states: torch.Tensor, mask: torch.Tensor) -> List[torch.Tensor]:
@@ -43,12 +36,12 @@ def _build_prompt(text: str) -> str:
 
 def encode_text(
     texts: List[str],
-    model: Qwen3VLForConditionalGeneration,
-    processor: AutoProcessor,
+    model: torch.nn.Module,
+    tokenizer: PreTrainedTokenizerBase,
     pooling: bool,
 ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
     """
-    Encode captions with the Qwen3-VL chat template for DiT conditioning.
+    Encode captions with the Qwen3 chat template for DiT conditioning.
 
     Returns:
         embeddings: [batch, seq, hidden]
@@ -59,11 +52,10 @@ def encode_text(
     if not texts:
         raise ValueError("texts must contain at least one caption.")
 
-    tokenizer = _get_tokenizer(processor)
     prompts = [_build_prompt(text) for text in texts]
 
-    inputs = processor(
-        text=prompts,
+    inputs = tokenizer(
+        prompts,
         return_tensors="pt",
         padding=True,
         truncation=True,
@@ -113,19 +105,22 @@ def encode_text(
 
 
 if __name__ == "__main__":
-    model = Qwen3VLForConditionalGeneration.from_pretrained(
-        "Qwen/Qwen3-VL-2B-Instruct", dtype=torch.bfloat16, device_map="cuda:0"
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    MODEL_ID = "Qwen/Qwen3-0.6B"
+
+    model = AutoModelForCausalLM.from_pretrained(
+        MODEL_ID, dtype=torch.bfloat16, device_map="cuda:0"
     )
-    processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-2B-Instruct")
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
 
     texts = [
         "Impressionism landscape by Claude Monet",
         "romanticism marina by Van Gogh",
     ] * 2
 
-    embedding, mask, pooled = encode_text(texts, model, processor, True)
+    embedding, mask, pooled = encode_text(texts, model, tokenizer, True)
 
-    tokenizer = _get_tokenizer(processor)
     sample_prompt = _build_prompt(texts[0])
     token_info = tokenizer(
         sample_prompt,
@@ -137,19 +132,32 @@ if __name__ == "__main__":
     ids = token_info.input_ids[0]
     tokens = tokenizer.convert_ids_to_tokens(ids)
 
-    prefix_only = PROMPT_TEMPLATE.format(system_prompt=SYSTEM_PROMPT, user_prompt="")
-    prefix_ids = tokenizer(
-        prefix_only,
+    sentinel = "__DROP_BOUNDARY__"
+    sentinel_prompt = _build_prompt(sentinel)
+    sentinel_ids = tokenizer(
+        sentinel_prompt,
         return_tensors="pt",
         padding=False,
         truncation=False,
         add_special_tokens=False,
     ).input_ids[0]
-    detected_drop_idx = prefix_ids.shape[0]
+    sentinel_token_ids = tokenizer(
+        sentinel,
+        return_tensors="pt",
+        padding=False,
+        truncation=False,
+        add_special_tokens=False,
+    ).input_ids[0]
 
-    print(f"Configured DROP_IDX={DROP_IDX}, detected prefix length={detected_drop_idx}")
+    detected_drop_idx = None
+    for i in range(0, sentinel_ids.shape[0] - sentinel_token_ids.shape[0] + 1):
+        if torch.equal(sentinel_ids[i : i + sentinel_token_ids.shape[0]], sentinel_token_ids):
+            detected_drop_idx = i
+            break
+
+    print(f"Configured DROP_IDX={DROP_IDX}, detected drop boundary={detected_drop_idx}")
     if detected_drop_idx != DROP_IDX:
-        print("WARNING: DROP_IDX does not match detected prefix length!")
+        print("WARNING: DROP_IDX does not match detected boundary index!")
 
     print(f"Embedding shape: {embedding.shape}")
     print(f"Mask shape: {mask.shape}")

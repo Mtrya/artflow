@@ -244,7 +244,7 @@ def run_evaluation_light(
     save_path: str,
     current_step: int,
     text_encoder: Any,
-    processor: Any,
+    tokenizer: Any,
     pooling: bool,
     dataset_path: str = "./precomputed_dataset/light-eval@256p",
     num_samples: int = 16,
@@ -348,7 +348,7 @@ def run_evaluation_light(
             for batch_start in range(0, len(local_prompts), batch_size):
                 batch_prompts = local_prompts[batch_start : batch_start + batch_size]
                 txt, txt_mask, txt_pooled = encode_text(
-                    batch_prompts, text_encoder, processor, pooling
+                    batch_prompts, text_encoder, tokenizer, pooling
                 )
 
                 sample_z0 = torch.randn(
@@ -543,7 +543,7 @@ def run_evaluation_heavy(
 
     from datasets import load_from_disk
     from diffusers import AutoencoderKLQwenImage
-    from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
+    from transformers import AutoModelForCausalLM, AutoTokenizer
 
     # 1. Load Models
     print(
@@ -569,13 +569,13 @@ def run_evaluation_heavy(
     vae_mean = vae_mean.to(dtype=torch.bfloat16)
     vae_std = vae_std.to(dtype=torch.bfloat16)
 
-    text_encoder = Qwen3VLForConditionalGeneration.from_pretrained(
+    text_encoder = AutoModelForCausalLM.from_pretrained(
         text_encoder_path,
-        dtype=torch.bfloat16,
+        torch_dtype=torch.bfloat16,
         device_map=device,
         low_cpu_mem_usage=True,
     )
-    processor = AutoProcessor.from_pretrained(text_encoder_path)
+    tokenizer = AutoTokenizer.from_pretrained(text_encoder_path)
 
     # 2. Load Dataset
     target_dir = output_dir if output_dir is not None else save_path
@@ -634,7 +634,7 @@ def run_evaluation_heavy(
 
             # Fake images
             txt, txt_mask, txt_pooled = encode_text(
-                prompts, text_encoder, processor, pooling
+                prompts, text_encoder, tokenizer, pooling
             )
             _, _, H_lat, W_lat = batch["latents"].shape
             H, W = H_lat * 8, W_lat * 8

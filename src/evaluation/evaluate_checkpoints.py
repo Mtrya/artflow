@@ -40,7 +40,7 @@ def main():
     parser.add_argument(
         "--text_encoder_path",
         type=str,
-        default="Qwen/Qwen3-VL-2B",
+        default="Qwen/Qwen3-0.6B",
         help="Path to text encoder",
     )
     parser.add_argument(

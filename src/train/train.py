@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader
 from accelerate import Accelerator
 from accelerate.utils import ProjectConfiguration, set_seed
 from tqdm.auto import tqdm
-from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.optimization import get_scheduler
 
 from ..models.artflow import ArtFlow
@@ -141,7 +141,7 @@ def parse_args():
     parser.add_argument(
         "--text_encoder_path",
         type=str,
-        default="Qwen/Qwen3-VL-2B-Instruct",
+        default="Qwen/Qwen3-0.6B",
         help="Text encoder path",
     )
     parser.add_argument(
@@ -243,12 +243,6 @@ def parse_args():
         help="Standard deviation (sigma) for logit-normal timestep sampling",
     )
     parser.add_argument(
-        "--vp_shift",
-        type=float,
-        default=1.0,
-        help="Shift parameter for VP-SDE diffusion path",
-    )
-    parser.add_argument(
         "--telemetry_log_interval",
         type=int,
         default=125,
@@ -348,7 +342,7 @@ def main():
     # Load Text Encoder (Frozen, on GPU)
     # Each rank loads its own copy on its assigned device for parallel text encoding
     accelerator.print(f"Loading Text Encoder: {args.text_encoder_path}")
-    text_encoder = Qwen3VLForConditionalGeneration.from_pretrained(
+    text_encoder = AutoModelForCausalLM.from_pretrained(
         args.text_encoder_path,
         torch_dtype=torch.bfloat16,
         device_map={"": accelerator.device},  # Pin to current rank's device
@@ -357,7 +351,7 @@ def main():
     text_encoder.eval()
     text_encoder.requires_grad_(False)
 
-    processor = AutoProcessor.from_pretrained(args.text_encoder_path)
+    tokenizer = AutoTokenizer.from_pretrained(args.text_encoder_path)
 
     # Load VAE Stats
     accelerator.print(f"Loading VAE Stats from {args.vae_path}")
@@ -380,7 +374,7 @@ def main():
         # Default params
         patch_size=2,
         in_channels=16,
-        txt_in_features=2048,
+        txt_in_features=1024,
     )
     # Print model statistics
     accelerator.print(
@@ -443,7 +437,7 @@ def main():
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
 
     # Resume Logic
-    if args.resume:
+    if args.resume and args.resume != "None":
         accelerator.print(f"Resuming from checkpoint: {args.resume}")
         accelerator.load_state(args.resume)
         
@@ -543,14 +537,14 @@ def main():
             txt, txt_mask, txt_pooled = encode_text(
                 selected_captions,
                 text_encoder,
-                processor,
+                tokenizer,
                 pooling=(args.conditioning_scheme == "fused"),
             )
 
             # Flow Matching
             z1 = latents
             z0 = torch.randn_like(z1)
-            z_t = algorithm.sample_zt(z0, z1, t, args.vp_shift)
+            z_t = algorithm.sample_zt(z0, z1, t)
 
             # Forward
             model_output = model(
@@ -650,7 +644,7 @@ def main():
                     save_path=f"{args.output_dir}/{args.run_name}",
                     current_step=global_step,
                     text_encoder=text_encoder,
-                    processor=processor,
+                    tokenizer=tokenizer,
                     pooling=(args.conditioning_scheme == "fused"),
                     dataset_path=args.eval_dataset_path,
                     num_samples=args.num_eval_samples,
