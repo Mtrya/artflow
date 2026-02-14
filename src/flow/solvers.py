@@ -125,8 +125,18 @@ def sample_ode(
     t_end: float = 1.0,
     device: Optional[Union[str, torch.device]] = None,
     return_intermediates: bool = False,
+    time_shift: Optional[float] = None,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, List[torch.Tensor]]]:
-    """Sample using ODE solver."""
+    """Sample using ODE solver.
+
+    Args:
+        time_shift: If provided, the uniform timestep schedule is shifted via
+            t' = (s * t) / (1 + (s - 1) * t). When None, the shift is
+            automatically computed from z0's spatial shape using SD3's
+            resolution-dependent formula.
+    """
+    from .paths import resolution_time_shift, apply_time_shift
+
     if solver_instance is not None:
         s = solver_instance
     elif solver == "euler":
@@ -136,18 +146,24 @@ def sample_ode(
     else:
         raise ValueError(f"Unknown solver: {solver}")
 
+    if time_shift is None:
+        time_shift = resolution_time_shift(z0)
+
     target_device = torch.device(device) if device is not None else z0.device
     x = z0.to(target_device)
-    dt = (t_end - t_start) / steps
-    t = t_start
+
+    # Build shifted timestep schedule
+    uniform_ts = torch.linspace(t_start, t_end, steps + 1)
+    shifted_ts = [apply_time_shift(torch.tensor(u), time_shift).item() for u in uniform_ts]
 
     intermediates = []
     if return_intermediates:
         intermediates.append(x.cpu())
 
-    for _ in range(steps):
+    for i in range(steps):
+        t = shifted_ts[i]
+        dt = shifted_ts[i + 1] - shifted_ts[i]
         x = s.step(x, t, dt, model_fn)
-        t += dt
         if return_intermediates:
             intermediates.append(x.cpu())
 

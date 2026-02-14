@@ -9,15 +9,42 @@ This module implements three training algorithms for ablation:
 Each algorithm encapsulates both the probability path and loss computation.
 """
 
+import math
+
 import torch
 import torch.nn.functional as F
 from abc import ABC, abstractmethod
+
+# SD3-style resolution-dependent time shift.
+# Anchor: 256×256 image → 32×32 latent (patch_size=2) → 16×16 = 256 tokens → shift 1.0
+#         1024×1024 image → 128×128 latent              → 64×64 = 4096 tokens → shift 3.0
+# Log-linear interpolation between anchors, clamped at both ends.
+_SHIFT_BASE_TOKENS = 256      # 256×256 → 32×32 latent → 16×16 patches
+_SHIFT_MAX_TOKENS = 4096      # 1024×1024 → 128×128 latent → 64×64 patches
+_SHIFT_MIN = 1.0
+_SHIFT_MAX = 3.0
+
+
+def resolution_time_shift(z: torch.Tensor, patch_size: int = 2) -> float:
+    """Compute SD3-style time shift from a noise/latent tensor [B, C, H, W]."""
+    _, _, h, w = z.shape
+    n_tokens = (h * w) / (patch_size ** 2)
+    if n_tokens <= _SHIFT_BASE_TOKENS:
+        return _SHIFT_MIN
+    log_range = math.log(_SHIFT_MAX_TOKENS) - math.log(_SHIFT_BASE_TOKENS)
+    ratio = (math.log(n_tokens) - math.log(_SHIFT_BASE_TOKENS)) / log_range
+    return _SHIFT_MIN + (_SHIFT_MAX - _SHIFT_MIN) * min(ratio, 1.0)
+
+
+def apply_time_shift(t: torch.Tensor, shift: float) -> torch.Tensor:
+    """Apply the SD3 shift transform: t' = (s * t) / (1 + (s - 1) * t)."""
+    return (shift * t) / (1 + (shift - 1) * t)
 
 
 class BaseAlgorithm(ABC):
     @abstractmethod
     def sample_zt(
-        self, z0: torch.Tensor, z1: torch.Tensor, t: torch.Tensor, shift: float=1.0
+        self, z0: torch.Tensor, z1: torch.Tensor, t: torch.Tensor
     ) -> torch.Tensor:
         """
         Sample z_t from the probability path p_t(z_t | z0, z1).
@@ -68,7 +95,7 @@ class ScoreMatchingDiffusion(BaseAlgorithm):
         return std
 
     def sample_zt(
-        self, z0: torch.Tensor, z1: torch.Tensor, t: torch.Tensor, shift: float=1.0
+        self, z0: torch.Tensor, z1: torch.Tensor, t: torch.Tensor
     ) -> torch.Tensor:
         if t.dim() == 1:
             t = t.view(-1, 1, 1, 1)
@@ -143,9 +170,10 @@ class FlowMatchingDiffusion(BaseAlgorithm):
         return velocity
 
     def sample_zt(
-        self, z0: torch.Tensor, z1: torch.Tensor, t: torch.Tensor, shift: float = 1.0,
+        self, z0: torch.Tensor, z1: torch.Tensor, t: torch.Tensor
     ) -> torch.Tensor:
-        t = (shift * t) / (1 + (shift - 1) * t)
+        shift = resolution_time_shift(z0)
+        t = apply_time_shift(t, shift)
 
         if t.dim() == 1:
             t = t.view(-1, 1, 1, 1)
@@ -175,9 +203,10 @@ class FlowMatchingOT(BaseAlgorithm):
     """
 
     def sample_zt(
-        self, z0: torch.Tensor, z1: torch.Tensor, t: torch.Tensor, shift: float=1.0
+        self, z0: torch.Tensor, z1: torch.Tensor, t: torch.Tensor
     ) -> torch.Tensor:
-        t = (shift * t) / (1 + (shift - 1) * t)
+        shift = resolution_time_shift(z0)
+        t = apply_time_shift(t, shift)
         if t.dim() == 1:
             t = t.view(-1, 1, 1, 1)
 
