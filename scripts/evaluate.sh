@@ -20,13 +20,13 @@ MODEL_CONFIG='{
   "ffn_type": "gated",
   "in_channels": 16,
   "patch_size": 2,
-  "txt_in_features": 2048
+  "txt_in_features": 1024
 }'
 
 # Evaluation configuration
 DATASET_PATH="./precomputed_dataset/light-eval@640p"
 VAE_PATH="REPA-E/e2e-qwenimage-vae"
-TEXT_ENCODER="Qwen/Qwen3-VL-2B-Instruct"
+TEXT_ENCODER="Qwen/Qwen3-0.6B"
 NUM_SAMPLES=2048
 BATCH_SIZE=20
 DEVICE="cuda:0"
