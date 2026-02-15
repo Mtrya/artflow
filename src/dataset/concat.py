@@ -23,6 +23,11 @@ def parse_args():
         required=True,
         help="Path to save the concatenated dataset",
     )
+    parser.add_argument(
+        "--dedup",
+        action="store_true",
+        help="Deduplicate by prompt",
+    )
     return parser.parse_args()
 
 
@@ -47,6 +52,18 @@ def main():
     combined = concatenate_datasets(datasets)
     print(f"Combined dataset: {len(combined)} samples")
     print(f"Format after concatenation: {combined.format}")
+
+    if args.dedup:
+        print("Deduplicating by 'prompt' column...")
+        original_len = len(combined)
+        import pandas as pd
+        prompts_df = pd.DataFrame({"prompt": combined.column("prompt").to_pylist()})
+
+        keep_mask = ~prompts_df.duplicated(subset="prompt", keep="first")
+        indices_to_keep = keep_mask[keep_mask].index.tolist()
+
+        combined = combined.select(indices_to_keep)
+        print(f"Deduplication: {original_len} -> {(len(combined))} samples")
     
     # Set torch format to match precomputed datasets
     print("Setting format to 'torch'...")
