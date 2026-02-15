@@ -41,6 +41,30 @@ def apply_time_shift(t: torch.Tensor, shift: float) -> torch.Tensor:
     return (shift * t) / (1 + (shift - 1) * t)
 
 
+def shift_timesteps(
+    t: torch.Tensor,
+    z_like: torch.Tensor,
+    *,
+    patch_size: int = 2,
+    time_shift: float | None = None,
+) -> torch.Tensor:
+    """Shift timesteps using the repo's resolution-dependent convention.
+
+    This is the shared entry point for both training and inference to ensure
+    the model always sees the same "t_used" that is implied by the resolution.
+
+    Args:
+        t: Base timesteps in [0, 1], shape [B] or scalar tensor.
+        z_like: A latent/noise tensor with shape [B, C, H, W] used to infer
+            the resolution-dependent shift when time_shift is None.
+        patch_size: Patch size used to convert latent HxW into token count.
+        time_shift: Optional explicit shift scalar to override auto-compute.
+    """
+    if time_shift is None:
+        time_shift = resolution_time_shift(z_like, patch_size=patch_size)
+    return apply_time_shift(t, time_shift)
+
+
 class BaseAlgorithm(ABC):
     @abstractmethod
     def sample_zt(
@@ -172,9 +196,6 @@ class FlowMatchingDiffusion(BaseAlgorithm):
     def sample_zt(
         self, z0: torch.Tensor, z1: torch.Tensor, t: torch.Tensor
     ) -> torch.Tensor:
-        shift = resolution_time_shift(z0)
-        t = apply_time_shift(t, shift)
-
         if t.dim() == 1:
             t = t.view(-1, 1, 1, 1)
 
@@ -205,8 +226,6 @@ class FlowMatchingOT(BaseAlgorithm):
     def sample_zt(
         self, z0: torch.Tensor, z1: torch.Tensor, t: torch.Tensor
     ) -> torch.Tensor:
-        shift = resolution_time_shift(z0)
-        t = apply_time_shift(t, shift)
         if t.dim() == 1:
             t = t.view(-1, 1, 1, 1)
 

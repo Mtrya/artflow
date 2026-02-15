@@ -132,10 +132,10 @@ def sample_ode(
     Args:
         time_shift: If provided, the uniform timestep schedule is shifted via
             t' = (s * t) / (1 + (s - 1) * t). When None, the shift is
-            automatically computed from z0's spatial shape using SD3's
-            resolution-dependent formula.
+            automatically computed from z0's spatial shape using the same
+            resolution-dependent formula used in training.
     """
-    from .paths import resolution_time_shift, apply_time_shift
+    from .paths import resolution_time_shift, shift_timesteps
 
     if solver_instance is not None:
         s = solver_instance
@@ -154,7 +154,7 @@ def sample_ode(
 
     # Build shifted timestep schedule
     uniform_ts = torch.linspace(t_start, t_end, steps + 1)
-    shifted_ts = [apply_time_shift(torch.tensor(u), time_shift).item() for u in uniform_ts]
+    shifted_ts = [shift_timesteps(u, z0, time_shift=time_shift).item() for u in uniform_ts]
 
     intermediates = []
     if return_intermediates:

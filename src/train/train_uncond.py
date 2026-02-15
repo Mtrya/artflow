@@ -14,7 +14,12 @@ from tqdm.auto import tqdm
 from datasets import load_from_disk
 
 from ..models.artflow_uncond import ArtFlowUncond
-from ..flow.paths import ScoreMatchingDiffusion, FlowMatchingDiffusion, FlowMatchingOT
+from ..flow.paths import (
+    ScoreMatchingDiffusion,
+    FlowMatchingDiffusion,
+    FlowMatchingOT,
+    shift_timesteps,
+)
 from ..flow.solvers import sample_ode, ScoreMatchingODE
 from ..evaluation.pipeline import run_evaluation_uncond
 from ..utils.vae_codec import get_vae_stats
@@ -195,6 +200,8 @@ def main():
             # Sample t
             t = torch.rand(latents.shape[0], device=latents.device)
 
+            t = shift_timesteps(t, latents)
+
             # Sample z0 (noise) and z1 (data)
             z1 = latents
             z0 = torch.randn_like(z1)
@@ -252,4 +259,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

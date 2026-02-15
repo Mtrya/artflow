@@ -753,4 +753,3 @@ def run_evaluation_heavy(
         json.dump(metrics, f, indent=2)
 
     return metrics
-

@@ -23,7 +23,7 @@ from ..dataset.captions import sample_caption
 from ..dataset.mix import parse_dataset_mix, load_mixed_dataset, get_dataset_weights
 from ..utils.encode_text import encode_text
 from ..utils.vae_codec import get_vae_stats
-from ..flow.paths import FlowMatchingOT
+from ..flow.paths import FlowMatchingOT, shift_timesteps
 from ..evaluation.pipeline import run_evaluation_light
 
 # Suppress specific warning about RMSNorm dtype mismatch in mixed precision
@@ -512,6 +512,8 @@ def main():
             else:
                 t = torch.rand(latents.shape[0], device=latents.device)
 
+            t = shift_timesteps(t, latents)
+
             # 2. Text Encoding (On-the-fly)
             captions_list = batch["captions"]  # List[List[str]]
 
@@ -660,4 +662,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
