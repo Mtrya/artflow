@@ -431,7 +431,7 @@ def run_evaluation_light(
                 bucket_grid_paths.append(grid_path)
                 prompts_for_bucket = bucket_prompts.get(bucket_id, [])
                 prompts_for_bucket = prompts_for_bucket[: bucket_images.shape[0]]
-                bucket_grid_captions.append(format_prompt_caption(prompts_for_bucket[:9]))
+                bucket_grid_captions.append(format_prompt_caption(prompts_for_bucket[:4]))
 
             for idx, (path, caption) in enumerate(
                 zip(bucket_grid_paths, bucket_grid_captions)
