@@ -176,8 +176,8 @@ class MSRoPE(nn.Module):
 
         # Text frequencies start after maximum image position
         max_img_pos = max(height, width)
-        # View as complex for slicing
-        pos_freqs_complex = torch.view_as_complex(self.pos_freqs)
+        # View as complex for slicing (must be float32 — view_as_complex doesn't support bf16)
+        pos_freqs_complex = torch.view_as_complex(self.pos_freqs.float())
         txt_freqs = pos_freqs_complex[
             max_img_pos : max_img_pos + txt_seq_len, :
         ]  # placing text tokens on a diagonal in the 2D position space
@@ -195,9 +195,10 @@ class MSRoPE(nn.Module):
             Frequency tensor [height*width, total_dim] (complex)
         """
         # Split precomputed frequencies by axis
-        # pos_freqs is [S, D, 2] (real)
+        # pos_freqs is [S, D, 2] (real) — cast to float32 for view_as_complex
         h_dim, w_dim = self.axes_dim
-        h_freqs, w_freqs = self.pos_freqs.split([h_dim // 2, w_dim // 2], dim=1)
+        pos_freqs = self.pos_freqs.float()
+        h_freqs, w_freqs = pos_freqs.split([h_dim // 2, w_dim // 2], dim=1)
 
         # Select frequencies for the current height and width
         h_freqs = h_freqs[:height, :]  # [H, h_dim//2, 2]
