@@ -1,6 +1,6 @@
 [project]
 name = "artflow"
-version = "0.1.0"
+version = "0.1.1"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -11,9 +11,11 @@ dependencies = [
     "fvcore>=0.1.5.post20221221",
     "gradio>=5.49.1",
     "huggingface-hub>=0.35.3",
+    "openai>=2.21.0",
     "pandas>=2.3.3",
     "pillow>=11.3.0",
     "requests>=2.32.5",
+    "spaces>=0.47.0",
     "swanlab>=0.7.2",
     "torch>=2.9.0",
     "torch-fidelity>=0.3.0",

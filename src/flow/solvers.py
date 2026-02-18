@@ -126,6 +126,7 @@ def sample_ode(
     device: Optional[Union[str, torch.device]] = None,
     return_intermediates: bool = False,
     time_shift: Optional[float] = None,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, List[torch.Tensor]]]:
     """Sample using ODE solver.
 
@@ -161,6 +162,8 @@ def sample_ode(
         intermediates.append(x.cpu())
 
     for i in range(steps):
+        if progress_callback is not None:
+            progress_callback(i + 1, steps)
         t = shifted_ts[i]
         dt = shifted_ts[i + 1] - shifted_ts[i]
         x = s.step(x, t, dt, model_fn)

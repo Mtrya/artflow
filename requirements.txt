@@ -1,0 +1,12 @@
+# This file is used in HuggingFace Space
+torch>=2.0
+diffusers>=0.30
+transformers>=4.40
+huggingface-hub
+gradio
+spaces
+safetensors
+numpy
+Pillow
+openai
+artflow @ git+https://huggingface.co/kaupane/artflow
