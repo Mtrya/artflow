@@ -12,13 +12,14 @@ from datasets import load_dataset, load_from_disk
 from ..dataset.precompute import precompute
 
 
-def parse_resolution_buckets(bucket_str: str) -> Dict[int, Tuple[int, int]]:
+def parse_resolution_buckets(bucket_str: str, offset: int) -> Dict[int, Tuple[int, int]]:
     """
     Parse resolution buckets string.
     Format examples:
-    - "256,256" -> {1: (256, 256)}
-    - "256,256 288,208" -> {1: (256, 256), 2: (288, 208)}
-    - "[(256,256), (288,208)]" -> {1: (256, 256), 2: (288, 208)}
+    - bucket_str="256,256",offset=0 -> {1: (256, 256)}
+    - bucket_str="256,256 288,224",offset=1 -> {2: (256, 256), 3: (288, 224)}
+    - bucket_str="[(256,256), (288,224)]",offset=2 -> {3: (256, 256), 4: (288, 224)}
+
     """
     buckets = {}
 
@@ -28,7 +29,7 @@ def parse_resolution_buckets(bucket_str: str) -> Dict[int, Tuple[int, int]]:
         if isinstance(parsed, list):
             for i, item in enumerate(parsed):
                 if isinstance(item, (list, tuple)) and len(item) == 2:
-                    buckets[i + 1] = (int(item[0]), int(item[1]))
+                    buckets[i + 1 + offset] = (int(item[0]), int(item[1]))
             if buckets:
                 return buckets
     except (ValueError, SyntaxError):
@@ -39,7 +40,7 @@ def parse_resolution_buckets(bucket_str: str) -> Dict[int, Tuple[int, int]]:
         parts = bucket_str.strip().split()
         for i, part in enumerate(parts):
             w, h = map(int, part.split(","))
-            buckets[i + 1] = (w, h)
+            buckets[i + 1 + offset] = (w, h)
         if buckets:
             return buckets
     except ValueError:
@@ -78,6 +79,12 @@ def parse_args():
         type=str,
         default="[(256,256)]",
         help="Resolution buckets (e.g. '[(256,256)]' or '256,256')",
+    )
+    parser.add_argument(
+        "--index_offset",
+        type=int,
+        default=0,
+        help="index offset for resolution buckets",
     )
     parser.add_argument(
         "--output_dir",
@@ -131,7 +138,7 @@ def main():
         caption_fields = [x.strip() for x in raw_caption_fields.split(",") if x.strip()]
 
     # Parse buckets
-    buckets = parse_resolution_buckets(args.resolution_buckets)
+    buckets = parse_resolution_buckets(args.resolution_buckets, args.index_offset)
     print(f"Using resolution buckets: {buckets}")
 
     print("Starting precomputation...")

@@ -12,7 +12,7 @@ import spaces
 from artflow import ArtFlowPipeline
 
 
-REPO_ID = "kaupane/artflow"
+MODEL_PATH = os.environ.get("ARTFLOW_MODEL", "kaupane/ArtFlow")
 
 # Example prompts
 EXAMPLE_PROMPTS = [
@@ -24,8 +24,8 @@ EXAMPLE_PROMPTS = [
 
 
 # Load pipeline at module level (CPU) — ZeroGPU gives GPU only inside @spaces.GPU
-print(f"Loading ArtFlow pipeline from {REPO_ID}...")
-pipe = ArtFlowPipeline.from_pretrained(REPO_ID, offload=True)
+print(f"Loading ArtFlow pipeline from {MODEL_PATH}...")
+pipe = ArtFlowPipeline.from_pretrained(MODEL_PATH, offload=True)
 print("Pipeline loaded!")
 
 

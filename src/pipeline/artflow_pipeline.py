@@ -82,16 +82,103 @@ class ArtFlowPipeline:
         **kwargs
     ) -> "ArtFlowPipeline":
         """
-        Load pipeline from HuggingFace Hub.
+        Load pipeline from HuggingFace Hub or a local checkpoint path.
 
         Args:
             pretrained_model_name_or_path: HF Hub repo ID (e.g., "username/artflow-stage2")
+                or local path to a .pt/.safetensors checkpoint file.
             dtype: Data type for model weights (default: bfloat16)
             device: Device to load models on (default: cuda if available)
+            offload: Whether to offload models to CPU when not in use (default: True)
 
         Returns:
             ArtFlowPipeline instance
         """
+        local_path = Path(pretrained_model_name_or_path)
+        if local_path.exists():
+            return cls._from_local(local_path, **kwargs)
+        return cls._from_hub(pretrained_model_name_or_path, **kwargs)
+
+    @classmethod
+    def _from_local(
+        cls,
+        checkpoint_path: Path,
+        **kwargs
+    ) -> "ArtFlowPipeline":
+        """Load pipeline from a local checkpoint file with default model config."""
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        from diffusers import AutoencoderKLQwenImage
+
+        # Lazy imports — works both installed and in-tree
+        try:
+            from artflow.models.artflow import ArtFlow
+            from artflow.utils.vae_codec import get_vae_stats
+        except ImportError:
+            sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+            from models.artflow import ArtFlow
+            from utils.vae_codec import get_vae_stats
+
+        dtype = kwargs.get("dtype", torch.bfloat16)
+        device = kwargs.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+        offload = kwargs.get("offload", True)
+
+        # Load weights
+        checkpoint_path = Path(checkpoint_path).resolve()
+        if checkpoint_path.suffix == ".safetensors":
+            from safetensors.torch import load_file
+            state_dict = load_file(checkpoint_path)
+        else:
+            state_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+            if isinstance(state_dict, dict) and "module" in state_dict:
+                state_dict = state_dict["module"]
+
+        # Build transformer with default config and load weights
+        transformer = ArtFlow()
+        transformer.load_state_dict(state_dict)
+
+        # Load VAE
+        vae_repo = "REPA-E/e2e-qwenimage-vae"
+        vae = AutoencoderKLQwenImage.from_pretrained(vae_repo, torch_dtype=dtype)
+
+        # Load text encoder
+        text_encoder_repo = "Qwen/Qwen3-0.6B"
+        text_encoder = AutoModelForCausalLM.from_pretrained(
+            text_encoder_repo, dtype=dtype, low_cpu_mem_usage=True,
+        )
+        tokenizer = AutoTokenizer.from_pretrained(text_encoder_repo)
+
+        # VAE stats
+        vae_mean, vae_std = get_vae_stats(vae_repo, device=device)
+        vae_mean = vae_mean.to(device=device, dtype=dtype)
+        vae_std = vae_std.to(device=device, dtype=dtype)
+
+        if offload:
+            transformer.to(dtype=dtype)
+        else:
+            transformer.to(device=device, dtype=dtype)
+            vae.to(device=device)
+            text_encoder.to(device=device)
+
+        return cls(
+            transformer=transformer,
+            vae=vae,
+            text_encoder=text_encoder,
+            tokenizer=tokenizer,
+            vae_mean=vae_mean,
+            vae_std=vae_std,
+            solver="euler",
+            dtype=dtype,
+            device=device,
+            offload=offload,
+        )
+
+    @classmethod
+    def _from_hub(
+        cls,
+        repo_id: str,
+        **kwargs
+    ) -> "ArtFlowPipeline":
+        """Load pipeline from HuggingFace Hub."""
         from huggingface_hub import hf_hub_download, list_repo_files
         from transformers import AutoModelForCausalLM, AutoTokenizer
         from diffusers import AutoencoderKLQwenImage
@@ -101,15 +188,15 @@ class ArtFlowPipeline:
         offload = kwargs.get("offload", True)
 
         # Download all source files from the repo
-        repo_files = list_repo_files(pretrained_model_name_or_path)
+        repo_files = list_repo_files(repo_id)
         source_files = [f for f in repo_files if f.startswith("artflow/")]
 
         # Create temp directory and download sources
-        temp_dir = Path(tempfile.gettempdir()) / f"artflow_{pretrained_model_name_or_path.replace('/', '_')}"
+        temp_dir = Path(tempfile.gettempdir()) / f"artflow_{repo_id.replace('/', '_')}"
         temp_dir.mkdir(exist_ok=True)
 
         for file in source_files:
-            hf_hub_download(pretrained_model_name_or_path, file, local_dir=temp_dir)
+            hf_hub_download(repo_id, file, local_dir=temp_dir)
 
         # Add to path and import
         sys.path.insert(0, str(temp_dir))
@@ -121,7 +208,7 @@ class ArtFlowPipeline:
         from artflow.utils.vae_codec import get_vae_stats
 
         # Load config
-        config_path = hf_hub_download(pretrained_model_name_or_path, "transformer_config.json")
+        config_path = hf_hub_download(repo_id, "transformer_config.json")
         with open(config_path) as f:
             config = json.load(f)
 
@@ -130,11 +217,11 @@ class ArtFlowPipeline:
 
         # Load weights (try safetensors first, then .pt)
         try:
-            weights_path = hf_hub_download(pretrained_model_name_or_path, "model.safetensors")
+            weights_path = hf_hub_download(repo_id, "model.safetensors")
             from safetensors.torch import load_file
             state_dict = load_file(weights_path)
         except Exception:
-            weights_path = hf_hub_download(pretrained_model_name_or_path, "ema_weights.pt")
+            weights_path = hf_hub_download(repo_id, "ema_weights.pt")
             state_dict = torch.load(weights_path, map_location="cpu", weights_only=False)
             if "module" in state_dict:
                 state_dict = state_dict["module"]

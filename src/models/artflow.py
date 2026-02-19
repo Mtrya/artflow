@@ -47,8 +47,8 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
         # Configuration
         hidden_size: int = 1152,
         num_heads: int = 16,
-        double_stream_depth: int = 28,
-        single_stream_depth: int = 0,
+        double_stream_depth: int = 0,
+        single_stream_depth: int = 28,
         mlp_ratio: float = 2.67,
         conditioning_scheme: str = "pure",
         qkv_bias: bool = True,
