@@ -8,6 +8,7 @@ Functions:
 import concurrent.futures
 import gc
 import io
+import os
 import random
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
@@ -32,6 +33,13 @@ def _fetch_image(image_data: Union[str, Image.Image]) -> Optional[Image.Image]:
             return image_data.convert("RGB")
 
         if isinstance(image_data, str):
+            if os.path.isfile(image_data):
+                try:
+                    image = Image.open(image_data)
+                    image.load()  # Verify it's a valid image
+                    return image.convert("RGB")
+                except Exception:
+                    return None
             try:
                 response = requests.get(image_data, timeout=(4, 20))
                 response.raise_for_status()
@@ -64,6 +72,7 @@ def precompute(
     max_caption_tokens: int = 1024,
     min_aesthetic_score: float = 0.0,
     min_watermark_prob: float = 0.6,
+    bbox_field: Optional[str] = None,
 ) -> Dataset:
     """
     Stateless precomputation of image latents and caption preparation.
@@ -85,6 +94,10 @@ def precompute(
                             Samples with longer captions will be dropped.
         min_aesthetic_score: Minimum aesthetic score for samples.
                             Samples with lower aesthetic scores will be dropped.
+        bbox_field: Optional column with a normalized [0, 1000]² bbox
+                    ([x1, y1, x2, y2], Gemini-style). When present, the image is
+                    cropped to the box (scaled to actual size) right after fetch,
+                    before bucketing. Malformed boxes drop the sample.
 
     Returns:
         Processed dataset with 'latents', 'captions', and 'resolution_bucket_id'.
@@ -216,18 +229,21 @@ def precompute(
         dropped_fetch_timeout = 0
         dropped_fetch_error = 0
         dropped_invalid_image = 0
+        dropped_bbox = 0
         dropped_resolution_post = 0
         dropped_bucket_error = 0
         dropped_vae = 0
 
+        bboxes = batch.get(bbox_field, [None] * batch_len) if bbox_field else [None] * batch_len
+
         def _log_dropped_samples():
-            total_dropped = len(skip_indices) + dropped_fetch_timeout + dropped_fetch_error + dropped_invalid_image + dropped_resolution_post + dropped_bucket_error + dropped_vae
+            total_dropped = len(skip_indices) + dropped_fetch_timeout + dropped_fetch_error + dropped_invalid_image + dropped_bbox + dropped_resolution_post + dropped_bucket_error + dropped_vae
             if total_dropped > 0:
                 print(
                     f"Batch: {total_dropped}/{batch_len} dropped "
                     f"(lang={dropped_lang}, res_pre={dropped_resolution_pre}, caption={dropped_caption_length}, watermark={dropped_watermark}, "
                     f"fetch_timeout={dropped_fetch_timeout}, fetch_err={dropped_fetch_error}, invalid_img={dropped_invalid_image}, "
-                    f"res_post={dropped_resolution_post}, bucket_err={dropped_bucket_error}, vae={dropped_vae}, aes={dropped_aesthetic})"
+                    f"bbox={dropped_bbox}, res_post={dropped_resolution_post}, bucket_err={dropped_bucket_error}, vae={dropped_vae}, aes={dropped_aesthetic})"
                 )
 
         batches_by_bucket = {}
@@ -251,6 +267,22 @@ def precompute(
                 if image is None:
                     dropped_invalid_image += 1
                     continue
+
+                bb = bboxes[idx]
+                if bb is not None:
+                    try:
+                        img_w, img_h = image.size
+                        x1, y1, x2, y2 = (float(v) for v in bb)
+                        left = max(0, min(img_w, x1 / 1000.0 * img_w))
+                        top = max(0, min(img_h, y1 / 1000.0 * img_h))
+                        right = max(0, min(img_w, x2 / 1000.0 * img_w))
+                        bottom = max(0, min(img_h, y2 / 1000.0 * img_h))
+                        if right - left < 32 or bottom - top < 32:
+                            raise ValueError("bbox too small")
+                        image = image.crop((left, top, right, bottom))
+                    except Exception:
+                        dropped_bbox += 1
+                        continue
 
                 width, height = image.size
                 try:

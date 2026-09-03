@@ -2,7 +2,7 @@
 
 # Stage 0: Unconditional Generation (Algorithm Ablation)
 
-export PYTHONPATH=.venv/bin/python
+export PYTHONPATH=.
 
 # Experiment configuration
 OUTPUT_DIR="output"

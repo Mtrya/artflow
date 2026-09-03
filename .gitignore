@@ -22,6 +22,7 @@ checkpoints/
 
 .gemini
 .github
+.inspire
 gha-creds-*.json
 .factory
 .agent
@@ -37,6 +38,7 @@ checkpoint*
 output/*/*.png
 wandb
 swanlog
+data
 
 precomputed_dataset
 output

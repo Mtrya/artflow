@@ -4,7 +4,7 @@
 # --resolution_buckets "[(640,640), (848,480), (480,848), (736,560), (560,736)]"
 # --resolution_buckets "[(1408,768), (1584,672), (848,1264), (1024,1024)]"
 
-export PYTHONPATH=.venv/bin/python
+export PYTHONPATH=.
 
 python -m src.train.precompute \
     --dataset_name "laion/relaion-art" \

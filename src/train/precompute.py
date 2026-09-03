@@ -5,6 +5,7 @@ Downloads images, resizes them, and encodes them with VAE.
 
 import argparse
 import ast
+import os
 from typing import Dict, Tuple
 
 from datasets import load_dataset, load_from_disk
@@ -103,6 +104,7 @@ def parse_args():
     parser.add_argument("--max_caption_tokens", type=int, default=1024, help="Maximum caption tokens to allow")
     parser.add_argument("--min_aesthetic_score", type=float, default=0.0, help="Minimum aesthetic score to allow")
     parser.add_argument("--min_watermark_prob", type=float, default=0.6, help="Minimum watermark probability to allow")
+    parser.add_argument("--bbox_field", type=str, default=None, help="Optional column with normalized [0,1000] bbox to crop before bucketing")
     return parser.parse_args()
 
 
@@ -110,21 +112,27 @@ def main():
     args = parse_args()
 
     print(f"Loading dataset {args.dataset_name}...")
-    
-    try:
-        print("Trying to load dataset from disk...")
-        dataset = load_from_disk(args.dataset_name)
-        # Apply range selection after loading from disk
+
+    if os.path.isfile(args.dataset_name) and args.dataset_name.endswith(".jsonl"):
+        print("Loading dataset from local jsonl manifest...")
+        dataset = load_dataset("json", data_files=args.dataset_name, split="train")
         if args.range > 0:
             dataset = dataset.select(range(min(args.range, len(dataset))))
-    except FileNotFoundError:
-        print(f"Trying to load dataset from Hugging Face...")
-        # For HuggingFace, use split syntax
-        if args.range > 0:
-            split = f"{args.split}[:{args.range}]"
-        else:
-            split = args.split
-        dataset = load_dataset(args.dataset_name, split=split)
+    else:
+        try:
+            print("Trying to load dataset from disk...")
+            dataset = load_from_disk(args.dataset_name)
+            # Apply range selection after loading from disk
+            if args.range > 0:
+                dataset = dataset.select(range(min(args.range, len(dataset))))
+        except FileNotFoundError:
+            print(f"Trying to load dataset from Hugging Face...")
+            # For HuggingFace, use split syntax
+            if args.range > 0:
+                split = f"{args.split}[:{args.range}]"
+            else:
+                split = args.split
+            dataset = load_dataset(args.dataset_name, split=split)
 
     # Process caption fields
     raw_caption_fields = args.caption_fields
@@ -155,7 +163,8 @@ def main():
         min_caption_tokens=args.min_caption_tokens,
         max_caption_tokens=args.max_caption_tokens,
         min_aesthetic_score=args.min_aesthetic_score,
-        min_watermark_prob=args.min_watermark_prob
+        min_watermark_prob=args.min_watermark_prob,
+        bbox_field=args.bbox_field,
     )
     print(f"Saving processed dataset to {args.output_dir}...")
     processed_dataset.save_to_disk(args.output_dir)
