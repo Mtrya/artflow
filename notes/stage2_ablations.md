@@ -134,6 +134,26 @@ k-axis interacts weakly with modulation; caveat noted in its verdict.
 Fallback shapes if `mod=none` wins 2.2a (iso-param re-matched): 2.2b h1152 d20 (484.8M)
 vs h1024 d25 (477.9M); 2.2c/2.2d re-derived the same way before launch.
 
+**Shape table, pre-derived by instantiation on 2026-09-05 (param_count.py;
+targets: 2.2b ≈ 485/478M, 2.2c ≈ 664/399M iso-FLOP, 2.2d ≈ 478M across
+schedules). Winner's modulation applies to every block in every arm:**
+
+| Arm | mod=layer wins (scenario A) | params | mod=none wins (scenario B) | params |
+|---|---|---|---|---|
+| 2.2b wide | h1152 d24 | 484.87M | h1152 d20 | 484.84M |
+| 2.2b deep | h1024 d30 | 477.96M | h1024 d25 | 477.92M |
+| 2.2c big (16K) | h1152 d33 | 664.26M | h1152 d27 | 652.26M |
+| 2.2c small (iso-FLOP steps) | h1024 d25, 26.6K | 399.20M | h1024 d21, 25.9K | 402.31M |
+| 2.2d all-single (8K screen) | h1024 d30 (=2.2b deep; reuse its run) | 477.96M | h1024 d25 (=2.2b deep; reuse) | 477.92M |
+| 2.2d hybrid (8K screen) | d2x8+s14, mod=layer both | 477.96M | d2x8+s9, mod=none both | 477.92M |
+| 2.2d all-double (8K screen) | d2x15, mod=layer both | 477.96M | d2x13, mod=none both | 496.82M (+4%, no integer layer lands nearer; documented tolerance) |
+| 2.4 mix arms | h1024 d24 mod=winner, 8K (2.2a shapes: layer 383.4M / none 459.0M) | | | |
+
+Note: h1024 d25 at mod=layer (399.2M, 2.2c small) and at mod=none (477.9M,
+2.2b deep/2.2d all-single) are different configs — don't conflate. h1040 with
+16 heads is invalid (head_dim 65 odd); heads stay 16 everywhere (head_dim
+h/16 = 64/72/…, always even → RoPE-valid).
+
 Total (with all-double screen, without 2.3b): ≈ **570 GPU-h**; drops to ~505 if
 all-double is cut, ~475 if screens go to 6K. Over the 400 nominal — sanctioned by
 trough-hours semantics; revisit after the first arm recalibrates throughput.
