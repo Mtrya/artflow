@@ -19,6 +19,35 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def sdpa_with_pad_mask(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    attn_mask: Optional[torch.Tensor],
+) -> torch.Tensor:
+    """SDPA with an optional bool key-padding mask of shape [B, 1, 1, S_k].
+
+    A bool mask forces PyTorch off the flash path; the math fallback then
+    materializes B*H*S^2 attention weights per layer (saved for backward),
+    which at seq ~2K is tens of GiB and caused the stage-2 OOM spikes on
+    long-caption batches. We convert the mask to an additive bias in q.dtype
+    and prefer the memory-efficient kernel (never materializes S^2 scores);
+    mask=None keeps the default (flash) path untouched.
+    """
+    if attn_mask is None:
+        return F.scaled_dot_product_attention(q, k, v, dropout_p=0.0)
+
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    bias = torch.zeros(attn_mask.shape, dtype=q.dtype, device=q.device)
+    bias = bias.masked_fill(~attn_mask, float("-inf"))
+    backends = [SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
+    if q.device.type != "cuda":
+        backends = [SDPBackend.MATH]
+    with sdpa_kernel(backends):
+        return F.scaled_dot_product_attention(q, k, v, attn_mask=bias, dropout_p=0.0)
+
+
 class TimestepEmbeddings(nn.Module):
     """Sinusoidal timestep embeddings"""
 
@@ -82,12 +111,17 @@ class MSRoPE(nn.Module):
         axes_dim: list = [64, 64],
         scaling_type: str = "none",
         scaling_factor: float = 1.0,
+        centered: bool = False,
     ):
         super().__init__()
         self.theta = theta
         self.axes_dim = axes_dim
         self.scaling_type = scaling_type
         self.scaling_factor = scaling_factor
+        # centered: image coords symmetric around 0 ([-(n-1)/2, (n-1)/2]) instead of
+        # 0-based from the corner; text stays pinned to a fixed diagonal beyond the
+        # image range in both modes.
+        self.centered = centered
 
         # Precompute frequency tables for both spatial axes
         pos_index = torch.arange(2560)  # maximum position index
@@ -197,12 +231,21 @@ class MSRoPE(nn.Module):
         # Split precomputed frequencies by axis
         # pos_freqs is [S, D, 2] (real) — cast to float32 for view_as_complex
         h_dim, w_dim = self.axes_dim
-        pos_freqs = self.pos_freqs.float()
-        h_freqs, w_freqs = pos_freqs.split([h_dim // 2, w_dim // 2], dim=1)
 
-        # Select frequencies for the current height and width
-        h_freqs = h_freqs[:height, :]  # [H, h_dim//2, 2]
-        w_freqs = w_freqs[:width, :]  # [W, w_dim//2, 2]
+        if self.centered:
+            # Symmetric (possibly half-integer) coordinates around the origin.
+            h_idx = torch.arange(height, dtype=torch.float32) - (height - 1) / 2.0
+            w_idx = torch.arange(width, dtype=torch.float32) - (width - 1) / 2.0
+            # rope_params returns complex [N, dim//2]; store as real pairs
+            h_freqs = torch.view_as_real(self.rope_params(h_idx, h_dim))
+            w_freqs = torch.view_as_real(self.rope_params(w_idx, w_dim))
+        else:
+            pos_freqs = self.pos_freqs.float()
+            h_freqs, w_freqs = pos_freqs.split([h_dim // 2, w_dim // 2], dim=1)
+
+            # Select frequencies for the current height and width
+            h_freqs = h_freqs[:height, :]  # [H, h_dim//2, 2]
+            w_freqs = w_freqs[:width, :]  # [W, w_dim//2, 2]
 
         # Broadcast to create the grid
         # Expand to [H, W, dim, 2]
@@ -274,6 +317,7 @@ class DoubleStreamAttention(nn.Module):
         rope_axes_dim: list = [64, 64],
         rope_scaling_type: str = "none",
         rope_scaling_factor: float = 1.0,
+        rope_centered: bool = False,
     ):
         super().__init__()
         self.num_heads = num_heads
@@ -293,6 +337,7 @@ class DoubleStreamAttention(nn.Module):
             axes_dim=rope_axes_dim,
             scaling_type=rope_scaling_type,
             scaling_factor=rope_scaling_factor,
+            centered=rope_centered,
         )
 
         self.proj_img = nn.Linear(dim, dim)
@@ -364,7 +409,7 @@ class DoubleStreamAttention(nn.Module):
             attn_mask = attn_mask.to(dtype=torch.bool)
 
         # Attention with mask
-        x = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, dropout_p=0.0)
+        x = sdpa_with_pad_mask(q, k, v, attn_mask)
 
         # Split
         x_img = x[:, :, :S_img, :]
@@ -394,6 +439,7 @@ class DoubleStreamDiTBlock(nn.Module):
         ffn_type: str = "gated",
         rope_scaling_type: str = "none",
         rope_scaling_factor: float = 1.0,
+        rope_centered: bool = False,
     ):
         super().__init__()
         self.dim = dim
@@ -441,6 +487,7 @@ class DoubleStreamDiTBlock(nn.Module):
             rope_axes_dim,
             rope_scaling_type=rope_scaling_type,
             rope_scaling_factor=rope_scaling_factor,
+            rope_centered=rope_centered,
         )
 
         # MLP
@@ -559,6 +606,7 @@ class SingleStreamAttention(nn.Module):
         rope_axes_dim: list = [64, 64],
         rope_scaling_type: str = "none",
         rope_scaling_factor: float = 1.0,
+        rope_centered: bool = False,
     ):
         super().__init__()
         self.num_heads = num_heads
@@ -574,6 +622,7 @@ class SingleStreamAttention(nn.Module):
             axes_dim=rope_axes_dim,
             scaling_type=rope_scaling_type,
             scaling_factor=rope_scaling_factor,
+            centered=rope_centered,
         )
 
         self.proj = nn.Linear(dim, dim)
@@ -634,7 +683,7 @@ class SingleStreamAttention(nn.Module):
             attn_mask = attn_mask.to(dtype=torch.bool)
 
         # Attention with mask
-        x = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, dropout_p=0.0)
+        x = sdpa_with_pad_mask(q, k, v, attn_mask)
 
         x = x.transpose(1, 2).reshape(B, S, C)
 
@@ -657,6 +706,7 @@ class SingleStreamDiTBlock(nn.Module):
         ffn_type: str = "gated",
         rope_scaling_type: str = "none",
         rope_scaling_factor: float = 1.0,
+        rope_centered: bool = False,
     ):
         super().__init__()
         self.dim = dim
@@ -689,6 +739,7 @@ class SingleStreamDiTBlock(nn.Module):
             rope_axes_dim,
             rope_scaling_type=rope_scaling_type,
             rope_scaling_factor=rope_scaling_factor,
+            rope_centered=rope_centered,
         )
 
         # MLP
@@ -765,6 +816,7 @@ class UnconditionalAttention(nn.Module):
         rope_axes_dim: list = [64, 64],
         rope_scaling_type: str = "none",
         rope_scaling_factor: float = 1.0,
+        rope_centered: bool = False,
     ):
         super().__init__()
         self.num_heads = num_heads
@@ -780,6 +832,7 @@ class UnconditionalAttention(nn.Module):
             axes_dim=rope_axes_dim,
             scaling_type=rope_scaling_type,
             scaling_factor=rope_scaling_factor,
+            centered=rope_centered,
         )
         self.proj = nn.Linear(dim, dim)
 
@@ -824,6 +877,7 @@ class UnconditionalDiTBlock(nn.Module):
         rope_axes_dim: list = [64, 64],
         rope_scaling_type: str = "none",
         rope_scaling_factor: float = 1.0,
+        rope_centered: bool = False,
     ):
         super().__init__()
         self.dim = dim
@@ -841,6 +895,7 @@ class UnconditionalDiTBlock(nn.Module):
             rope_axes_dim,
             rope_scaling_type=rope_scaling_type,
             rope_scaling_factor=rope_scaling_factor,
+            rope_centered=rope_centered,
         )
 
         self.norm2 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
