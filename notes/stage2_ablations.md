@@ -116,7 +116,15 @@ settle it overnight; budget headroom (400 h) covers it.
 | 2.2d hybrid | h1024, 8 double + 14 single (mod=layer on both) | 477.9M | 8K screen | Inspire | 2.2a | ~32 |
 | 2.2d all-double | h1024, 15 double | 478.0M | 8K screen | Inspire | 2.2a | ~32 |
 | 2.2d confirm | 2.2d winner | — | 16K | Inspire | 2.2d screen | ~63 |
-| 2.3a exit k∈{8,16,28} | h1024 d24 mod-layer, 4K each, eval-loss separation | 383.4M | 3×4K | Andromeda | 2.1 | free |
+| 2.3a exit k∈{8,16,28} | h1024 d24 mod-layer, 4K each, eval-loss separation | 383.4M | 3×4K | Inspire (relocated from Andromeda 2026-09-05, see note) | 2.1 | ~9 |
+
+2.3a relocation note (2026-09-05): Andromeda holds only the 459-sample Monet
+mini set; farming 3 arms out over daytime windows (plus a mix download) would
+take ~2 weeks for a qualitative screen. §3 already lets screens co-run on
+Inspire; all three k arms share platform/mix/protocol so the comparison stays
+internally fair. ~3 GPU-h/arm in the night trough is negligible. Pre-registered
+shape (mod-layer) is kept — 2.3a was designed to run parallel to 2.2a and the
+k-axis interacts weakly with modulation; caveat noted in its verdict.
 | 2.3b exit confirm | winner-config @ best k (only if 2.3a ambiguous) | — | 8K | Inspire | 2.2, 2.3a | ~32 |
 | 2.4 mix-old | §4 old recipe @ h1024 d24 2.2a-winner mod | — | 8K | Inspire | 2.2a | ~32 |
 | 2.4 mix-new | §4 new mix, same shape | — | 8K | Inspire | 2.2a | ~32 |
@@ -257,6 +265,29 @@ decides: **all subsequent stage-2 arms use centered-grid RoPE**
   ckpt-1000 with the fix; finished 6000/6000 at 14:47 UTC.
 - verdict: lose — 256p tie, 640p tie, 480p/384p/320p ladder tie → final tie-break
   (Qwen-Image prior) favors centered-grid RoPE. Legacy RoPE retired from stage 2.
+
+#### s2-mod-none — 2026-09-05 — Inspire 4090 (jobs `s2-mod-none`)
+- config: h1024/d24 all-single, mod=none, fused, qkv_bias, gated FFN,
+  centered-grid RoPE (2.1 winner); AdamW 3e-4 cosine (min 0.5e-4, warmup 500),
+  batch 8×accum16 (=128) on 1 GPU, 8000 steps, EMA 0.999, seed 42;
+  §4 stage-2 mix; exit layer 28 (default).
+- swanlab: artflow-stage2 / s2-mod-none
+- launched 2026-09-05 ~00:30 local (16:30 UTC); params 459,014,368 as
+  pre-registered. Est. wall ~6 h (8K × ~2.2 s/it + eval overhead).
+- results/verdict: _pending_
+
+#### s2-mod-layer — 2026-09-05 — Inspire 4090 (jobs `s2-mod-layer`)
+- config: identical to s2-mod-none except single-stream modulation = layer
+  (shared per-layer mod MLP).
+- swanlab: artflow-stage2 / s2-mod-layer
+- launched 2026-09-05 ~00:30 local; params 383,443,168 as pre-registered.
+- results/verdict: _pending_
+
+2.2a gate protocol: 256p eval/loss curve separation (noise floor from 2.1:
+Δ <0.025% at 6K was noise), KID end must agree in direction, grids get a human
+look. Tie → literature prior mod→layer (PixArt/DiT-Air). Winner's modulation
+feeds 2.2b/2.2c/2.2d param re-matching (mod=none fallback shapes pre-derived in
+§5) and 2.4.
 
 ### Per-arm record template
 
