@@ -15,6 +15,7 @@ settings*json
 *.md
 !README.md
 !notes/*.md
+notes/dataset_plan.md
 test*
 
 # Large files
