@@ -39,9 +39,15 @@ def encode_text(
     model: torch.nn.Module,
     tokenizer: PreTrainedTokenizerBase,
     pooling: bool,
+    exit_layer: Optional[int] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
     """
     Encode captions with the Qwen3 chat template for DiT conditioning.
+
+    Args:
+        exit_layer: if set, take hidden states from this transformer layer
+            (k indexes hidden_states[k]; the embedding output is index 0, so
+            k = number of layers = last hidden state = default behavior).
 
     Returns:
         embeddings: [batch, seq, hidden]
@@ -66,9 +72,12 @@ def encode_text(
         outputs = model.model(
             input_ids=inputs.input_ids,
             attention_mask=inputs.attention_mask,
-            output_hidden_states=False,
+            output_hidden_states=exit_layer is not None,
         )
-        hidden = outputs.last_hidden_state
+        if exit_layer is None:
+            hidden = outputs.last_hidden_state
+        else:
+            hidden = outputs.hidden_states[exit_layer]
 
     sequences = _extract_masked_hidden(hidden, inputs.attention_mask)
     trimmed = [_trim_sequence(seq) for seq in sequences]

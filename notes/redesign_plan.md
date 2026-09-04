@@ -1,7 +1,7 @@
 # ArtFlow Reboot — Redesign Plan
 
 Personal side project. Model ≤0.7B params. **Compute-frugal by design**:
-total budget ≈ **2.5–4K RTX4090-hours** on Inspire (4090 @0.33 pt/h ⇒ ~1–1.3K points,
+total budget ≈ **2.9–3.7K RTX4090-hours** on Inspire (4090 @0.33 pt/h ⇒ ~1.0–1.2K points,
 trivial vs the ~589K-pt budget of project 自动化科研 — wall-clock and queueing, not
 money, are the constraints). Reference point: the old hero run was ~800 RTX4090-h
 (256p only, unoptimized stack, 19.2M samples seen). The new recipe sees ~60–100M
@@ -22,10 +22,47 @@ plus `notes/dataset_plan.md` (data-source detail).
 | D4 | Params | 0.4–0.7B; shape by fair ablation (iso-param + iso-FLOP axes) |
 | D5 | Text encoder | Qwen3-0.6B, frozen, online; add early-exit-layer knob, ablate k ∈ {8,16,28} |
 | D6 | Resolution curriculum | 256p → 640p → 896p → optional 1024p polish; variable aspect at every stage |
-| D7 | RoPE | Centered image grid + text pinned to fixed diagonal; NTK/linear scaling for top stage |
+| D7 | RoPE | **Centered image grid + text pinned to fixed diagonal** (2.1 resolved 2026-09-05: 256p eval/loss+KID tie, 640p transfer tie — both arms collapse identically at 2.5× — 480p/384p/320p ladder tie → final tie-break on Qwen-Image adoption prior). Zero-shot ≥1.875× transfer fails for both variants → progressive staging mandatory |
 | D8 | Inspire home | Project 自动化科研 |
 | D9 | Compute class | **RTX 4090 48GB on Inspire** (single 8-GPU node max; no NVLink → DDP over PCIe). Small ablations offloaded to **Andromeda** (SSH-reachable, RTX 4060 Ti ≈ ¼ 4090 throughput) |
 | D10 | VLM captioning | **Via API** (Qwen-VL-class), not self-hosted — caption cost is money + rate limits, not GPU-hours. No GPU-with-internet workspace needed |
+
+## Design dimension ledger (2026-09-04, agreed with user)
+
+Which architecture/training choices are fixed by literature vs decided by stage-2
+experiments. Stage-2 arms below implement column C.
+
+### A. Literature-locked (no ablation)
+
+| Dimension | Choice | Anchor |
+|---|---|---|
+| Objective | rectified flow + logit-normal(0,1) + resolution time shift | SD3 (Esser et al. 2024); FLUX/Qwen-Image follow |
+| AdaLN-zero init | on | DiT; universal, already in code |
+| QK-RMSNorm | on | SD3/FLUX and everything since; already in code |
+| FFN | gated SiLU, ratio 2.67 (iso-param ≈ standard 4.0) | universal post-2024 |
+| Patch size | 2 | DiT-XL/2, SD3, Qwen-Image |
+| Pooled text in AdaLN | **fused** (old runs used `pure` — flip default for all stage-2 arms) | SD3 (pooled CLIP), FLUX (pooled T5), Qwen-Image |
+| CFG caption dropout | 0.1 | convention |
+| VAE | Qwen-Image VAE (16ch f8) | physically locked by stage-1 256p precompute; switching (e.g. DC-AE) = full re-precompute, out of scope |
+| Text encoder | Qwen3-0.6B frozen (exit layer ablated in 2.3) | encoder-size gains saturate early (DeepFloyd IF et al.); params go to the DiT |
+| Optimizer baseline | AdamW + linear_cosine + EMA 0.9999 | convention; Muon challenger in 2.5 |
+| Inference knobs (solver/steps/CFG/guidance distill) | deferred to stages 5/6 | orthogonal to architecture |
+
+### B. Considered and excluded
+
+| Dimension | Reason |
+|---|---|
+| Cross-attention conditioning (PixArt/Hunyuan style) | SD3's own comparison favors joint attention; all post-2024 SOTA is joint; our RoPE/text pipeline assumes joint |
+| Full block weight sharing (ALBERT/looped DiT) | niche literature, risky; the param saving is dominated by modulation sharing + depth/width tuning anyway |
+| muP / LR-transfer machinery | 0.4–0.7B span too narrow to need it |
+| High-compression VAE (DC-AE et al.) | would void the stage-1 precompute |
+
+### C. Experiment axes → stage 2
+
+Fixed protocol for **every** arm: same data mix, same steps, same seed, EMA on,
+`fused` conditioning, logit-normal(0,1) + shift=1 at 256p, same LR schedule
+(2.5 excepted: per-optimizer LR), eval suite at end. Only compare arms run on the
+same platform; cross-platform comparisons are qualitative only.
 
 ## Stage 0 — Infra onboarding (≤10 4090-h, mostly CPU)
 
@@ -106,29 +143,58 @@ the recipe (and thus the exact bucket sets) is known.
 **Exit**: domain datasets validated; eval suite committed; 256p precomputed sets ready;
 `data/` layout documented in `INSPIRE.md`.
 
-## Stage 2 — Ablations @256p, small scale (≤200 4090-h on Inspire + Andromeda hours free)
+## Stage 2 — Ablations @256p, small scale (≤400 4090-h on Inspire + Andromeda hours free)
 
-**Goal**: pick architecture, text-encoder exit layer, and validate the RoPE fix — cheaply,
-fairly. Fixed protocol for every arm: same data mix, same steps, same seed, EMA on, eval
-suite at end. **Only compare arms run on the same platform** (Andromeda ≠ Inspire
-hardware; cross-platform comparisons are qualitative only).
+**Goal**: pick architecture (depth/width, modulation, stream schedule), text-encoder
+exit layer, optimizer, and validate the RoPE fix — cheaply, fairly. Fixed protocol per
+design-dimension ledger §C. **Only compare arms run on the same platform** (Andromeda ≠
+Inspire hardware; cross-platform comparisons are qualitative only). Per-arm configs,
+telemetry spec, budget roll, and result records live in `notes/stage2_ablations.md`.
 
 - Andromeda (4060 Ti; arms ≤15K steps, batch ≤64 via accum — it runs ~¼ 4090 speed):
   - 2.1 **RoPE fix smoke + A/B** (D7): new centered-grid/fixed-text-diagonal RoPE trains
     stably; then old-vs-new on resolution transfer (train 256p → sample 640p; artifact
     rate). This is the gate for everything below.
+  - 2.2a **Modulation sharing**: `none` vs `layer`, h=1024, d=24, all-single-stream,
+    10K-step screen on loss-curve separation. Runs **first** — its winner feeds
+    2.2b–2.2d and fixes the param matching there. (Split out from the old 2.2a, which
+    varied h, d, and mod simultaneously and could not attribute the delta.)
   - 2.3a **Text-encoder early exit, qualitative** (D5): `--text_encoder_exit_layer`
     (`output_hidden_states`, one-line change in `encode_text.py`); k ∈ {8,16,28} short
     runs, eval-loss separation check.
   - 2.4 Mixture sanity: stage-1 mix vs old 80/10/10 mix (quantify the obvious).
 - Inspire 4090 (the fair arms that decide the hero config; 20K steps, batch 128):
-  - 2.2a iso-param ~500M: `h=1152,d=20,mod=none` vs `h=1024,d=30,mod=layer`.
-  - 2.2b iso-FLOP: ~670M vs ~400M (`h=1024,d=24,mod=layer`), smaller run proportionally
+  - 2.2b **Depth/width iso-param ~500M**: `h=1152,d=20` vs `h=1024,d=30`, both at the
+    2.2a-winning modulation.
+  - 2.2c **iso-FLOP**: ~670M vs ~400M (`h=1024,d=24`), smaller run proportionally
     longer; step ratio from fvcore-measured FLOPs/step, not param ratio.
+  - 2.2d **Stream schedule** (new axis): all-single vs hybrid (~1:2 double:single param
+    split, e.g. 6 double + 12 single @ h=1024) vs all-double (12 double), iso-param
+    ~500M at the 2.2a-winning mod; 10K-step screen, winner 20K confirm. Prior from
+    DiT-Air (arXiv:2503.10618, shared AdaLN + concatenated single-stream processing is
+    most param-efficient) and FLUX (hybrid) leans single-heavy/hybrid; drop the
+    all-double arm first if budget pinches.
   - 2.3b exit-layer confirmation at the 2.2-winning config (if 2.3a was ambiguous).
+  - 2.5 **Muon vs AdamW** (new axis, 2026-09-04): literature now covers DiTs at our
+    scale — CMuon (arXiv:2608.02502) shows vanilla Muon hits a late-stage plateau on
+    DiTs because fused tensors (6×dim AdaLN output, fused QKV) couple subspaces under
+    orthogonalization, and that chunking those matrices before Newton–Schulz fixes it
+    (>2× speedup over AdamW, FID 1.18 on ImageNet-256 in 200 epochs at 675M);
+    Scaling-Muon-for-DiT (arXiv:2608.20818) shows the quality advantage persists
+    1.3–15B. Arm design:
+    - Param split: 2D hidden weights → Muon **with chunked orthogonalization for the
+      fused qkv/modulation matrices** (chunk to q/k/v and per-modulation-piece);
+      embeddings, patch conv, final_layer, norms, biases, t/c-MLPs → AdamW. Weight
+      decay on both groups (Moonlight finding).
+    - LR probe first: 3 Muon LRs × 3–5K steps (Muon needs its own LR — do not reuse
+      AdamW's 3e-4), pick by eval loss; then Muon vs AdamW 20K-step confirm at the
+      2.2-winning arch, same steps/data/seed.
+    - Watch: attention-logit growth (QK-RMSNorm already mitigates), NS5 step overhead
+      (expect <10% at our matrix sizes — record it in the throughput table).
 - Record throughput (samples/s) for every arm → stage-3 baseline.
 
-**Exit**: decision memo — arch config, exit layer, RoPE scheme — plus throughput table.
+**Exit**: decision memo — arch config (h/d, stream schedule, modulation), exit layer,
+optimizer + LR, RoPE scheme — plus throughput table.
 
 ## Stage 3 — Efficiency optimization (≤80 4090-h)
 
@@ -161,7 +227,9 @@ measured values become the stage-5 sizing input); regression check passed.
 - 4.1 **Data-scaling probe** @256p: corpus arms 50K / 200K / 500K, fixed steps →
   KID + eval-loss slope → data-bound vs step-bound verdict → corpus size (D3).
 - 4.2 **Resolution-transfer probe**: 256p→640p continued vs 640p-from-scratch (short arms)
-  → confirm staging saves compute; check 640p→896p transfer with new RoPE.
+  → confirm staging saves compute; check 640p→896p continued-training transfer (2.1
+  already showed zero-shot 2.5× sampling transfer fails hard for both RoPE variants —
+  progressive fine-tuning is the only path).
 - 4.3 **Steps/quality curve** at chosen config → place the knee → steps per stage.
 - 4.4 Hero recipe card: corpus, mixture, stage steps, LR schedule, exit layer, arch —
   written to `notes/hero_recipe.md`.
@@ -219,12 +287,12 @@ before/after grids on the eval suite.
 |---|---|---|
 | 0 Infra | 10 | mostly CPU; smokes on both platforms |
 | 1 Data | 30 + API spend | API captioning replaces GPU captioning; cache raw responses |
-| 2 Ablations | 200 | Inspire fair arms only; Andromeda takes smoke/qualitative arms (free, ~¼ speed) |
+| 2 Ablations | 400 | Inspire fair arms only; Andromeda takes smoke/qualitative arms (free, ~¼ speed); cap raised 200→400 on 2026-09-04 to fit stream-schedule + Muon axes |
 | 3 Efficiency | 80 | buys back far more than it costs — gates stage 5 |
 | 4 Scaling ladder | 450 | small runs only |
 | 5 Hero | 1,600–2,200 | the only big spend; 8×4090, 8–12 days wall |
 | 6 NFT | 300–500 | sampling-bound |
-| **Total** | **≈2.7–3.9K 4090-h** | ≈0.9–1.3K pts @0.33 pt/h |
+| **Total** | **≈2.9–3.7K 4090-h** | ≈1.0–1.2K pts @0.33 pt/h |
 
 **Budget semantics (2026-08-26, user clarification)**: the Inspire budget is about
 **not crowding out other users**, not an absolute hours cap — scheduling GPU work into
@@ -235,8 +303,15 @@ stage 5 hero) are submitted to run overnight; Andromeda arms run daytime/evening
 
 ## Open risks
 
-- Centered RoPE changes positional geometry → stage-2.1 is the gate.
+- ~~Centered-vs-legacy RoPE~~ Resolved (2.1, 2026-09-05): tie at every probe down to
+  320p → centered-grid RoPE adopted on the Qwen-Image prior. Zero-shot resolution
+  extrapolation fails from 1.875× up regardless of variant → progressive fine-tuning
+  is the only path to 640p/896p.
 - Early-exit text features unvalidated → stage-2.3 decides; fallback k=28.
+- Muon outcome propagates: if 2.5 picks Muon, the stage-4 steps/quality knee and the
+  stage-5 LR schedule must be measured with Muon — no AdamW carryover. If chunking is
+  skipped the arm tests a known-bad configuration (CMuon plateau), so chunked
+  orthogonalization is part of the arm definition, not an optional tweak.
 - Cross-platform comparability: Andromeda results inform, never decide — fair arms live on
   Inspire 4090.
 - 4090 PCIe-only DDP: if stage 3 shows sync-bound training at batch 256, raise accum or

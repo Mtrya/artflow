@@ -57,6 +57,7 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
         ffn_type: str = "gated",
         rope_scaling_type: str = "none",
         rope_scaling_factor: float = 1.0,
+        rope_centered_grid: bool = False,
     ):
         super().__init__()
         self.patch_size = patch_size
@@ -114,6 +115,7 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
                     ffn_type=ffn_type,
                     rope_scaling_type=rope_scaling_type,
                     rope_scaling_factor=rope_scaling_factor,
+                    rope_centered=rope_centered_grid,
                 )
             )
 
@@ -131,6 +133,7 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
                     ffn_type=ffn_type,
                     rope_scaling_type=rope_scaling_type,
                     rope_scaling_factor=rope_scaling_factor,
+                    rope_centered=rope_centered_grid,
                 )
             )
 
@@ -227,6 +230,7 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
             "ffn_type": "gated",  # Stored in block
             "rope_scaling_type": getattr(self.blocks[0].attn.rope, 'scaling_type', 'none') if hasattr(self.blocks[0], 'attn') else 'none',
             "rope_scaling_factor": getattr(self.blocks[0].attn.rope, 'scaling_factor', 1.0) if hasattr(self.blocks[0], 'attn') else 1.0,
+            "rope_centered_grid": getattr(self.blocks[0].attn.rope, 'centered', False) if hasattr(self.blocks[0], 'attn') else False,
         }
 
     @classmethod
@@ -290,12 +294,19 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
                 break
 
         if first_block_key and "qkv.weight" in first_block_key:
-            qkv_weight = state_dict.get("blocks.0.attn.qkv.weight") or state_dict.get("blocks.0.attn.qkv_img.weight")
-            if qkv_weight is not None:
-                # qkv weight is [3*hidden_size, hidden_size] -> head_dim * num_heads = hidden_size
-                # We need to infer num_heads - use common values
-                # For DiT-XL: 1152 / 16 = 72, 1152 / 12 = 96, etc.
-                # We'll default to 16 for 1152 hidden size, 10 for 640, etc.
+            qkv_weight = state_dict.get("blocks.0.attn.qkv.weight")
+            if qkv_weight is None:
+                qkv_weight = state_dict.get("blocks.0.attn.qkv_img.weight")
+            # num_heads is invisible in qkv shape ([3H, H] either way), but the
+            # per-head RMSNorm pins head_dim exactly.
+            q_norm = state_dict.get("blocks.0.attn.q_norm.weight")
+            if q_norm is None:
+                q_norm = state_dict.get("blocks.0.attn.q_norm_img.weight")
+            if q_norm is not None:
+                head_dim = q_norm.shape[0]
+                config["num_heads"] = max(1, hidden_size // head_dim)
+            elif qkv_weight is not None:
+                # Fallback heuristic for checkpoints without per-head norms.
                 if hidden_size >= 1152:
                     config["num_heads"] = 16
                 elif hidden_size >= 768:
@@ -344,6 +355,7 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
         config["ffn_type"] = "gated"
         config["rope_scaling_type"] = "none"
         config["rope_scaling_factor"] = 1.0
+        config["rope_centered_grid"] = False
 
         return config
 

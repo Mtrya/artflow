@@ -11,9 +11,31 @@ import gc
 from typing import List, Optional, Union
 
 import torch
+import torch.nn.functional as F
 from torchmetrics.image.fid import FrechetInceptionDistance
 from torchmetrics.image.kid import KernelInceptionDistance
 from torchmetrics.multimodal.clip_score import CLIPScore
+
+
+def aspect_resize_crop(images: torch.Tensor, size: int = 299) -> torch.Tensor:
+    """
+    Aspect-preserving resize (short side -> size) + center crop to size x size.
+
+    Replaces the old distorting squash to 299x299 so variable-aspect buckets
+    keep their geometry. Input [B, C, H, W] float in [0, 1].
+    """
+    _, _, h, w = images.shape
+    if h == size and w == size:
+        return images
+    scale = size / min(h, w)
+    new_h = max(size, int(round(h * scale)))
+    new_w = max(size, int(round(w * scale)))
+    out = F.interpolate(
+        images, size=(new_h, new_w), mode="bilinear", align_corners=False, antialias=True
+    )
+    top = (new_h - size) // 2
+    left = (new_w - size) // 2
+    return out[:, :, top : top + size, left : left + size]
 
 
 def calculate_fid(
@@ -71,10 +93,11 @@ def calculate_kid(
     real_images: torch.Tensor,
     fake_images: torch.Tensor,
     feature: int = 2048,
-    subset_size: int = 50,
+    subset_size: int = 100,
     device: Optional[torch.device] = None,
     batch_size: int = 32,
-) -> float:
+    return_std: bool = False,
+):
     """
     Calculate KID score between real and fake images.
 
@@ -115,14 +138,17 @@ def calculate_kid(
     update_metric(real_images, True)
     update_metric(fake_images, False)
 
-    # KID returns (mean, std), we take the mean
-    score = kid.compute()[0].item()
+    # KID returns (mean, std)
+    mean, std = kid.compute()
+    score = mean.item()
 
     # Cleanup to save VRAM
     del kid
     gc.collect()
     torch.cuda.empty_cache()
 
+    if return_std:
+        return score, std.item()
     return score
 
 

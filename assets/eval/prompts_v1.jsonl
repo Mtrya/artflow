@@ -1,0 +1,24 @@
+{"id": "style-guohua-01", "tags": ["style", "guo_hua"], "domain": "chinese_painting", "text": "一幅青绿山水立轴,层峦叠嶂,云雾缭绕,山脚有溪亭与行旅,绢本设色,宋代院体风格", "lang": "zh", "aspect": "3:4"}
+{"id": "style-guohua-02", "tags": ["style", "guo_hua"], "domain": "chinese_painting", "text": "写意水墨荷花,大片泼墨荷叶,一枝白荷斜出,留白通透,纸本水墨", "lang": "zh", "aspect": "1:1"}
+{"id": "style-guohua-03", "tags": ["style", "guo_hua"], "domain": "chinese_painting", "text": "工笔仕女图,庭院深深,仕女执扇立于芭蕉树下,线条细腻,设色雅致", "lang": "zh", "aspect": "3:4"}
+{"id": "style-guohua-04", "tags": ["style", "guo_hua"], "domain": "chinese_painting", "text": "水墨山水长卷局部,平远构图,江面开阔,远岫如黛,渔舟三两,元代文人画意趣", "lang": "zh", "aspect": "16:9"}
+{"id": "style-guohua-05", "tags": ["style", "guo_hua"], "domain": "chinese_painting", "text": "花鸟册页,一枝红梅横斜,两只雀鸟相顾,设色淡雅,没骨法", "lang": "zh", "aspect": "4:3"}
+{"id": "style-guohua-06", "tags": ["style", "guo_hua", "en"], "domain": "chinese_painting", "text": "A Chinese ink painting of bamboo in wind, expressive brushwork, ink wash on paper, literati style, tall vertical composition", "lang": "en", "aspect": "9:16"}
+{"id": "style-west-01", "tags": ["style", "western"], "domain": "western_painting", "text": "An impressionist oil painting of a riverside at sunset, loose visible brushstrokes, shimmering light on water, soft violet and gold palette", "lang": "en", "aspect": "4:3"}
+{"id": "style-west-02", "tags": ["style", "western"], "domain": "western_painting", "text": "一幅印象派风格的油画,春日花园小径,斑驳阳光透过花树,笔触轻快,色彩明亮", "lang": "zh", "aspect": "1:1"}
+{"id": "style-west-03", "tags": ["style", "western"], "domain": "western_painting", "text": "A baroque oil portrait of a noblewoman in a dark silk dress, dramatic chiaroscuro lighting, lace collar, three-quarter view", "lang": "en", "aspect": "3:4"}
+{"id": "style-west-04", "tags": ["style", "western"], "domain": "western_painting", "text": "A post-impressionist landscape with swirling cypress trees and a wheat field under a turbulent sky, thick impasto, vivid complementary colors", "lang": "en", "aspect": "4:3"}
+{"id": "anatomy-face-01", "tags": ["anatomy", "face"], "domain": "people", "text": "Close-up portrait photograph of an elderly man with deep wrinkles and grey stubble, soft window light, sharp focus on the eyes", "lang": "en", "aspect": "1:1"}
+{"id": "anatomy-face-02", "tags": ["anatomy", "face"], "domain": "people", "text": "少女侧脸特写人像摄影,发丝细节清晰,逆光轮廓光,浅景深", "lang": "zh", "aspect": "3:4"}
+{"id": "anatomy-hand-01", "tags": ["anatomy", "hands"], "domain": "people", "text": "A photograph of two hands gently holding a small ceramic cup, visible finger joints and natural skin texture, soft daylight", "lang": "en", "aspect": "4:3"}
+{"id": "anatomy-hand-02", "tags": ["anatomy", "hands"], "domain": "people", "text": "油画中的手部特写,一只手执笔悬腕,正在宣纸上写字,指节结构准确,光影柔和", "lang": "zh", "aspect": "1:1"}
+{"id": "anatomy-figure-01", "tags": ["anatomy", "figure"], "domain": "people", "text": "Full-body photograph of a ballet dancer mid-leap on a stage, dynamic pose, muscles tense, theatrical lighting", "lang": "en", "aspect": "9:16"}
+{"id": "anatomy-figure-02", "tags": ["anatomy", "figure"], "domain": "people", "text": "三个人物在咖啡馆交谈的全身场景摄影,姿态自然,透视一致,环境光", "lang": "zh", "aspect": "16:9"}
+{"id": "anatomy-figure-03", "tags": ["anatomy", "figure"], "domain": "people", "text": "A classical oil painting of a seated nude figure study, anatomically accurate proportions, academy style, neutral background", "lang": "en", "aspect": "3:4"}
+{"id": "world-01", "tags": ["world"], "domain": "world", "text": "A misty mountain lake at dawn with perfect reflections, pine trees on the shore, photographic", "lang": "en", "aspect": "16:9"}
+{"id": "world-02", "tags": ["world"], "domain": "world", "text": "雨后的城市街道夜景,霓虹灯在湿漉漉的沥青路面上的倒影,行人撑伞,电影感摄影", "lang": "zh", "aspect": "16:9"}
+{"id": "world-03", "tags": ["world"], "domain": "world", "text": "A still life photograph of citrus fruits and a glass bottle on a linen tablecloth, soft north light", "lang": "en", "aspect": "4:3"}
+{"id": "world-04", "tags": ["world"], "domain": "world", "text": "Macro photograph of a beetle on a leaf, iridescent shell, extreme detail, shallow depth of field", "lang": "en", "aspect": "1:1"}
+{"id": "world-05", "tags": ["world"], "domain": "world", "text": "一只橘猫蜷缩在旧书堆上睡觉,温暖的午后光线,生活感摄影", "lang": "zh", "aspect": "4:3"}
+{"id": "aspect-wide-01", "tags": ["aspect"], "domain": "any", "text": "Panoramic view of a harbor at golden hour, fishing boats, distant lighthouse, very wide composition", "lang": "en", "aspect": "21:9"}
+{"id": "aspect-tall-01", "tags": ["aspect"], "domain": "any", "text": "高耸的哥特式大教堂内部仰拍,彩色玻璃窗,束柱向上汇聚,竖幅构图", "lang": "zh", "aspect": "9:16"}

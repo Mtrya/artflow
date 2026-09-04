@@ -5,6 +5,9 @@ Training script for ArtFlow Stage 1: Conditional Generation with Architecture Ab
 import os
 import gc
 import argparse
+import json
+import re
+import time
 import warnings
 import math
 from copy import deepcopy
@@ -24,7 +27,10 @@ from ..dataset.mix import parse_dataset_mix, load_mixed_dataset, get_dataset_wei
 from ..utils.encode_text import encode_text
 from ..utils.vae_codec import get_vae_stats
 from ..flow.paths import FlowMatchingOT, shift_timesteps
-from ..evaluation.pipeline import run_evaluation_light
+from ..evaluation.eval_loss import EvalLossProbe
+from ..evaluation.prompt_grid import run_prompt_grid_eval
+from ..evaluation.kid_eval import run_kid_eval
+from .muon import build_param_groups as build_muon_param_groups
 
 # Suppress specific warning about RMSNorm dtype mismatch in mixed precision
 warnings.filterwarnings("ignore", message="Mismatch dtype between input and weight")
@@ -255,6 +261,54 @@ def parse_args():
         help="Clear CUDA cache every N steps",
     )
 
+    # Stage-2 ablation additions
+    parser.add_argument(
+        "--swanlab_project", type=str, default="artflow", help="SwanLab project name"
+    )
+    parser.add_argument(
+        "--text_encoder_exit_layer",
+        type=int,
+        default=None,
+        help="Early-exit layer k for Qwen3 features (hidden_states[k]); default = last",
+    )
+    parser.add_argument(
+        "--optimizer", type=str, default="adamw", choices=["adamw", "muon"]
+    )
+    parser.add_argument("--muon_lr", type=float, default=0.02, help="Muon base LR")
+    parser.add_argument("--muon_wd", type=float, default=0.01, help="Muon weight decay")
+    parser.add_argument("--muon_momentum", type=float, default=0.95)
+    parser.add_argument(
+        "--rope_centered_grid",
+        action="store_true",
+        help="Center image RoPE coordinates around 0 (D7 new scheme)",
+    )
+    parser.add_argument(
+        "--eval_loss_interval",
+        type=int,
+        default=250,
+        help="Fixed eval-loss probe every N steps (0 disables)",
+    )
+    parser.add_argument(
+        "--eval_loss_samples", type=int, default=512, help="Probe set size"
+    )
+    parser.add_argument(
+        "--prompts_file",
+        type=str,
+        default="assets/eval/prompts_v1.jsonl",
+        help="Fixed prompt suite for sample grids",
+    )
+    parser.add_argument(
+        "--kid_eval_at_end",
+        action="store_true",
+        help="Run fixed-seed KID eval after the last step",
+    )
+    parser.add_argument("--kid_num_fake", type=int, default=2000)
+    parser.add_argument(
+        "--resume_full",
+        action="store_true",
+        help="Crash-resume: restore global_step/scheduler/EMA/RNG (default resume resets step for stage transitions)",
+    )
+
     # Model Config
     parser.add_argument("--hidden_size", type=int, default=1152, help="Hidden size")
     parser.add_argument("--num_heads", type=int, default=16, help="Number of heads")
@@ -333,10 +387,28 @@ def main():
 
     if accelerator.is_main_process:
         os.makedirs(args.output_dir, exist_ok=True)
+
+    run_dir = os.path.join(args.output_dir, args.run_name)
+    runtime_path = os.path.join(run_dir, "runtime.json")
+
+    # SwanLab run resumption: reuse the stored run id on crash-resume so curves
+    # stay in one run instead of fragmenting across restarts.
+    swanlab_kwargs = {"experiment_name": args.run_name}
+    if args.resume_full and os.path.exists(runtime_path):
+        try:
+            with open(runtime_path) as f:
+                stored_run_id = json.load(f).get("swanlab_run_id")
+            if stored_run_id:
+                swanlab_kwargs["id"] = stored_run_id
+                swanlab_kwargs["resume"] = "must"
+        except Exception as e:
+            print(f"Could not read swanlab run id ({e}); starting a fresh run")
+
+    if accelerator.is_main_process:
         accelerator.init_trackers(
-            project_name="artflow",
+            project_name=args.swanlab_project,
             config=vars(args),
-            init_kwargs={"swanlab": {"experiment_name": args.run_name}},
+            init_kwargs={"swanlab": swanlab_kwargs},
         )
 
     # Load Text Encoder (Frozen, on GPU)
@@ -371,6 +443,7 @@ def main():
         double_stream_modulation=args.double_stream_modulation,
         single_stream_modulation=args.single_stream_modulation,
         ffn_type=args.ffn_type,
+        rope_centered_grid=args.rope_centered_grid,
         # Default params
         patch_size=2,
         in_channels=16,
@@ -381,24 +454,46 @@ def main():
         f"Model params: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}"
     )
 
-    # Optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
-    if args.lr_scheduler_type == "linear_cosine":
-        lr_scheduler = build_linear_cosine_scheduler(
-            optimizer,
-            num_warmup_steps=args.lr_warmup_steps,
-            num_training_steps=args.max_steps,
-            min_learning_rate=args.min_learning_rate,
-            base_learning_rate=args.learning_rate,
-            start_learning_rate=args.start_learning_rate,
+    # Optimizers (Muon arm splits params into Muon + AdamW groups)
+    if args.optimizer == "muon":
+        optimizers = build_muon_param_groups(
+            model,
+            muon_lr=args.muon_lr,
+            muon_wd=args.muon_wd,
+            adam_lr=args.learning_rate,
+            muon_momentum=args.muon_momentum,
+        )
+        accelerator.print(
+            f"Muon: {sum(p.numel() for g in optimizers[0].param_groups for p in g['params']):,} params "
+            f"(lr={args.muon_lr}); AdamW aux: {sum(p.numel() for p in optimizers[1].param_groups[0]['params']):,} params"
         )
     else:
-        lr_scheduler = get_scheduler(
-            args.lr_scheduler_type,
-            optimizer=optimizer,
-            num_warmup_steps=args.lr_warmup_steps,
-            num_training_steps=args.max_steps,
-        )
+        optimizers = [torch.optim.AdamW(model.parameters(), lr=args.learning_rate)]
+
+    schedulers = []
+    for opt in optimizers:
+        base_lr = opt.param_groups[0]["lr"]
+        lr_ratio = base_lr / args.learning_rate
+        if args.lr_scheduler_type == "linear_cosine":
+            schedulers.append(
+                build_linear_cosine_scheduler(
+                    opt,
+                    num_warmup_steps=args.lr_warmup_steps,
+                    num_training_steps=args.max_steps,
+                    min_learning_rate=args.min_learning_rate * lr_ratio,
+                    base_learning_rate=base_lr,
+                    start_learning_rate=args.start_learning_rate * lr_ratio,
+                )
+            )
+        else:
+            schedulers.append(
+                get_scheduler(
+                    args.lr_scheduler_type,
+                    optimizer=opt,
+                    num_warmup_steps=args.lr_warmup_steps,
+                    num_training_steps=args.max_steps,
+                )
+            )
 
     ema_model = deepcopy(model) if args.use_ema else None
 
@@ -434,31 +529,57 @@ def main():
     )
 
     # Prepare
-    model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
+    prepared = accelerator.prepare(model, *optimizers, *schedulers, dataloader)
+    model = prepared[0]
+    optimizers = list(prepared[1 : 1 + len(optimizers)])
+    schedulers = list(
+        prepared[1 + len(optimizers) : 1 + len(optimizers) + len(schedulers)]
+    )
+    dataloader = prepared[-1]
 
     # Resume Logic
+    resumed_step = 0
     if args.resume and args.resume != "None":
         accelerator.print(f"Resuming from checkpoint: {args.resume}")
         accelerator.load_state(args.resume)
-        
-        # Reset scheduler and global step for new stage
-        # Note: accelerator.load_state loads the scheduler state too, so we need to reset it
-        # We want to keep optimizer state (e.g., momentum) but restart the schedule
-        if hasattr(lr_scheduler, 'last_epoch'):
-            lr_scheduler.last_epoch = -1
-        
-        # Force optimizer learning rate to start_lr (scheduler step will handle this, 
-        # but good to be explicit if we want to ensure it starts right)
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = args.start_learning_rate
-            
-        accelerator.print("Resumed model/optimizer state. Resetting global_step and scheduler.")
+
+        if args.resume_full:
+            # Crash-resume: keep optimizer momentum, scheduler position, RNG;
+            # continue at the checkpointed step. Data order reshuffles (the
+            # bucket sampler is stateless per-iterator) — logged, accepted.
+            m = re.search(r"checkpoint_step_(\d+)", args.resume.rstrip("/"))
+            if m is None:
+                raise ValueError(
+                    f"--resume_full needs a checkpoint_step_* path, got {args.resume}"
+                )
+            resumed_step = int(m.group(1))
+            accelerator.print(f"Full resume at step {resumed_step}")
+        else:
+            # Legacy stage-transition semantics: carry weights+optimizer,
+            # restart the schedule from step 0.
+            for sch in schedulers:
+                if hasattr(sch, "last_epoch"):
+                    sch.last_epoch = -1
+            for opt in optimizers:
+                for param_group in opt.param_groups:
+                    param_group["lr"] = args.start_learning_rate
+            accelerator.print(
+                "Resumed model/optimizer state. Resetting global_step and scheduler."
+            )
 
     if ema_model is not None:
         dtype = next(accelerator.unwrap_model(model).parameters()).dtype
         ema_model.to(accelerator.device, dtype=dtype)
         ema_model.eval()
         ema_model.load_state_dict(accelerator.unwrap_model(model).state_dict())
+        if args.resume_full and args.resume and args.resume != "None":
+            ema_path = os.path.join(args.resume, "ema_weights.pt")
+            if os.path.exists(ema_path):
+                ema_model.load_state_dict(
+                    torch.load(ema_path, map_location="cpu", weights_only=False)
+                )
+                ema_model.to(accelerator.device, dtype=dtype)
+                accelerator.print("Restored EMA weights from checkpoint")
         for param in ema_model.parameters():
             param.requires_grad_(False)
 
@@ -474,11 +595,35 @@ def main():
         for alias in dataset_aliases
     }
 
+    # Fixed eval-loss probe (built identically on every rank; main process logs)
+    eval_probe = None
+    if args.eval_loss_interval > 0:
+        eval_probe = EvalLossProbe(
+            args.eval_dataset_path,
+            text_encoder,
+            tokenizer,
+            pooling=(args.conditioning_scheme == "fused"),
+            exit_layer=args.text_encoder_exit_layer,
+            vae_mean=vae_mean,
+            vae_std=vae_std,
+            num_samples=args.eval_loss_samples,
+            device=accelerator.device,
+        )
+        accelerator.print(f"Eval-loss probe ready ({len(eval_probe.latents)} samples)")
+
     # Training Loop
-    global_step = 0
+    global_step = resumed_step
     progress_bar = tqdm(
-        range(args.max_steps), disable=not accelerator.is_local_main_process
+        total=args.max_steps,
+        initial=resumed_step,
+        disable=not accelerator.is_local_main_process,
     )
+
+    samples_per_step = (
+        args.batch_size * accelerator.num_processes * args.gradient_accumulation_steps
+    )
+    last_step_time = time.time()
+    sps_ema = None
 
     train_iter = iter(dataloader)
 
@@ -541,6 +686,7 @@ def main():
                 text_encoder,
                 tokenizer,
                 pooling=(args.conditioning_scheme == "fused"),
+                exit_layer=args.text_encoder_exit_layer,
             )
 
             # Flow Matching
@@ -558,15 +704,27 @@ def main():
 
             accelerator.backward(loss)
 
+            grad_norm = None
             if accelerator.sync_gradients:
-                accelerator.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+                grad_norm = accelerator.clip_grad_norm_(
+                    model.parameters(), args.max_grad_norm
+                )
 
-            optimizer.step()
-            optimizer.zero_grad()
+            for opt in optimizers:
+                opt.step()
+                opt.zero_grad()
 
         if accelerator.sync_gradients:
-            lr_scheduler.step()
+            for sch in schedulers:
+                sch.step()
             global_step += 1
+
+            now = time.time()
+            step_dt = now - last_step_time
+            last_step_time = now
+            if step_dt > 0:
+                sps = samples_per_step / step_dt
+                sps_ema = sps if sps_ema is None else 0.95 * sps_ema + 0.05 * sps
 
             if ema_model is not None and global_step % args.ema_update_interval == 0:
                 update_ema_model(
@@ -605,8 +763,25 @@ def main():
                 log_dict = {
                     "train/loss": loss.item(),
                     "train/stage": stage,
-                    "train/lr": optimizer.param_groups[0]["lr"],
+                    "train/lr": optimizers[0].param_groups[0]["lr"],
                 }
+                if len(optimizers) > 1:
+                    log_dict["train/lr_aux"] = optimizers[-1].param_groups[0]["lr"]
+                if grad_norm is not None:
+                    log_dict["train/grad_norm"] = float(grad_norm)
+                if sps_ema is not None:
+                    log_dict["train/samples_per_sec"] = sps_ema
+                if torch.cuda.is_available():
+                    # Memory telemetry: catch transient spikes (long-caption batches,
+                    # ckpt saves, eval overlaps) instead of guessing post-OOM.
+                    log_dict["train/mem_peak_gb"] = (
+                        torch.cuda.max_memory_allocated() / 1024**3
+                    )
+                    log_dict["train/mem_alloc_gb"] = (
+                        torch.cuda.memory_allocated() / 1024**3
+                    )
+                    torch.cuda.reset_peak_memory_stats()
+                log_dict["train/txt_seq_len"] = float(txt.shape[1])
 
                 if synchronized_counts is not None:
                     total_samples = sum(synchronized_counts.values())
@@ -626,20 +801,43 @@ def main():
                 )
                 os.makedirs(save_path, exist_ok=True)
                 accelerator.save_state(save_path)
-                if ema_model is not None and accelerator.is_main_process:
-                    torch.save(
-                        ema_model.state_dict(),
-                        os.path.join(save_path, "ema_weights.pt"),
-                    )
+                if accelerator.is_main_process:
+                    if ema_model is not None:
+                        torch.save(
+                            ema_model.state_dict(),
+                            os.path.join(save_path, "ema_weights.pt"),
+                        )
+                    # Persist runtime state for crash-resume (step + swanlab run id)
+                    runtime = {"global_step": global_step}
+                    try:
+                        import swanlab
 
-            # Evaluation
+                        runtime["swanlab_run_id"] = getattr(swanlab.get_run(), "id", None)
+                    except Exception:
+                        pass
+                    os.makedirs(run_dir, exist_ok=True)
+                    with open(runtime_path, "w") as f:
+                        json.dump(runtime, f)
+
+            # Fixed eval-loss probe (primary cross-arm comparator)
+            if eval_probe is not None and global_step % args.eval_loss_interval == 0:
+                eval_model = (
+                    ema_model
+                    if ema_model is not None
+                    else accelerator.unwrap_model(model)
+                )
+                probe_metrics = eval_probe.evaluate(eval_model)
+                if accelerator.is_main_process:
+                    accelerator.log(probe_metrics, step=global_step)
+
+            # Fixed-prompt sample grids
             if global_step % args.eval_interval == 0:
                 eval_model = (
                     ema_model
                     if ema_model is not None
                     else accelerator.unwrap_model(model)
                 )
-                run_evaluation_light(
+                run_prompt_grid_eval(
                     accelerator=accelerator,
                     model=eval_model,
                     vae_path=args.vae_path,
@@ -648,13 +846,36 @@ def main():
                     text_encoder=text_encoder,
                     tokenizer=tokenizer,
                     pooling=(args.conditioning_scheme == "fused"),
-                    dataset_path=args.eval_dataset_path,
-                    num_samples=args.num_eval_samples,
+                    exit_layer=args.text_encoder_exit_layer,
+                    prompts_path=args.prompts_file,
+                    eval_dataset_path=args.eval_dataset_path,
                     batch_size=args.eval_batch_size,
-                    compute_metrics=args.eval_compute_metrics,
-                    bucket_resolutions=parse_bucket_resolutions(args.bucket_resolutions),
                 )
                 model.train()
+
+            # Eval/ckpt blocks above run inside this optimizer step's wall time;
+            # reset the clock so train/samples_per_sec reflects training only.
+            last_step_time = time.time()
+
+    # End-of-arm KID (fixed fakes vs full held-out real)
+    if args.kid_eval_at_end:
+        eval_model = (
+            ema_model if ema_model is not None else accelerator.unwrap_model(model)
+        )
+        run_kid_eval(
+            accelerator=accelerator,
+            model=eval_model,
+            vae_path=args.vae_path,
+            save_path=f"{args.output_dir}/{args.run_name}",
+            current_step=global_step,
+            text_encoder=text_encoder,
+            tokenizer=tokenizer,
+            pooling=(args.conditioning_scheme == "fused"),
+            exit_layer=args.text_encoder_exit_layer,
+            dataset_path=args.eval_dataset_path,
+            num_fake=args.kid_num_fake,
+            batch_size=args.eval_batch_size,
+        )
 
     accelerator.end_training()
     print("Training finished.")
