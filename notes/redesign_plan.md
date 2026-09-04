@@ -26,6 +26,7 @@ plus `notes/dataset_plan.md` (data-source detail).
 | D8 | Inspire home | Project 自动化科研 |
 | D9 | Compute class | **RTX 4090 48GB on Inspire** (single 8-GPU node max; no NVLink → DDP over PCIe). Small ablations offloaded to **Andromeda** (SSH-reachable, RTX 4060 Ti ≈ ¼ 4090 throughput) |
 | D10 | VLM captioning | **Via API** (Qwen-VL-class), not self-hosted — caption cost is money + rate limits, not GPU-hours. No GPU-with-internet workspace needed |
+| D11 | Modulation | **Shared per-layer modulation MLP (`mod=layer`)** — 2.2a resolved 2026-09-05: layer wins eval/loss@end (0.9437 vs 0.9441) with a persistent t040 advantage (5/5 probes from 3K, -0.0002→-0.0010), KID agrees (0.0190 vs 0.0195), +0.6% faster, -8% peak mem; tie-break prior (PixArt/DiT-Air) points the same way. All stage-2+ arms use it |
 
 ## Design dimension ledger (2026-09-04, agreed with user)
 
@@ -159,6 +160,8 @@ telemetry spec, budget roll, and result records live in `notes/stage2_ablations.
     10K-step screen on loss-curve separation. Runs **first** — its winner feeds
     2.2b–2.2d and fixes the param matching there. (Split out from the old 2.2a, which
     varied h, d, and mod simultaneously and could not attribute the delta.)
+    — **RESOLVED 2026-09-05: mod=layer wins** (D11; records + curves in
+    stage2_ablations.md). Scenario-A shapes in §5's shape table are active.
   - 2.3a **Text-encoder early exit, qualitative** (D5): `--text_encoder_exit_layer`
     (`output_hidden_states`, one-line change in `encode_text.py`); k ∈ {8,16,28} short
     runs, eval-loss separation check.

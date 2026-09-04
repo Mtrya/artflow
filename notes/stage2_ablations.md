@@ -193,6 +193,8 @@ train + probe/grid/ckpt overhead ≈ 3.5–4 h/arm. Recalibrated ledger: 2.1 ≈
 |---|---|---|---|---|
 | s2-rope-old | 0.95207 | 0.02247±0.00504 | ~56 (micro 8 post-restart) | lose (ladder tie → prior) |
 | s2-rope-new | 0.95230 | 0.02294±0.00509 | ~55 (micro 8 post-restart) | **WINNER** (ladder tie → Qwen-Image prior) |
+| s2-mod-none | 0.94405 | 0.01949±0.00499 | 55.2 | lose (narrow; tie-break also → layer) |
+| s2-mod-layer | 0.94373 | 0.01901±0.00363 | 55.5 | **WINNER of 2.2a** → all later arms mod=layer |
 
 256p probe is a statistical tie (Δ0.0002, 0.025%; per-t grid also identical:
 t015 0.8935/0.8938, t040 0.8045/0.8047, t065 0.9735/0.9739, t090 1.13676/1.13676).
@@ -291,23 +293,44 @@ decides: **all subsequent stage-2 arms use centered-grid RoPE**
   centered-grid RoPE (2.1 winner); AdamW 3e-4 cosine (min 0.5e-4, warmup 500),
   batch 8×accum16 (=128) on 1 GPU, 8000 steps, EMA 0.999, seed 42;
   §4 stage-2 mix; exit layer 28 (default).
-- swanlab: artflow-stage2 / s2-mod-none
-- launched 2026-09-05 ~00:30 local (16:30 UTC); params 459,014,368 as
-  pre-registered. Est. wall ~6 h (8K × ~2.2 s/it + eval overhead).
-- results/verdict: _pending_
+- swanlab: artflow-stage2 / s2-mod-none (run id `ppn097xnxxwpq8ivfjini`)
+- results: eval/loss@end 0.94405; per-t @end t015 0.88692 / t040 0.79557 /
+  t065 0.96172 / t090 1.13198; KID 0.01949±0.00499; 55.2 samples/s; peak mem
+  18.1 GiB; grad_norm decay 0.56→0.10. Finished 8000/8000 06:30 local.
+- verdict: lose — see the 2.2a decision note.
 
 #### s2-mod-layer — 2026-09-05 — Inspire 4090 (jobs `s2-mod-layer`)
 - config: identical to s2-mod-none except single-stream modulation = layer
-  (shared per-layer mod MLP).
-- swanlab: artflow-stage2 / s2-mod-layer
-- launched 2026-09-05 ~00:30 local; params 383,443,168 as pre-registered.
-- results/verdict: _pending_
+  (shared per-layer mod MLP); params 383,443,168 as pre-registered.
+- swanlab: artflow-stage2 / s2-mod-layer (run id `ql0c6u3viwa29pbimnasl`)
+- results: eval/loss@end 0.94373; per-t @end t015 0.88673 / t040 0.79460 /
+  t065 0.96124 / t090 1.13236; KID 0.01901±0.00363; 55.5 samples/s; peak mem
+  16.6 GiB. Finished 8000/8000 06:25 local.
+- verdict: **WINNER of 2.2a**.
+
+**2.2a decision (2026-09-05)**: eval/loss curve (per-1000 table in swanlab):
+layer leads early (Δ-0.016 @1K, -0.006 @2K — faster convergence, plausible:
+shared mod MLP gets 24× gradient signal), configs cross ~3.5-5K (none ahead
+≤+0.0003), then layer re-takes the lead at 7-8K (-0.0002/-0.0003, ≈ the 2.1
+noise floor of ±0.00025). Per-t: t040 (most informative mid-noise regime) is
+layer's — consistently better 5/5 probes from 3K on, growing -0.0002 →
+-0.0010 (~0.12%, above floor); t015/t065 tie late; t090 (high-noise tail) is
+none's by +0.0004 (< floor). KID agrees in direction (0.0190 vs 0.0195,
+within std but same sign). Layer also +0.6% samples/s and -8% peak mem (16.6
+vs 18.1 GiB). Not a slam dunk on the primary axis alone — but directionally
+consistent, t040 persistent, KID agreeing, and the pre-registered tie-break
+(literature prior mod→layer, PixArt/DiT-Air) points the same way → **mod=layer
+locked for every subsequent arm**. Scenario A shapes in the §5 table apply.
+Grid eyeball note: step-8000 grids are on swanlab for a human look (in-session
+image tooling was unavailable at verdict time; numerical proxy — both KIDs
+~0.019, inter-arm pixel diff ≈ 4% mean, no collapse signal — is consistent
+with two converged models).
 
 2.2a gate protocol: 256p eval/loss curve separation (noise floor from 2.1:
 Δ <0.025% at 6K was noise), KID end must agree in direction, grids get a human
 look. Tie → literature prior mod→layer (PixArt/DiT-Air). Winner's modulation
 feeds 2.2b/2.2c/2.2d param re-matching (mod=none fallback shapes pre-derived in
-§5) and 2.4.
+§5) and 2.4. — **RESOLVED: layer wins (2026-09-05).**
 
 ### Per-arm record template
 
