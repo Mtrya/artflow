@@ -453,6 +453,16 @@ Params verified 484,872,400 in logs. ETAs ~02:30 (probes), confirm scheduled
 after probe verdict. Muon step-time overhead recorded in the throughput
 table.
 
+**2.5 probe resolved (2026-09-05, probes done ~02:20): best Muon LR = 0.02.**
+At matched 3K steps (winner arch h1152 d24): eval/loss lr01 0.9720, **lr02
+0.9627**, lr04 1.0454 (too hot — diverged early, @900 steps already 1.97);
+KID@3K lr01 0.0322±0.0054, **lr02 0.0254±0.0051**, lr04 0.0743±0.0068.
+AdamW reference (s2-wide, same arch, no 3K KID): eval/loss interp ~0.990@3K →
+both lr01/lr02 already ahead of AdamW at 3K (lr02 by ~0.027). Muon
+step-time ~3.0-3.2 s/it vs AdamW 2.9 (overhead ≈ 3-10%, within the <15% bar).
+**Confirm launched 02:25: s2-muon-confirm (16K, MUON_LR=0.02) vs s2-wide's
+AdamW 16K (0.92134) — the 2.5 decision arm.**
+
 
 
 ### Per-arm record template
