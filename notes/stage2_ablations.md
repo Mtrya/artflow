@@ -213,9 +213,10 @@ train + probe/grid/ckpt overhead ≈ 3.5–4 h/arm. Recalibrated ledger: 2.1 ≈
 | (k28 baseline) | 0.96628 @4K (s2-mod-layer) | n/a @4K | **WINNER of 2.3a → exit k=28 kept** |
 | s2-mix-old | 0.94352 @8K | 0.01734±0.00367 | tie on eval/loss (0.015%); KID edge within std — world-leaning eval set; see 2.4 note |
 | s2-mix-new | 0.94366 @8K | 0.01848±0.00359 | tie; **kept** (art-forward intent; = s2-mod-layer twin Δ0.00007) |
-| s2-deep (all-single) | 0.93901 @8K (16K run in flight) | — (16K end) | **WINNER of 2.2d → all-single stream locked** |
+| s2-deep (all-single) | 0.93901 @8K; 0.92390 @16K | 0.01046±0.00356 @16K | 2.2d **WINNER** (all-single); 2.2b lose to wide |
 | s2-hybrid | 0.94251 @8K | 0.01694±0.00444 | lose (monotone gradient) |
 | s2-double | 0.94513 @8K | 0.01696±0.00411 | lose (monotone gradient) |
+| s2-wide | 0.92134 @16K | 0.00922±0.00324 | **WINNER of 2.2b → hero h1152 d24 all-single mod=layer (~485M)** |
 
 256p probe is a statistical tie (Δ0.0002, 0.025%; per-t grid also identical:
 t015 0.8935/0.8938, t040 0.8045/0.8047, t065 0.9735/0.9739, t090 1.13676/1.13676).
@@ -425,7 +426,20 @@ all-single KID comes at 16K end). Double-stream attention buys nothing at
 iso-param here; DiT-Air's single-stream-efficiency claim reproduced. 2.2d
 confirm = s2-deep's in-flight 16K run (winner shape h1024 d30 all-single —
 zero extra cost).
-2.2b verdict pending (s2-wide/s2-deep running, est. ~22:40).
+
+**2.2b resolved (2026-09-05, both 16K arms done ~23:05/23:20): WIDE WINS —
+hero width/depth = h1152 d24 all-single (~485M).** iso-param mod=layer 16K:
+eval/loss wide 0.92134 vs deep 0.92390 @16K (-0.0026, 0.28%), and wide leads at
+EVERY probe from 2K on (2K -0.0044, 4K -0.0027, 8K -0.0032, 12K -0.0025) —
+monotone, 8-15× the noise floor, no crossing. All per-t axes agree at 16K:
+t015 0.86447/0.86648, t040 0.77076/0.77398, t065 0.93066/0.93427, t090
+1.11947/1.12088 (t040/t065 gaps ≈ 0.003-0.004). KID@16K 0.00922±0.00324 (wide)
+vs 0.01046±0.00356 (deep) — direction agrees. Wider-and-shallower beats
+narrower-and-deeper at iso-param in this regime. **Stage-2 winner shape:
+h1152 d24 all-single mod=layer centered-grid RoPE exit k=28 (~485M)** — both
+16K confirm-grade runs done (s2-wide IS the confirm for its shape; s2-deep
+doubles as the 2.2d confirm). Remaining axes: 2.2c iso-FLOP scaling (s2-big
+h1152 d33 ~02:00, s2-small h1024 d25 ~09:00+) and 2.5 Muon.
 
 
 
