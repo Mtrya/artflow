@@ -154,6 +154,19 @@ Note: h1024 d25 at mod=layer (399.2M, 2.2c small) and at mod=none (477.9M,
 16 heads is invalid (head_dim 65 odd); heads stay 16 everywhere (head_dim
 h/16 = 64/72/…, always even → RoPE-valid).
 
+**Baseline reuse decisions (2026-09-05, paper trail for the scoreboard):**
+- 2.3a k=28 arm: s2-exit-k28 is NOT launched — the s2-mod-layer run (identical
+  config: h1024 d24 mod=layer, same mix/protocol, exit at last hidden state =
+  k=28 behavior) provides the k=28 trajectory at every step up to 8000. 2.3a
+  compares k=8/k=16 (new 4K arms) against s2-mod-layer's 4K/8K eval-loss marks.
+- 2.2d all-single screen: NOT launched separately — s2-deep (h1024 d30
+  mod=layer, 16K) IS the all-single schedule at the 2.2d target shape; its 8K
+  trajectory serves as the screen, and if deep also wins 2.2b its full 16K run
+  doubles as the 2.2d confirm. Only s2-hybrid (d2x8+s14) and s2-double (d2x15)
+  are new 8K screen arms.
+- 2.3a relocated from Andromeda to Inspire (see §5 note): screens may co-run on
+  Inspire; three k arms share platform/mix/protocol.
+
 Total (with all-double screen, without 2.3b): ≈ **570 GPU-h**; drops to ~505 if
 all-double is cut, ~475 if screens go to 6K. Over the 400 nominal — sanctioned by
 trough-hours semantics; revisit after the first arm recalibrates throughput.
