@@ -208,6 +208,9 @@ train + probe/grid/ckpt overhead ≈ 3.5–4 h/arm. Recalibrated ledger: 2.1 ≈
 | s2-rope-new | 0.95230 | 0.02294±0.00509 | ~55 (micro 8 post-restart) | **WINNER** (ladder tie → Qwen-Image prior) |
 | s2-mod-none | 0.94405 | 0.01949±0.00499 | 55.2 | lose (narrow; tie-break also → layer) |
 | s2-mod-layer | 0.94373 | 0.01901±0.00363 | 55.5 | **WINNER of 2.2a** → all later arms mod=layer |
+| s2-exit-k8 | 0.96764 @4K | 0.03566±0.00536 @4K | lose vs k28 baseline |
+| s2-exit-k16 | 0.96837 @4K | 0.03666±0.00533 @4K | lose vs k28 baseline |
+| (k28 baseline) | 0.96628 @4K (s2-mod-layer) | n/a @4K | **WINNER of 2.3a → exit k=28 kept** |
 
 256p probe is a statistical tie (Δ0.0002, 0.025%; per-t grid also identical:
 t015 0.8935/0.8938, t040 0.8045/0.8047, t065 0.9735/0.9739, t090 1.13676/1.13676).
@@ -362,7 +365,18 @@ EMA 0.999, batch 8×accum16, seed 42), stage-2 mix unless noted. Via
 
 Status at 09:37: all job_running (s2-mix-old was briefly creating). Params
 verified in logs (484,872,400 / 383,443,168 as pre-registered).
-Verdicts pending.
+
+**2.3a resolved (2026-09-05, exit arms done ~12:47): k=28 WINS — text-encoder
+exit stays at the last hidden state (no change).** At matched 4K steps:
+k28 (s2-mod-layer mark) 0.96628 vs k8 0.96764 vs k16 0.96837 — k28 better by
+0.14–0.22%, 4–7× the ±0.0003 config-noise floor; per-t agrees on the
+informative t040 axis (k28 0.81709 < k8 0.81989 < k16 0.82094) and t065;
+k8/k16 only edge k28 on the high-noise t090 tail. Mid-curve note: shallower
+exits converge faster to ~1.5K then fall behind — consistent with lower
+feature capacity. KID at 4K: k8 0.0357 vs k16 0.0367 (same-steps pair, k8
+edge) — NOT comparable to k28's 0.0190 @8K (step mismatch). No 2.3b confirm
+needed (separation clear). Grids on swanlab.
+Verdicts for 2.2b/2.4 pending (arms still running).
 
 
 
