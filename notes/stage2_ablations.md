@@ -345,6 +345,27 @@ look. Tie → literature prior mod→layer (PixArt/DiT-Air). Winner's modulation
 feeds 2.2b/2.2c/2.2d param re-matching (mod=none fallback shapes pre-derived in
 §5) and 2.4. — **RESOLVED: layer wins (2026-09-05).**
 
+### Night batch 2 (launched 2026-09-05 ~09:35 local, user: launch when cards free — no trough wait)
+
+All mod=layer (D11), centered-grid RoPE, protocol §1 defaults (warmup 500,
+EMA 0.999, batch 8×accum16, seed 42), stage-2 mix unless noted. Via
+`run_arm.sh` env launcher; job `night2_launch.sh`.
+
+- **s2-wide** — h1152 d24 (484.87M), 16K steps. swanlab run same name.
+- **s2-deep** — h1024 d30 (477.96M), 16K steps. Doubles as 2.2d all-single
+  screen/confirm (see baseline-reuse note in §5).
+- **s2-exit-k8 / s2-exit-k16** — h1024 d24 mod=layer (383.44M), 4K steps,
+  `--text_encoder_exit_layer 8/16`. k=28 baseline = s2-mod-layer trajectory.
+- **s2-mix-old / s2-mix-new** — h1024 d24 mod=layer (383.44M), 8K steps,
+  MIX=old (§4 old recipe) vs MIX=new (stage-2 mix; s2-mod-layer is the
+  same-config 8K reference for mix-new).
+
+Status at 09:37: all job_running (s2-mix-old was briefly creating). Params
+verified in logs (484,872,400 / 383,443,168 as pre-registered).
+Verdicts pending.
+
+
+
 ### Per-arm record template
 
 ```
