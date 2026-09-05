@@ -441,6 +441,18 @@ h1152 d24 all-single mod=layer centered-grid RoPE exit k=28 (~485M)** — both
 doubles as the 2.2d confirm). Remaining axes: 2.2c iso-FLOP scaling (s2-big
 h1152 d33 ~02:00, s2-small h1024 d25 ~09:00+) and 2.5 Muon.
 
+### 2.5 Muon LR probe (launched 2026-09-05 ~23:30, cards free)
+
+Three 3K-step probes at the 2.2 winner arch (h1152 d24 all-single mod=layer,
+484.87M): s2-muon-lr01 / s2-muon-lr02 / s2-muon-lr04 (MUON_LR 0.01/0.02/0.04,
+OPTIMIZER=muon). AdamW reference at matched 3K = s2-wide trajectory (same
+arch) — zero extra cost. Purpose: pick Muon's LR by eval-loss separation; then
+a 16K muon confirm at the best LR vs s2-wide's 16K (AdamW). Chunked
+orthogonalization is part of the arm definition (CMuon plateau avoidance).
+Params verified 484,872,400 in logs. ETAs ~02:30 (probes), confirm scheduled
+after probe verdict. Muon step-time overhead recorded in the throughput
+table.
+
 
 
 ### Per-arm record template
