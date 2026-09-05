@@ -393,7 +393,24 @@ human look, in-session image tooling unavailable). Verdict: mix choice is
 intent-driven, not metric-driven at this screen size; no reversal signal big
 enough to abandon the art-forward redesign → **keep the stage-2 (new) mix**.
 Hero corpus/mix re-derived empirically at stage 4 (4.1 scaling probe) anyway.
-Verdicts for 2.2b pending (s2-wide/s2-deep still running, est. ~21:00).
+
+### Night batch 3 (launched 2026-09-05 ~15:40, cards free — no trough wait)
+
+2.2c iso-FLOP pair + 2.2d stream screens. All mod=layer, same protocol/mix as
+batch 2. Independent of the 2.2b outcome (axis-decoupled, param-matched
+internally), so launched without waiting for s2-wide/s2-deep.
+
+- **s2-big** — h1152 d33 (664.26M), 16K steps.
+- **s2-small** — h1024 d25 (399.20M), 26,623 steps (iso-FLOP vs big: 16K ×
+  664.264/399.196).
+- **s2-hybrid** — h1024, d2x8+s14 (477.96M), 8K steps (stream screen).
+- **s2-double** — h1024, d2x15 (477.96M), 8K steps (stream screen).
+- 2.2d all-single screen/confirm = s2-deep's trajectory (same shape, reuse).
+
+Params verified in logs 15:39-15:41 (664,264,342 / 399,195,836 / 477,959,176
+×2). ETAs: screens ~21:15, s2-big ~02:00, s2-small ~09:00 (all 09-06).
+Verdicts pending.
+2.2b verdict pending (s2-wide/s2-deep running, est. ~21:00).
 
 
 
