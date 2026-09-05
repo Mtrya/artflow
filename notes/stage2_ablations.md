@@ -211,6 +211,8 @@ train + probe/grid/ckpt overhead ≈ 3.5–4 h/arm. Recalibrated ledger: 2.1 ≈
 | s2-exit-k8 | 0.96764 @4K | 0.03566±0.00536 @4K | lose vs k28 baseline |
 | s2-exit-k16 | 0.96837 @4K | 0.03666±0.00533 @4K | lose vs k28 baseline |
 | (k28 baseline) | 0.96628 @4K (s2-mod-layer) | n/a @4K | **WINNER of 2.3a → exit k=28 kept** |
+| s2-mix-old | 0.94352 @8K | 0.01734±0.00367 | tie on eval/loss (0.015%); KID edge within std — world-leaning eval set; see 2.4 note |
+| s2-mix-new | 0.94366 @8K | 0.01848±0.00359 | tie; **kept** (art-forward intent; = s2-mod-layer twin Δ0.00007) |
 
 256p probe is a statistical tie (Δ0.0002, 0.025%; per-t grid also identical:
 t015 0.8935/0.8938, t040 0.8045/0.8047, t065 0.9735/0.9739, t090 1.13676/1.13676).
@@ -376,7 +378,22 @@ exits converge faster to ~1.5K then fall behind — consistent with lower
 feature capacity. KID at 4K: k8 0.0357 vs k16 0.0367 (same-steps pair, k8
 edge) — NOT comparable to k28's 0.0190 @8K (step mismatch). No 2.3b confirm
 needed (separation clear). Grids on swanlab.
-Verdicts for 2.2b/2.4 pending (arms still running).
+
+**2.4 resolved (2026-09-05, mix arms done 15:25/15:36): statistical tie on
+eval-loss; art-forward stage-2 mix KEPT.** At 8K: mix-old 0.94352 vs mix-new
+0.94366 (Δ0.00014 = 0.015%, ~½ the noise floor; per-t all within ±0.0006,
+t065/t040 whisper-old, t015 whisper-new). KID 0.01734±0.00367 (old) vs
+0.01848±0.00359 (new) — old better by 0.0011, within std, direction consistent
+with the light-eval set being world-leaning (old mix = world .8 → samples hug
+that distribution). **Reproducibility check: s2-mix-new matches its
+same-config twin s2-mod-layer to Δ0.00007 @8K — protocol noise confirmed
+±0.0003-class.** Grid divergence is real (same seeds, mean pixel diff 20/255 —
+the mix shapes what the model draws; style-prompt panels on swanlab for a
+human look, in-session image tooling unavailable). Verdict: mix choice is
+intent-driven, not metric-driven at this screen size; no reversal signal big
+enough to abandon the art-forward redesign → **keep the stage-2 (new) mix**.
+Hero corpus/mix re-derived empirically at stage 4 (4.1 scaling probe) anyway.
+Verdicts for 2.2b pending (s2-wide/s2-deep still running, est. ~21:00).
 
 
 
