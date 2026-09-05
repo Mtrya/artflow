@@ -213,6 +213,9 @@ train + probe/grid/ckpt overhead ≈ 3.5–4 h/arm. Recalibrated ledger: 2.1 ≈
 | (k28 baseline) | 0.96628 @4K (s2-mod-layer) | n/a @4K | **WINNER of 2.3a → exit k=28 kept** |
 | s2-mix-old | 0.94352 @8K | 0.01734±0.00367 | tie on eval/loss (0.015%); KID edge within std — world-leaning eval set; see 2.4 note |
 | s2-mix-new | 0.94366 @8K | 0.01848±0.00359 | tie; **kept** (art-forward intent; = s2-mod-layer twin Δ0.00007) |
+| s2-deep (all-single) | 0.93901 @8K (16K run in flight) | — (16K end) | **WINNER of 2.2d → all-single stream locked** |
+| s2-hybrid | 0.94251 @8K | 0.01694±0.00444 | lose (monotone gradient) |
+| s2-double | 0.94513 @8K | 0.01696±0.00411 | lose (monotone gradient) |
 
 256p probe is a statistical tie (Δ0.0002, 0.025%; per-t grid also identical:
 t015 0.8935/0.8938, t040 0.8045/0.8047, t065 0.9735/0.9739, t090 1.13676/1.13676).
@@ -409,8 +412,20 @@ internally), so launched without waiting for s2-wide/s2-deep.
 
 Params verified in logs 15:39-15:41 (664,264,342 / 399,195,836 / 477,959,176
 ×2). ETAs: screens ~21:15, s2-big ~02:00, s2-small ~09:00 (all 09-06).
-Verdicts pending.
-2.2b verdict pending (s2-wide/s2-deep running, est. ~21:00).
+
+**2.2d resolved (2026-09-05, hybrid/double done 21:30/21:59): ALL-SINGLE
+WINS — stream schedule locked to pure single-stream (no double-stream
+blocks).** At matched 8K steps, iso-param ~478M mod=layer:
+eval/loss all-single (s2-deep) 0.93901 < hybrid 0.94251 < all-double 0.94513
+— a monotone 0.37%/0.65% gradient at 10-20× the noise floor, present at every
+probe ≥4K; informative axes agree: t040 0.78917/0.79359/0.79657, t065
+0.95259/0.96054/0.96498. Only t015 (early-t) slightly favors hybrid
+(0.88405 vs 0.88512/0.88535). KID (hybrid 0.01694 vs double 0.01696 — equal;
+all-single KID comes at 16K end). Double-stream attention buys nothing at
+iso-param here; DiT-Air's single-stream-efficiency claim reproduced. 2.2d
+confirm = s2-deep's in-flight 16K run (winner shape h1024 d30 all-single —
+zero extra cost).
+2.2b verdict pending (s2-wide/s2-deep running, est. ~22:40).
 
 
 
