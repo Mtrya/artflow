@@ -217,6 +217,8 @@ train + probe/grid/ckpt overhead ≈ 3.5–4 h/arm. Recalibrated ledger: 2.1 ≈
 | s2-hybrid | 0.94251 @8K | 0.01694±0.00444 | lose (monotone gradient) |
 | s2-double | 0.94513 @8K | 0.01696±0.00411 | lose (monotone gradient) |
 | s2-wide | 0.92134 @16K | 0.00922±0.00324 | **WINNER of 2.2b → hero h1152 d24 all-single mod=layer (~485M)** |
+| s2-big | 0.92082 @16K | 0.01069±0.00341 | lose at iso-FLOP (see 2.2c note) |
+| s2-small | 0.91561 @26.6K | 0.00846±0.00303 | **WINNER of 2.2c → stay at ~485M; 664M not justified at this compute** |
 
 256p probe is a statistical tie (Δ0.0002, 0.025%; per-t grid also identical:
 t015 0.8935/0.8938, t040 0.8045/0.8047, t065 0.9735/0.9739, t090 1.13676/1.13676).
@@ -462,6 +464,19 @@ both lr01/lr02 already ahead of AdamW at 3K (lr02 by ~0.027). Muon
 step-time ~3.0-3.2 s/it vs AdamW 2.9 (overhead ≈ 3-10%, within the <15% bar).
 **Confirm launched 02:25: s2-muon-confirm (16K, MUON_LR=0.02) vs s2-wide's
 AdamW 16K (0.92134) — the 2.5 decision arm.**
+
+**2.2c resolved (2026-09-06, big done ~09:05, small done ~11:25): at iso-FLOP
+the ~400M model beats the ~664M model — stay at the 485M winner for stages
+3-4.** iso-FLOP pair (664.26M×16K ≈ 399.20M×26.6K): big leads at every
+matched step (4K 0.96039 vs 0.96501 … 16K 0.92082 vs 0.92269, gap narrowing
+0.0046→0.0019), but its endpoint loses to small's extended run: big 0.92082
+vs small 0.91561 @26.6K (-0.0052, 0.57%). KID agrees: big 0.01069±0.00341
+vs small 0.00846±0.00303. Per-t at endpoints all favor small (t040 0.76517
+vs 0.77039, t065 0.92303 vs 0.92965). Read: at this compute envelope extra
+steps on a smaller model beat extra width — the 664M shape needs the stage-4
+scaling probe to earn its keep; hero size stays 485M (D4 resolved to the
+lower-middle of 0.4-0.7B at stage-2-available compute). Note this is a
+256p-screen-scale result; 4.1/4.3 refine the final size×steps point.
 
 
 
