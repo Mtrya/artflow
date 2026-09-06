@@ -225,10 +225,20 @@ actual). Stage 3/4 re-derive: size×steps point (4.1/4.3), Muon LR schedule at
 640p+, and the resolution curriculum — hero intent (art-forward) confirmed at
 every gate.
 
-## Stage 3 — Efficiency optimization (≤80 4090-h)
+## Stage 3 — Infra & efficiency on the decided architecture (≤80 4090-h nominal)
 
-**Goal**: maximize samples/s before spending real compute. Gate: loss curves on a fixed
-2K-step run match pre-optimization within noise (no numerics change).
+**Scope (user, 2026-09-06)**: Stage 2 decided the base model ONLY; Stage 3 works
+on that fixed architecture (h1152 d24 all-single mod=layer, ~485M) and
+delivers infra: multi-resolution/multi-bucket training switching for the
+256p→640p→896p curriculum (incl. bucket-shape switching between stages and
+static-shape compile per bucket), and — if the 2.3a-followup says an earlier
+exit ties k=28 — a **true early exit** for the frozen text encoder (stop the
+forward at layer k; current code slices hidden_states[k] after a full forward
+and saves nothing). Also possible in-stage: hero-size sensitivity (等比增大
+the confirmed architecture) if the budget policy (priority-1 idle fill) allows.
+
+**Goal**: maximize samples/s before spending real compute. Gate: loss curves on a
+fixed 2K-step run match pre-optimization within noise (no numerics change).
 
 4090-specific context: 48GB VRAM is roomy for ≤0.7B + online Qwen3-0.6B; **no NVLink** —
 gradients all-reduce over PCIe, so amortize with grad accum (sync once per effective
@@ -241,17 +251,26 @@ batch) and DDP bucket overlap; single 8-GPU node, no multi-node.
 - Grad-accum tuning: fewer, larger micro-batches; measure sync overhead per accum step.
 - Dataloader: benchmark latent-read throughput from shared disk; pre-shuffled shards,
   `num_workers`, pin_memory, prefetch. IO must never starve the GPUs.
-- Online text encoding: batch/compile the frozen Qwen3; the stage-2 exit layer already
-  cuts 40–70% of encoder FLOPs.
+- Online text encoding: batch/compile the frozen Qwen3; **true early exit** (stop
+  at layer k) if the k20/24 follow-up ties k=28 — encoder savings ≈14% (k=24) of
+  a ~10–20% step-time share; verify against the slice-only baseline.
 - Async checkpoint save; EMA off the critical path.
 - VAE precompute throughput (batched GPU encode) for stage-4/5 precomputes.
 
 **Exit**: throughput targets hit — ≥15–20 samples/s/GPU @256p, ≥4–6 @640p (post-optimization
 measured values become the stage-5 sizing input); regression check passed.
 
-## Stage 4 — Scaling ladder, small scale only (≤450 4090-h)
+## Stage 4 — Scaling-law probes on the stage-3 infra (≤450 4090-h nominal)
 
-**Goal**: derive the hero recipe empirically instead of guessing. All at chosen arch/config.
+**Goal (user, 2026-09-06)**: with the budget relaxed (priority-1 idle fill),
+fit the scaling law empirically and produce the COMPLETE training recipe —
+the hero can scale up from the base model. Four axes:
+- **Model size**: 等比 scaling of the confirmed architecture (same
+  h/d/stream/mod structure, width/depth up) — e.g. 485M → ~0.7B candidates;
+- **Batch size** and **training steps** (compute axes);
+- **Data size** is an INDEPENDENT axis (not coupled to compute).
+Scaling one axis alone is suboptimal; Stage 4 determines the ratio across
+axes for the actual budget envelope. Small-card probes only.
 
 - 4.1 **Data-scaling probe** @256p: corpus arms 50K / 200K / 500K, fixed steps →
   KID + eval-loss slope → data-bound vs step-bound verdict → corpus size (D3).
@@ -260,8 +279,11 @@ measured values become the stage-5 sizing input); regression check passed.
   already showed zero-shot 2.5× sampling transfer fails hard for both RoPE variants —
   progressive fine-tuning is the only path).
 - 4.3 **Steps/quality curve** at chosen config → place the knee → steps per stage.
-- 4.4 Hero recipe card: corpus, mixture, stage steps, LR schedule, exit layer, arch —
-  written to `notes/hero_recipe.md`.
+- 4.4 **Size/batch/steps grid** (small iso-compute arms around the 485M winner,
+  e.g. 485M@32K vs 0.6-0.7B@~iso-compute, batch 128 vs 256) → scaling-law slopes
+  → recommended hero size×batch×steps for the stage-5 envelope.
+- 4.5 Hero recipe card: corpus, mixture, stage steps, LR schedule, exit layer,
+  arch/size, batch — written to `notes/hero_recipe.md`.
 
 **Exit**: recipe card committed; every number in it traceable to a probe arm.
 
