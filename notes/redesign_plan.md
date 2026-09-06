@@ -349,15 +349,15 @@ before/after grids on the eval suite.
 Inspire budget is about **not crowding out other users**, not an absolute hours
 cap — scheduling GPU work into off-peak (late-night) troughs is explicitly
 sanctioned, and exceeding the nominal ledger (e.g. 5K h) is acceptable if it
-runs in troughs. **2026-09-06 extension**: any job may also run at
-`--priority 1` (LOW, preemptible) whenever cards are idle — "卡闲着也是闲着"
-— since it can be stopped anytime; this lifts the effective budget for
-hero-scale decisions (bigger model / more steps) that preemptible-idle
-scheduling can absorb. Verify preemption resumes cleanly from ckpt before
-relying on it for multi-day runs (resume path already proven by 2.1 restarts).
+runs in troughs. **2026-09-06 priority policy (user)**: stage 2–4 experiments
+(ablation arms, screens, probes, precomputes) run at **medium-high priority**
+(`--priority 4`, platform maps to HIGH/NORMAL); **only the stage-5 hero run**
+(the long multi-day training) sits at **LOW (priority 1, preemptible)** — idle
+cards fill it whenever free and it can be stopped anytime. Preemption/resume
+path proven by the 2.1 restarts and the k20/24 16:12 auto-restart.
 Conversely, **avoid late-night runs on Andromeda** (shared desktop). Practical
-rule: long Inspire jobs (stage 2 fair arms, stage 5 hero) are submitted to run
-overnight or at priority 1; Andromeda arms run daytime/evening.
+rule: long Inspire jobs (stage 5 hero) run at priority 1; Andromeda arms run
+daytime/evening.
 
 ## Open risks
 
