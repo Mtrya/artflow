@@ -323,12 +323,19 @@ before/after grids on the eval suite.
 | 6 NFT | 300–500 | sampling-bound |
 | **Total** | **≈2.9–3.7K 4090-h** | ≈1.0–1.2K pts @0.33 pt/h |
 
-**Budget semantics (2026-08-26, user clarification)**: the Inspire budget is about
-**not crowding out other users**, not an absolute hours cap — scheduling GPU work into
-off-peak (late-night) troughs is explicitly sanctioned, and exceeding the nominal ledger
-(e.g. 5K h) is acceptable if it runs in troughs. Conversely, **avoid late-night runs on
-Andromeda** (shared desktop). Practical rule: long Inspire jobs (stage 2 fair arms,
-stage 5 hero) are submitted to run overnight; Andromeda arms run daytime/evening.
+**Budget semantics (2026-08-26, user clarification; extended 2026-09-06)**: the
+Inspire budget is about **not crowding out other users**, not an absolute hours
+cap — scheduling GPU work into off-peak (late-night) troughs is explicitly
+sanctioned, and exceeding the nominal ledger (e.g. 5K h) is acceptable if it
+runs in troughs. **2026-09-06 extension**: any job may also run at
+`--priority 1` (LOW, preemptible) whenever cards are idle — "卡闲着也是闲着"
+— since it can be stopped anytime; this lifts the effective budget for
+hero-scale decisions (bigger model / more steps) that preemptible-idle
+scheduling can absorb. Verify preemption resumes cleanly from ckpt before
+relying on it for multi-day runs (resume path already proven by 2.1 restarts).
+Conversely, **avoid late-night runs on Andromeda** (shared desktop). Practical
+rule: long Inspire jobs (stage 2 fair arms, stage 5 hero) are submitted to run
+overnight or at priority 1; Andromeda arms run daytime/evening.
 
 ## Open risks
 

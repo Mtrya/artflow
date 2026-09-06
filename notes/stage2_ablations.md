@@ -493,9 +493,22 @@ lower-middle of 0.4-0.7B at stage-2-available compute). Note this is a
 
 
 
+**2.3a-followup (launched 2026-09-06 ~08:15, user request): exit k=20 and k=24
+at the winner arch** — h1152 d24 mod=layer, 16K steps AdamW, priority 1
+(LOW/preemptible). k=28 baseline = s2-wide (same arch/protocol, 0.92134@16K).
+Purpose: map the plateau near the top (2.3a only sampled {8,16,28} at the old
+screen shape). Runs at the hero arch so the result is directly decision-relevant.
+Note: current `encode_text` slices `hidden_states[k]` after a FULL encoder
+forward — no compute saved by k<28 in this code path; features are identical
+either way so the quality comparison is valid. If k20/k24 tie k28, an
+early-exit encoder forward (stop at layer k) can turn the tie into a ~14%
+text-encode savings — implementation deferred to the stage-3 efficiency pass.
+Job names s2-exit-k20 / s2-exit-k24; ETAs ~21:30; verdict vs s2-wide@16K.
+
 ### Per-arm record template
 
 ```
+### s2-<axis>-<variant> — <date> — <platform>```
 ### s2-<axis>-<variant> — <date> — <platform>
 - config: (h/d/mod/stream/exit/optimizer/LR/steps/batch/EMA)
 - swanlab: <run url or name>
