@@ -219,6 +219,7 @@ train + probe/grid/ckpt overhead ≈ 3.5–4 h/arm. Recalibrated ledger: 2.1 ≈
 | s2-wide | 0.92134 @16K | 0.00922±0.00324 | **WINNER of 2.2b → hero h1152 d24 all-single mod=layer (~485M)** |
 | s2-big | 0.92082 @16K | 0.01069±0.00341 | lose at iso-FLOP (see 2.2c note) |
 | s2-small | 0.91561 @26.6K | 0.00846±0.00303 | **WINNER of 2.2c → stay at ~485M; 664M not justified at this compute** |
+| s2-muon-confirm | 0.91127 @16K | 0.00699±0.00325 | **WINNER of 2.5 → hero optimizer = Muon LR 0.02** (AdamW ref: 0.92134 / 0.00922±0.00324) |
 
 256p probe is a statistical tie (Δ0.0002, 0.025%; per-t grid also identical:
 t015 0.8935/0.8938, t040 0.8045/0.8047, t065 0.9735/0.9739, t090 1.13676/1.13676).
@@ -464,6 +465,18 @@ both lr01/lr02 already ahead of AdamW at 3K (lr02 by ~0.027). Muon
 step-time ~3.0-3.2 s/it vs AdamW 2.9 (overhead ≈ 3-10%, within the <15% bar).
 **Confirm launched 02:25: s2-muon-confirm (16K, MUON_LR=0.02) vs s2-wide's
 AdamW 16K (0.92134) — the 2.5 decision arm.**
+
+**2.5 RESOLVED (2026-09-06, confirm done ~16:10): MUON WINS — hero optimizer
+= chunked Muon, LR 0.02.** At matched 16K (winner arch): eval/loss muon
+0.91127 vs AdamW 0.92134 (-0.0101, 1.1%, ~35× the noise floor); curve shape:
+AdamW leads through 4K (muon -0.010@4K), muon overtakes by 8K (-0.0005),
+then pulls away monotonically (12K -0.0077, 16K -0.0101) — the CMuon-style
+late-stage gain, now confirmed at 16K not just 3K. All per-t axes agree @16K:
+t015 -0.0092, t040 -0.0112, t065 -0.0140, t090 -0.0059. KID 0.00699±0.00325
+vs 0.00922±0.00324 (-24% relative). Step-time overhead +10% (3.2 vs 2.9 s/it)
+— inside the pre-registered <15% bar. **Decision locked: Muon
+(chunked orthogonalization) @ LR 0.02 for the hero recipe; stage-4/5 LR
+schedule re-measured with Muon per redesign_plan §2.5 note.**
 
 **2.2c resolved (2026-09-06, big done ~09:05, small done ~11:25): at iso-FLOP
 the ~400M model beats the ~664M model — stay at the 485M winner for stages

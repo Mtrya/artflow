@@ -19,7 +19,7 @@ plus `notes/dataset_plan.md` (data-source detail).
 | D1 | License | Research-only OK (WikiArt, ArtBench-10, FFHQ unlocked). Per-sample `license` field; NC data in separate mix entries so a clean variant stays one mix-string away |
 | D2 | Anatomy data | Photos + paintings both; ~50/50 face vs full-body |
 | D3 | Corpus size | Set empirically by stage-4 scaling probe |
-| D4 | Params | 0.4–0.7B; shape by fair ablation (iso-param + iso-FLOP axes) |
+| D4 | Params | **485M: h1152×d24** — 2.2b (wide > deep at iso-param, every probe), 2.2c (iso-FLOP: ~400M > ~664M → 664M deferred to stage-4 probe), 2.2d (all-single) — all resolved 2026-09-05/06, records in stage2_ablations.md |
 | D5 | Text encoder | Qwen3-0.6B, frozen, online; add early-exit-layer knob, ablate k ∈ {8,16,28} |
 | D6 | Resolution curriculum | 256p → 640p → 896p → optional 1024p polish; variable aspect at every stage |
 | D7 | RoPE | **Centered image grid + text pinned to fixed diagonal** (2.1 resolved 2026-09-05: 256p eval/loss+KID tie, 640p transfer tie — both arms collapse identically at 2.5× — 480p/384p/320p ladder tie → final tie-break on Qwen-Image adoption prior). Zero-shot ≥1.875× transfer fails for both variants → progressive staging mandatory |
@@ -27,6 +27,7 @@ plus `notes/dataset_plan.md` (data-source detail).
 | D9 | Compute class | **RTX 4090 48GB on Inspire** (single 8-GPU node max; no NVLink → DDP over PCIe). Small ablations offloaded to **Andromeda** (SSH-reachable, RTX 4060 Ti ≈ ¼ 4090 throughput) |
 | D10 | VLM captioning | **Via API** (Qwen-VL-class), not self-hosted — caption cost is money + rate limits, not GPU-hours. No GPU-with-internet workspace needed |
 | D11 | Modulation | **Shared per-layer modulation MLP (`mod=layer`)** — 2.2a resolved 2026-09-05: layer wins eval/loss@end (0.9437 vs 0.9441) with a persistent t040 advantage (5/5 probes from 3K, -0.0002→-0.0010), KID agrees (0.0190 vs 0.0195), +0.6% faster, -8% peak mem; tie-break prior (PixArt/DiT-Air) points the same way. All stage-2+ arms use it |
+| D12 | Optimizer | **Muon (chunked orthogonalization), LR 0.02** — 2.5 resolved 2026-09-06: 16K confirm muon 0.91127 vs AdamW 0.92134 eval/loss (-1.1%), KID 0.00699 vs 0.00922, +10% step time (<15% bar); AdamW leads early, muon overtakes by 8K and pulls away (CMuon-style late gain) |
 
 ## Design dimension ledger (2026-09-04, agreed with user)
 
@@ -198,6 +199,31 @@ telemetry spec, budget roll, and result records live in `notes/stage2_ablations.
 
 **Exit**: decision memo — arch config (h/d, stream schedule, modulation), exit layer,
 optimizer + LR, RoPE scheme — plus throughput table.
+
+### Stage-2 decision memo (2026-09-06, all arms done — records in stage2_ablations.md)
+
+**Hero recipe (256p stage-2 winner, ~485M):**
+
+| Dimension | Winner | Evidence |
+|---|---|---|
+| RoPE | centered-grid (image), text fixed diagonal | 2.1: tie everywhere → Qwen-Image prior (user rule) |
+| Modulation | mod=layer (shared per-layer MLP) | 2.2a: eval/loss + t040 5/5 + KID + speed/mem |
+| Width×depth | h1152 × d24 | 2.2b: wide > deep at every probe, 0.28% @16K, KID agrees |
+| Stream | all-single (no double-stream blocks) | 2.2d: monotone gradient 0.37%/0.65% @8K vs hybrid/all-double |
+| Size | ~485M | 2.2c: iso-FLOP ~400M > ~664M → 664M deferred to stage-4 probe |
+| Text exit | k=28 (last hidden state) | 2.3a: k28 < k8 < k16 at matched 4K |
+| Mix | stage-2 (art-forward) mix | 2.4: tie on eval-loss; kept per intent |
+| Optimizer | Muon (chunked NS), LR 0.02 | 2.5: 16K confirm -1.1% eval/loss, -24% KID, +10% time |
+| Throughput | ~2.9 s/it AdamW / ~3.2 s/it Muon @ batch 128, 1×4090 (~55 samples/s) | arms' telemetry |
+
+Fixed protocol for the winner: fused conditioning, qkv_bias, gated FFN mlp_ratio
+2.67, rectified flow logit-normal(0,1) shift=1 @256p, batch 128, seed 42, EMA
+0.999 (16K runs), curriculum 0→1, caption dropout 0.1, warmup 500.
+Stage-2 GPU-h total ≈ 2.1(8) + 2.2a(12) + batch2(2×11.5+2×3+2×6) + batch3
+(2×13+2×4.8) + 2.5(3×1.5+16) ≈ **130 GPU-h** (of 400 budget; trough/user-policy
+actual). Stage 3/4 re-derive: size×steps point (4.1/4.3), Muon LR schedule at
+640p+, and the resolution curriculum — hero intent (art-forward) confirmed at
+every gate.
 
 ## Stage 3 — Efficiency optimization (≤80 4090-h)
 
