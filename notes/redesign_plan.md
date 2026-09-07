@@ -19,8 +19,8 @@ plus `notes/dataset_plan.md` (data-source detail).
 | D1 | License | Research-only OK (WikiArt, ArtBench-10, FFHQ unlocked). Per-sample `license` field; NC data in separate mix entries so a clean variant stays one mix-string away |
 | D2 | Anatomy data | Photos + paintings both; ~50/50 face vs full-body |
 | D3 | Corpus size | Set empirically by stage-4 scaling probe |
-| D4 | Params | **485M: h1152×d24** — 2.2b (wide > deep at iso-param, every probe), 2.2c (iso-FLOP: ~400M > ~664M → 664M deferred to stage-4 probe), 2.2d (all-single) — all resolved 2026-09-05/06, records in stage2_ablations.md |
-| D5 | Text encoder | Qwen3-0.6B, frozen, online; add early-exit-layer knob, ablate k ∈ {8,16,28} |
+| D4 | Params | **485M: h1152×d24** — 2.2b (wide > deep at iso-param, every probe), 2.2c (iso-FLOP: ~400M > ~664M → 664M deferred to stage-4 probe), 2.2d (all-single) — all resolved 2026-09-05/06 |
+| D5 | Text encoder | Qwen3-0.6B, frozen, online; early-exit layer ablated k ∈ {8,16,28} + follow-up {20,24} → **k=20 (user verdict 2026-09-07**, 2.3a-followup) |
 | D6 | Resolution curriculum | 256p → 640p → 896p → optional 1024p polish; variable aspect at every stage |
 | D7 | RoPE | **Centered image grid + text pinned to fixed diagonal** (2.1 resolved 2026-09-05: 256p eval/loss+KID tie, 640p transfer tie — both arms collapse identically at 2.5× — 480p/384p/320p ladder tie → final tie-break on Qwen-Image adoption prior). Zero-shot ≥1.875× transfer fails for both variants → progressive staging mandatory |
 | D8 | Inspire home | Project 自动化科研 |
@@ -150,8 +150,8 @@ the recipe (and thus the exact bucket sets) is known.
 **Goal**: pick architecture (depth/width, modulation, stream schedule), text-encoder
 exit layer, optimizer, and validate the RoPE fix — cheaply, fairly. Fixed protocol per
 design-dimension ledger §C. **Only compare arms run on the same platform** (Andromeda ≠
-Inspire hardware; cross-platform comparisons are qualitative only). Per-arm configs,
-telemetry spec, budget roll, and result records live in `notes/stage2_ablations.md`.
+Inspire hardware; cross-platform comparisons are qualitative only). All per-arm results
+are consolidated into the decision memo below (raw working record archived 2026-09-07).
 
 - Andromeda (4060 Ti; arms ≤15K steps, batch ≤64 via accum — it runs ~¼ 4090 speed):
   - 2.1 **RoPE fix smoke + A/B** (D7): new centered-grid/fixed-text-diagonal RoPE trains
@@ -161,8 +161,8 @@ telemetry spec, budget roll, and result records live in `notes/stage2_ablations.
     10K-step screen on loss-curve separation. Runs **first** — its winner feeds
     2.2b–2.2d and fixes the param matching there. (Split out from the old 2.2a, which
     varied h, d, and mod simultaneously and could not attribute the delta.)
-    — **RESOLVED 2026-09-05: mod=layer wins** (D11; records + curves in
-    stage2_ablations.md). Scenario-A shapes in §5's shape table are active.
+    — **RESOLVED 2026-09-05: mod=layer wins** (D11). Scenario-A shapes in §5's shape
+    table are active.
   - 2.3a **Text-encoder early exit, qualitative** (D5): `--text_encoder_exit_layer`
     (`output_hidden_states`, one-line change in `encode_text.py`); k ∈ {8,16,28} short
     runs, eval-loss separation check.
@@ -200,7 +200,7 @@ telemetry spec, budget roll, and result records live in `notes/stage2_ablations.
 **Exit**: decision memo — arch config (h/d, stream schedule, modulation), exit layer,
 optimizer + LR, RoPE scheme — plus throughput table.
 
-### Stage-2 decision memo (2026-09-06, all arms done — records in stage2_ablations.md)
+### Stage-2 decision memo (2026-09-07, all arms done — working record archived)
 
 **Hero recipe (256p stage-2 winner, ~485M):**
 
@@ -211,7 +211,7 @@ optimizer + LR, RoPE scheme — plus throughput table.
 | Width×depth | h1152 × d24 | 2.2b: wide > deep at every probe, 0.28% @16K, KID agrees |
 | Stream | all-single (no double-stream blocks) | 2.2d: monotone gradient 0.37%/0.65% @8K vs hybrid/all-double |
 | Size | ~485M | 2.2c: iso-FLOP ~400M > ~664M → 664M deferred to stage-4 probe |
-| Text exit | k=28 (last hidden state) | 2.3a: k28 < k8 < k16 at matched 4K |
+| Text exit | **k=20** | 2.3a: k28 < k8 < k16 at matched 4K; follow-up (2.3a-followup, 16K): k20 loss 0.92160 vs k28 0.92134 (Δ0.00026, tie) but **KID 0.00892 vs 0.00922 (k20 best of all arms)**; user visual verdict on portrait/face grids (11K + final): k20 wins on facial structure → hero exit = 20 |
 | Mix | stage-2 (art-forward) mix | 2.4: tie on eval-loss; kept per intent |
 | Optimizer | Muon (chunked NS), LR 0.02 | 2.5: 16K confirm -1.1% eval/loss, -24% KID, +10% time |
 | Throughput | ~2.9 s/it AdamW / ~3.2 s/it Muon @ batch 128, 1×4090 (~55 samples/s) | arms' telemetry |
@@ -225,17 +225,39 @@ actual). Stage 3/4 re-derive: size×steps point (4.1/4.3), Muon LR schedule at
 640p+, and the resolution curriculum — hero intent (art-forward) confirmed at
 every gate.
 
+**2.3a-followup closing (2026-09-07, exit k ∈ {20,24} at hero arch, 16K AdamW,
+resumed from ckpt-6000; user verdict):**
+
+| metric @16K | k20 | k24 | k28 (s2-wide) |
+|---|---|---|---|
+| eval/loss | 0.92160 | 0.92363 | **0.92134** |
+| KID | **0.00892±0.00328** | 0.00917±0.00337 | 0.00922±0.00324 |
+
+k20 vs k28 is a statistical tie on loss (Δ +0.00026) with KID favoring k20
+(−0.00030, best of all three arms); k24 trails loss at every per-step bucket
+(+0.0012~+0.0039) with KID a wash. **User verdict (2026-09-07): k20 wins** —
+manual grid inspection (step 11000 and final) found k20 clearly best on
+facial structure in close-up portraits (e.g. elderly-man close-up: k24/k28
+draw a single eye + oversized nose while k20 renders both eyes/nose/mouth;
+baroque noblewoman k20=k24>k28; 少女侧脸特写 k20≈k28>k24), a quality axis
+eval-loss/KID under-weight. Because slicing `hidden_states[k]` after a full
+forward is bit-identical to stopping the frozen encoder forward at layer k,
+these results validate a **true early exit at k=20** with zero feature change:
+skips layers 21–28 → ≈29% of the text-encoder forward compute saved. Stage 3
+implements it; hero recipe exit layer = 20.
+
 ## Stage 3 — Infra & efficiency on the decided architecture (≤80 4090-h nominal)
 
 **Scope (user, 2026-09-06)**: Stage 2 decided the base model ONLY; Stage 3 works
 on that fixed architecture (h1152 d24 all-single mod=layer, ~485M) and
 delivers infra: multi-resolution/multi-bucket training switching for the
 256p→640p→896p curriculum (incl. bucket-shape switching between stages and
-static-shape compile per bucket), and — if the 2.3a-followup says an earlier
-exit ties k=28 — a **true early exit** for the frozen text encoder (stop the
-forward at layer k; current code slices hidden_states[k] after a full forward
-and saves nothing). Also possible in-stage: hero-size sensitivity (等比增大
-the confirmed architecture) if the budget policy (priority-1 idle fill) allows.
+static-shape compile per bucket), and a **true early exit** for the frozen text
+encoder — the k20 follow-up won (user verdict 2026-09-07, see memo), so the
+forward must stop at layer 20 instead of slicing after a full forward (current
+code computes all 28 layers and saves nothing). Also possible in-stage:
+hero-size sensitivity (等比增大 the confirmed architecture) if the budget
+policy (priority-1 idle fill) allows.
 
 **Goal**: maximize samples/s before spending real compute. Gate: loss curves on a
 fixed 2K-step run match pre-optimization within noise (no numerics change).
@@ -251,9 +273,10 @@ batch) and DDP bucket overlap; single 8-GPU node, no multi-node.
 - Grad-accum tuning: fewer, larger micro-batches; measure sync overhead per accum step.
 - Dataloader: benchmark latent-read throughput from shared disk; pre-shuffled shards,
   `num_workers`, pin_memory, prefetch. IO must never starve the GPUs.
-- Online text encoding: batch/compile the frozen Qwen3; **true early exit** (stop
-  at layer k) if the k20/24 follow-up ties k=28 — encoder savings ≈14% (k=24) of
-  a ~10–20% step-time share; verify against the slice-only baseline.
+- Online text encoding: batch/compile the frozen Qwen3; **true early exit at
+  layer 20** (decided by the k20 verdict — stop the forward, don't slice):
+  skips 8 of 28 layers → ≈29% of a ~10–20% step-time share saved; verify
+  against the slice-only baseline (features are bit-identical).
 - Async checkpoint save; EMA off the critical path.
 - VAE precompute throughput (batched GPU encode) for stage-4/5 precomputes.
 
@@ -365,7 +388,10 @@ daytime/evening.
   320p → centered-grid RoPE adopted on the Qwen-Image prior. Zero-shot resolution
   extrapolation fails from 1.875× up regardless of variant → progressive fine-tuning
   is the only path to 640p/896p.
-- Early-exit text features unvalidated → stage-2.3 decides; fallback k=28.
+- ~~Early-exit text features unvalidated~~ Resolved (2.3a-followup, 2026-09-07):
+  k20 chosen — metrics tie k28 with best KID, user visual verdict wins on
+  portrait facial structure; early exit at layer 20 is feature-identical to the
+  validated slice. Stage 3 must implement the true early exit (stop at layer 20).
 - Muon outcome propagates: if 2.5 picks Muon, the stage-4 steps/quality knee and the
   stage-5 LR schedule must be measured with Muon — no AdamW carryover. If chunking is
   skipped the arm tests a known-bad configuration (CMuon plateau), so chunked

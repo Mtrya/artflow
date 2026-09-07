@@ -3,7 +3,7 @@
 # Idempotent per-source: skip if output dir already has dataset_info.json.
 # Usage: bash scripts/precompute_256p.sh [source ...]   (default: all + light_eval)
 set -u
-W=/inspire/qb-ilm/project/cq-scientific-cooperation-zone/ky26021/artflow
+W=${ARTFLOW_ROOT:?Set ARTFLOW_ROOT to the shared-workspace root used on the cluster}
 REPO=$W/repo
 MANI=$W/data/meta/precompute
 OUT=$W/precomputed_dataset
