@@ -38,6 +38,8 @@ from ..dataset.sampler import (
     row_length_collate_fn,
     pad_text_to_hi,
 )
+from ..dataset.captions import CaptionPolicy
+from .caption_telemetry import CaptionTelemetry
 from ..dataset.mix import parse_dataset_mix, get_dataset_weights
 from ..utils.encode_text import encode_text
 from ..utils.vae_codec import get_vae_stats
@@ -554,6 +556,14 @@ def main():
             f"{metadata.num_captions} caption lengths"
         )
     row_dataset = RowDescriptorDataset(entry_datasets, entry_metadata)
+    caption_policy = CaptionPolicy(        kind=args.caption_policy,
+        beta_start=args.caption_beta_start,
+        beta_end=args.caption_beta_end,
+        schedule=args.caption_schedule,
+        early_at=args.caption_early_at,
+        short_reserve=args.caption_short_reserve,
+        short_threshold=args.caption_short_threshold,
+    )
     sampler = RowLengthQueueBatchSampler(
         metadata=entry_metadata,
         bucket_plan=bucket_plan,
@@ -563,6 +573,7 @@ def main():
         shuffle=True,
         seed=args.seed + accelerator.process_index,
         initial_stage=args.curriculum_start,
+        caption_policy=caption_policy,
     )
     bucket_desc = "; ".join(
         f"res={resolution_id}:" + ",".join(
@@ -572,6 +583,10 @@ def main():
         for resolution_id, buckets in sorted(bucket_plan.by_resolution.items())
     )
     accelerator.print(f"  Length-bucketed sampler plan: {bucket_desc}")
+    caption_telemetry = CaptionTelemetry(
+        short_threshold=caption_policy.short_threshold,
+        log_every=args.telemetry_log_interval,
+    )
     dataloader = DataLoader(
         row_dataset,
         batch_sampler=sampler,
@@ -764,7 +779,11 @@ def main():
             for i, drop in enumerate(drop_mask.tolist()):
                 if drop:
                     selected[i] = ""
-        return selected
+        else:
+            drop_mask = torch.zeros(len(selected), dtype=torch.bool)
+        # The mask is returned rather than recomputed so the telemetry reports
+        # the dropout that actually happened instead of drawing a second one.
+        return selected, drop_mask.tolist()
 
     def prepare_latents(batch):
         latents = batch["latents"]
@@ -889,7 +908,11 @@ def main():
             if args.step_breakdown:
                 bd_mark("text")
             latents, t = prepare_latents(batch)
-            selected_captions = select_captions(batch)
+            selected_captions, dropped_mask = select_captions(batch)
+            caption_telemetry.record(
+                batch["retained_lengths"].tolist(), dropped_mask,
+                int(batch["bucket_hi"]), int(batch["resolution_bucket_ids"][0]),
+                int(batch["len_bucket_idx"]))
             txt, txt_mask, txt_pooled = encode_micro(batch, selected_captions)
             if args.step_breakdown:
                 bd_mark("text")
@@ -1097,8 +1120,7 @@ def main():
                 log_dict = {
                     "train/loss": step_loss,
                     "train/stage": stage,
-                    "train/lr": optimizers[0].param_groups[0]["lr"],
-                    "train/global_samples": step_samples,
+                    "train/lr": optimizers[0].param_groups[0]["lr"],                    "train/global_samples": step_samples,
                 }
                 if len(optimizers) > 1:
                     log_dict["train/lr_aux"] = optimizers[-1].param_groups[0]["lr"]
@@ -1117,6 +1139,12 @@ def main():
                     )
                     torch.cuda.reset_peak_memory_stats()
                 log_dict["train/txt_seq_len"] = float(txt.shape[1])
+                log_dict["policy/beta"] = caption_policy.beta(stage)
+                log_dict["policy/short_reserve"] = caption_policy.short_reserve
+                if global_step % args.telemetry_log_interval == 0:
+                    caption_telemetry.reduce(accelerator.device,
+                                             world_size=accelerator.num_processes)
+                    log_dict.update(caption_telemetry.snapshot(reset=True))
 
                 if bd_cur is not None:
                     for seg, ms in bd_cur.items():

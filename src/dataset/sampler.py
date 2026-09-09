@@ -9,7 +9,47 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, Sampler
 
-from .captions import sample_caption_index_from_token_counts
+from .captions import (
+    CaptionPolicy,
+    average_caption_probabilities,
+    caption_probabilities_from_lengths,
+    sample_caption_index_from_token_counts,
+)
+
+
+def _weighted_index(rng, probabilities) -> int:
+    """Draw an index from a probability sequence using ``rng``."""
+    draw = rng.random()
+    cumulative = 0.0
+    for index, probability in enumerate(probabilities):
+        cumulative += probability
+        if draw < cumulative:
+            return index
+    return len(probabilities) - 1
+
+
+def _stationary_probabilities(entry, policy: CaptionPolicy) -> np.ndarray:
+    """Per-caption schedule-averaged probabilities for one dataset.
+
+    Rows are grouped by caption count so the grid computation is done once per
+    group instead of once per row.
+    """
+    offsets = np.asarray(entry.caption_offsets)
+    lengths = np.asarray(entry.prompt_lengths, dtype=np.float64)
+    counts = np.diff(offsets)
+    result = np.zeros(lengths.size, dtype=np.float64)
+    if lengths.size == 0:
+        return result
+    for count in np.unique(counts):
+        rows = np.where(counts == count)[0]
+        if count == 1:
+            result[offsets[rows]] = 1.0
+            continue
+        matrix = np.stack([lengths[offsets[r]:offsets[r + 1]] for r in rows])
+        averaged = average_caption_probabilities(matrix, policy)
+        for position, row_idx in enumerate(rows):
+            result[offsets[row_idx]:offsets[row_idx + 1]] = averaged[position]
+    return result
 from .length_metadata import RowLengthMetadata
 
 
@@ -370,6 +410,7 @@ class RowLengthQueueBatchSampler(Sampler[List[RowRef]]):
         shuffle: bool = True,
         seed: int = 0,
         initial_stage: float = 0.5,
+        caption_policy: Optional[CaptionPolicy] = None,
         *,
         entry_metadata: Optional[Sequence[RowLengthMetadata]] = None,
     ):
@@ -394,6 +435,15 @@ class RowLengthQueueBatchSampler(Sampler[List[RowRef]]):
         self.shuffle = bool(shuffle)
         self._rng = random.Random(seed)
         self._stage = min(max(float(initial_stage), 0.0), 1.0)
+        self.caption_policy = caption_policy or CaptionPolicy()
+        # The stationary comparison arm holds exposure fixed by drawing from
+        # each row's schedule-averaged probabilities throughout training.  They
+        # are computed once per dataset, grouped by caption count so the
+        # computation is vectorised rather than per row.
+        self._stationary_probabilities: Optional[List[np.ndarray]] = None
+        if self.caption_policy.kind == "beta" and self.caption_policy.schedule == "stationary":
+            self._stationary_probabilities = [
+                _stationary_probabilities(entry, self.caption_policy) for entry in self.metadata]
 
         if dataset_weights is None:
             dataset_weights = [1.0] * len(self.metadata)
@@ -461,10 +511,23 @@ class RowLengthQueueBatchSampler(Sampler[List[RowRef]]):
         row_idx = self._next_row(dataset_id)
         entry = self.metadata[dataset_id]
         caption_slice = entry.row_slice(row_idx)
-        curriculum_lengths = entry.curriculum_lengths[caption_slice]
-        caption_idx = sample_caption_index_from_token_counts(
-            curriculum_lengths.tolist(), stage=self._stage, rng=self._rng
-        )
+        if self.caption_policy.kind == "beta":
+            retained = entry.prompt_lengths[caption_slice]
+            if self._stationary_probabilities is not None:
+                probabilities = self._stationary_probabilities[dataset_id][caption_slice]
+            else:
+                probabilities = caption_probabilities_from_lengths(
+                    retained.tolist(),
+                    self.caption_policy.beta(self._stage),
+                    self.caption_policy.short_reserve,
+                    self.caption_policy.short_threshold,
+                )
+            caption_idx = _weighted_index(self._rng, probabilities)
+        else:
+            curriculum_lengths = entry.curriculum_lengths[caption_slice]
+            caption_idx = sample_caption_index_from_token_counts(
+                curriculum_lengths.tolist(), stage=self._stage, rng=self._rng
+            )
         flat_caption_idx = caption_slice.start + caption_idx
         resolution_id = int(entry.resolution_ids[row_idx])
         retained_length = int(entry.prompt_lengths[flat_caption_idx])

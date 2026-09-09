@@ -26,8 +26,20 @@ class DataConfig:
     mix: str = ""
     bucket_plan: str = ""
     caption_dropout_prob: float = 0.1
+    # Which caption inside a drawn row is used. "legacy" keeps the original
+    # heuristic short-to-long curriculum; "beta" selects on exact retained
+    # lengths with a length preference and a short-caption reserve.
+    caption_policy: str = "legacy"
     curriculum_start: float = 0.0
     curriculum_end: float = 1.0
+    caption_beta_start: float = -1.0
+    caption_beta_end: float = 1.0
+    # "linear" ramps beta over the run, "early" reaches beta_end earlier and
+    # holds it, "stationary" uses each row's schedule-averaged probabilities.
+    caption_schedule: str = "linear"
+    caption_early_at: float = 0.5
+    caption_short_reserve: float = 0.20
+    caption_short_threshold: int = 256
     stage_sync_interval: int = 1
 
 
@@ -209,6 +221,16 @@ def _validate(config: TrainConfig) -> None:
         value = getattr(config.data, name)
         if not 0.0 <= value <= 1.0:
             raise ValueError(f"[data].{name} must be within [0, 1]")
+    if config.data.caption_policy not in ("legacy", "beta"):
+        raise ValueError('[data].caption_policy must be "legacy" or "beta"')
+    if config.data.caption_schedule not in ("linear", "stationary", "early"):
+        raise ValueError('[data].caption_schedule must be "linear", "stationary" or "early"')
+    if not 0.0 < config.data.caption_early_at <= 1.0:
+        raise ValueError("[data].caption_early_at must be within (0, 1]")
+    if not 0.0 <= config.data.caption_short_reserve <= 1.0:
+        raise ValueError("[data].caption_short_reserve must be within [0, 1]")
+    if config.data.caption_short_threshold < 1:
+        raise ValueError("[data].caption_short_threshold must be positive")
     if not 0.0 <= config.data.caption_dropout_prob <= 1.0:
         raise ValueError("[data].caption_dropout_prob must be within [0, 1]")
     if config.model.hidden_size % config.model.num_heads:
