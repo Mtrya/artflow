@@ -6,6 +6,7 @@ on eval/loss trajectories, so a fast path that silently changes the
 conditioning features or the attention math would invalidate the comparison.
 """
 
+import pytest
 import torch
 
 from src.models.artflow import ArtFlow
@@ -188,87 +189,37 @@ def _tiny_model(seed=0):
         ffn_type="gated",
         rope_centered_grid=True,
     )
+    # Exercise attention as it is used after training begins. AdaLN-zero and
+    # the zero output projection otherwise hide every attention-path error.
+    torch.nn.init.normal_(model.final_layer[1].weight, std=0.05)
+    for block in model.blocks:
+        torch.nn.init.normal_(block.modulation[-1].weight, std=0.05)
+        torch.nn.init.normal_(block.modulation[-1].bias, std=0.05)
     model.eval()
     return model
 
 
-def test_fast_attn_matches_reference_forward():
+@pytest.mark.parametrize("masked", [False, True])
+def test_fast_attn_matches_reference_forward_and_backward(masked):
     model = _tiny_model()
     x = torch.randn(2, 16, 8, 8)
     t = torch.rand(2)
     txt = torch.randn(2, 20, 1024)
     txt_pooled = torch.randn(2, 1024)
-    txt_mask = torch.ones(2, 20, dtype=torch.long)
-    txt_mask[1, 11:] = 0
-
-    with torch.no_grad():
-        ref = model(x, t, txt=txt, txt_pooled=txt_pooled, txt_mask=txt_mask)
-        fast = model(
-            x, t, txt=txt, txt_pooled=txt_pooled, txt_mask=txt_mask, fast_attn=True
-        )
-
+    txt_mask = None
+    if masked:
+        txt_mask = torch.ones(2, 20, dtype=torch.long)
+        txt_mask[1, 11:] = 0
+    ref = model(x, t, txt=txt, txt_pooled=txt_pooled, txt_mask=txt_mask)
+    ref.square().mean().backward()
+    reference_grads = {name: p.grad.clone() for name, p in model.named_parameters()}
+    assert torch.count_nonzero(ref) > 0
+    for name, grad in reference_grads.items():
+        if ".attn.qkv.weight" in name:
+            assert torch.count_nonzero(grad) > 0, name
+    model.zero_grad(set_to_none=True)
+    fast = model(x, t, txt=txt, txt_pooled=txt_pooled, txt_mask=txt_mask, fast_attn=True)
+    fast.square().mean().backward()
     assert torch.equal(ref, fast)
-
-
-def test_fast_attn_matches_reference_without_text_mask():
-    model = _tiny_model(seed=1)
-    x = torch.randn(2, 16, 8, 8)
-    t = torch.rand(2)
-    txt = torch.randn(2, 20, 1024)
-    txt_pooled = torch.randn(2, 1024)
-
-    with torch.no_grad():
-        ref = model(x, t, txt=txt, txt_pooled=txt_pooled)
-        fast = model(x, t, txt=txt, txt_pooled=txt_pooled, fast_attn=True)
-
-    assert torch.equal(ref, fast)
-
-
-def _tiny_model(seed=0):
-    torch.manual_seed(seed)
-    model = ArtFlow(
-        hidden_size=64,
-        num_heads=4,
-        double_stream_depth=0,
-        single_stream_depth=3,
-        mlp_ratio=2.0,
-        conditioning_scheme="fused",
-        qkv_bias=True,
-        single_stream_modulation="layer",
-        ffn_type="gated",
-        rope_centered_grid=True,
-    )
-    model.eval()
-    return model
-
-
-def test_fast_attn_matches_reference_forward():
-    model = _tiny_model()
-    x = torch.randn(2, 16, 8, 8)
-    t = torch.rand(2)
-    txt = torch.randn(2, 20, 1024)
-    txt_pooled = torch.randn(2, 1024)
-    txt_mask = torch.ones(2, 20, dtype=torch.long)
-    txt_mask[1, 11:] = 0
-
-    with torch.no_grad():
-        ref = model(x, t, txt=txt, txt_pooled=txt_pooled, txt_mask=txt_mask)
-        fast = model(
-            x, t, txt=txt, txt_pooled=txt_pooled, txt_mask=txt_mask, fast_attn=True
-        )
-
-    assert torch.equal(ref, fast)
-
-
-def test_fast_attn_matches_reference_without_text_mask():
-    model = _tiny_model(seed=1)
-    x = torch.randn(2, 16, 8, 8)
-    t = torch.rand(2)
-    txt = torch.randn(2, 20, 1024)
-    txt_pooled = torch.randn(2, 1024)
-
-    with torch.no_grad():
-        ref = model(x, t, txt=txt, txt_pooled=txt_pooled)
-        fast = model(x, t, txt=txt, txt_pooled=txt_pooled, fast_attn=True)
-
-    assert torch.equal(ref, fast)
+    for name, param in model.named_parameters():
+        torch.testing.assert_close(param.grad, reference_grads[name], atol=1e-6, rtol=1e-5)

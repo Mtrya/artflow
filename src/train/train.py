@@ -153,6 +153,13 @@ def parse_args():
     # stack and defaults to on; pass --no-<name> to restore the baseline path
     # for regression or profiling comparisons.
     parser.add_argument(
+        "--text_encoder_exit_mode",
+        choices=("full_forward_slice", "stop_at_layer"),
+        default="stop_at_layer",
+        help="Frozen text forward implementation; full_forward_slice restores "
+        "the baseline for throughput comparisons",
+    )
+    parser.add_argument(
         "--fast_caption_dropout",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -288,6 +295,7 @@ def main():
         "compile_blocks",
         "muon_batched_ns",
         "ddp_boundary_sync",
+        "text_encoder_exit_mode",
     ):
         setattr(args, name, getattr(cli, name))
 
@@ -689,7 +697,9 @@ def main():
     micro_count = 0
     step_global_loss = None
     step_global_samples = None
-    last_step_time = time.time()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize(accelerator.device)
+    last_step_time = time.monotonic()
     sps_ema = None
     train_wall_total = 0.0
     train_samples_total = 0
@@ -781,7 +791,7 @@ def main():
             tokenizer,
             pooling=(args.conditioning_scheme == "fused"),
             exit_layer=args.text_encoder_exit_layer,
-            exit_mode="stop_at_layer",
+            exit_mode=args.text_encoder_exit_mode,
             fast_slice=args.fast_text_slice,
         )
         txt, txt_mask = pad_text_to_hi(txt, txt_mask, batch["bucket_hi"])
@@ -1000,19 +1010,6 @@ def main():
             if global_step % args.stage_sync_interval == 0:
                 sampler.set_stage(stage)
 
-            now = time.time()
-            step_dt = now - last_step_time
-            last_step_time = now
-            train_wall_total += step_dt
-            train_samples_total += step_samples
-            train_steps_total += 1
-            if train_steps_total > args.steady_state_skip_steps:
-                steady_wall_total += step_dt
-                steady_samples_total += step_samples
-            if step_dt > 0:
-                sps = step_samples / step_dt
-                sps_ema = sps if sps_ema is None else 0.95 * sps_ema + 0.05 * sps
-
             if ema_model is not None and global_step % args.ema_update_interval == 0:
                 if args.step_breakdown:
                     bd_mark("ema")
@@ -1087,6 +1084,15 @@ def main():
                     with torch.cuda.device(i):
                         torch.cuda.empty_cache()
 
+            # Live telemetry includes completed optimizer and EMA GPU work.
+            # The final summary below additionally includes logging overhead.
+            if torch.cuda.is_available():
+                torch.cuda.synchronize(accelerator.device)
+            step_dt = time.monotonic() - last_step_time
+            if step_dt > 0:
+                sps = step_samples / step_dt
+                sps_ema = sps if sps_ema is None else 0.95 * sps_ema + 0.05 * sps
+
             if accelerator.is_main_process:
                 log_dict = {
                     "train/loss": step_loss,
@@ -1125,6 +1131,20 @@ def main():
                             log_dict[f"data/{alias}_count"] = count
 
                 accelerator.log(log_dict, step=global_step)
+
+            # End the measured training interval only after optimizer, EMA,
+            # telemetry and logging have completed. CUDA launches are async:
+            # counting host dispatch alone would omit their unfinished work.
+            if torch.cuda.is_available():
+                torch.cuda.synchronize(accelerator.device)
+            training_end = time.monotonic()
+            measured_step_dt = training_end - last_step_time
+            train_wall_total += measured_step_dt
+            train_samples_total += step_samples
+            train_steps_total += 1
+            if train_steps_total > args.steady_state_skip_steps:
+                steady_wall_total += measured_step_dt
+                steady_samples_total += step_samples
 
             # Checkpointing
             if global_step % args.checkpoint_interval == 0:
@@ -1199,9 +1219,10 @@ def main():
                 )
                 model.train()
 
-            # Eval/ckpt blocks above run inside this optimizer step's wall time;
-            # reset the clock so train/samples_per_sec reflects training only.
-            last_step_time = time.time()
+            # Exclude only evaluation/checkpoint work from the next interval.
+            if torch.cuda.is_available():
+                torch.cuda.synchronize(accelerator.device)
+            last_step_time = time.monotonic()
 
     # End-of-training KID (fixed fakes vs full held-out real)
     if args.kid_eval_at_end:

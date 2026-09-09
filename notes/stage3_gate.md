@@ -1,5 +1,34 @@
 # Stage 3 — Throughput Gate (2026-09-09)
 
+## Review verdict: closed on the single-GPU rerun
+
+The corrected-timer sequential A/B (`s3-review-ab-1g-0909`, one 4090, 256p,
+400 optimizer steps per arm) passes the **steady-state 1.25× gate**:
+
+| Arm | Actual samples | Training seconds, all steps | Samples/s, all steps | Samples/s, steady | Peak allocated GB |
+| --- | --- | --- | --- | --- | --- |
+| Baseline | 102,208 | 1,854.6 | 55.11 | 54.99 | 25.2 |
+| Optimized | 102,208 | 1,504.3 | 67.94 | 72.98 | 17.8 |
+| Speedup | | | **1.233×** | **1.327×** | |
+
+Steady state excludes the first 50 optimizer steps. All-step training time
+includes compile warm-up and does **not** clear 1.25×; this startup cost matters
+for short probes. Both measurements include completed optimizer/EMA CUDA work,
+telemetry and logging, but exclude evaluation/checkpoint intervals. The previous
+timer omitted part of that work; historical throughput below is retained for
+diagnostics, not used as the current gate denominator.
+
+The eight fixed 512-sample eval-loss probes differ by at most **0.254%**
+(final probe: 1.68437 baseline vs 1.68865 optimized). All earlier overall-loss
+differences are within 0.032%. This is accepted for this infrastructure gate
+alongside the nonzero forward/backward equivalence tests and earlier A/B
+evidence; it is not a proof of long-run quality equivalence. See the complete
+probe table and reproducibility details in [the review report](stage3_review.md).
+
+Per the user's decision, the queued four-GPU rerun was stopped and is not a
+closure prerequisite. Corrected multi-GPU scaling is **unvalidated**. The
+640p/896p measurements remain DiT-only ceilings, not end-to-end gate results.
+
 ## Scope and objective
 
 Stage 2 fixed the hero architecture: h1152 × d24, all-single stream,
@@ -54,6 +83,14 @@ Every Stage-3 implementation and comparison preserves the following.
 - Long-caption up-weighting is a separate post-Stage-3 quality experiment; it
   is not an incidental consequence of batch size or bucket scheduling.
 
+These are the intended sampling semantics. With fixed rank-local shards and
+variable micro-batch sizes, exact aggregate row marginals can still be affected
+by shard-specific length distributions. The review's analytic estimate on this
+corpus found at most 0.017% expected sample-rate spread across four ranks and
+0.025% across eight; the sampler is retained on that evidence, not on a claim
+that fixed sharding guarantees balance for arbitrary data. See
+[the sampling review](stage3_review.md#sampling-balance).
+
 ### Length-aware batching
 
 - A micro-batch contains one composite `(resolution, caption-length)` bucket.
@@ -90,7 +127,7 @@ Every Stage-3 implementation and comparison preserves the following.
 
 ### Resolution curriculum
 
-- Stage 3 exercises the intended progressive sequence `256p → 640p → 896p`.
+- The infrastructure supports the intended progressive sequence `256p → 640p → 896p`.
   Each resolution has its own data path, `(resolution, length)` bucket table,
   local batch sizes, compile shapes, and time-shift parameters.
 - Resolution switching changes resolution-specific infrastructure only; it
@@ -118,9 +155,14 @@ checkpoint, prompt template, `DROP_IDX` removal, and 2048-token cap that
 `encode_text` applies — and writes a `length_metadata.npz` companion file into
 the dataset directory. The training side calls `ensure_sidecar()` per mix entry
 and builds the file on first use; the pass is CPU-only and never loads latents.
+Reuse is checked against dataset state, shard size/mtime and tokenizer identity/
+local file stats. Stale or legacy sidecars rebuild once without adding a full
+dataset scan to routine startup checks.
 
 A row-queue micro-batch may have a bucket-specific local size. Training keeps
-Accelerate's accumulation factor at one, so DDP synchronizes every actual
+Accelerate's accumulation factor at one and explicitly uses `no_sync` inside
+an optimizer step when `--ddp_boundary_sync` is enabled (the default). With
+`--no-ddp_boundary_sync`, the diagnostic baseline synchronizes every actual
 micro-batch. Each per-sample-mean loss is multiplied by the local sample count
 before backward; at an optimizer boundary, gradients are divided by the
 reduced global count divided by world size, before clipping and the Stage-2
@@ -132,27 +174,35 @@ in-flight batches. Each rank writes `sampler_state_rank_XXXXX.pt` next to
 Accelerate's model/optimizer state, and `--resume_full` restores it and replays
 batches whose backward acknowledgement never completed.
 
-### Throughput fast paths (all opt-in, defaults preserve the baseline)
+### Throughput fast paths (enabled by default; diagnostic switches restore baseline)
 
 | flag | what it does | math |
 | --- | --- | --- |
 | `--fast_caption_dropout` | draws the dropout mask on the host instead of reading a device reduction | same distribution, no device sync |
 | `--fast_telemetry` | one `bincount` per micro-batch instead of one device kernel per sample | identical counts |
 | `--fast_text_slice` | slices the padded hidden tensor instead of gathering/repacking per sequence | identical features (tested) |
-| `--fast_attn` | hoists RoPE frequencies and the padded-text attention bias out of the block loop | bit-identical forward (tested) |
+| `--attn_bias_hoist` | hoists RoPE frequencies and the padded-text attention bias out of the block loop | bit-identical forward and close gradients (tested) |
 | `--text_encoder_exit_mode stop_at_layer` | stops the Qwen forward after layer 20 | bit-identical features |
 | `--compile --compile_blocks` | `torch.compile` on each DiT block; all 24 blocks share one graph per bucket shape | fused kernels, same math |
 | `--muon_batched_ns` | one bmm per matrix shape in the Newton-Schulz step | same per-matrix iteration |
-| `--stage3_no_sync` | accumulates rank-local gradients inside an optimizer step and reduces once at the boundary | identical accumulated gradient (linear reduction) |
+| `--ddp_boundary_sync` | accumulates rank-local gradients inside an optimizer step and reduces once at the boundary | identical accumulated gradient (linear reduction) |
+
+Use `--no-<boolean_flag>` to disable a fast path and
+`--text_encoder_exit_mode full_forward_slice` to restore the full text forward.
+Historical logs below use the former names `fast_attn` and `stage3_no_sync`;
+their current training CLI names are `attn_bias_hoist` and `ddp_boundary_sync`.
 
 `tests/test_fast_paths.py` asserts bit-identical outputs for `fast_attn` and
 feature-identical output for `fast_text_slice` (including the dropped-caption
 edge case); `tests/test_muon_batched.py` does the same for the batched
 Newton-Schulz step and the once-per-param weight decay.
 
-## Measured results
+## Earlier measurements (before the timer correction)
 
 All numbers are single 4090, 256p, the Stage-3 mix, unless stated otherwise.
+The component benchmarks are unaffected by the training-loop timer correction.
+End-to-end and scaling figures in this section are historical; use the review
+verdict above for current single-GPU throughput.
 
 ### DiT forward+backward ceiling (`scripts/bench/transformer_ceiling.py`)
 
@@ -339,7 +389,8 @@ reduction is what makes 896p micro-batches of 8 fit comfortably.
 
 1. Establish a new Muon baseline on the frozen protocol above. Existing
    Stage-3 AdamW measurements and the item-expanded Plan-D runs are not part of
-   this baseline. **Done:** 53.78 samples/s at 256p on one 4090.
+   this baseline. **Revalidated:** 54.99 samples/s steady (55.11 across all
+   400 steps) at 256p on one 4090, with corrected timing.
 2. Optimize the dominant measured bottlenecks. A change is kept only when its
    matched `eval/loss` trajectory preserves accuracy and its measured
    steady-state throughput improves. **Kept:** host-side caption dropout,
@@ -350,23 +401,29 @@ reduction is what makes 896p micro-batches of 8 fit comfortably.
    forward+backward), text-encoder prefetch (no net win once host syncs are
    gone), CUDA-graph `reduce-overhead` compile (capture fails per block),
    whole-model `torch.compile` (recompiles per bucket under the row queue).
-3. The working throughput floor is **1.25×** the re-measured baseline at each
-   exercised resolution. It is a floor rather than a stopping point. **Met:**
-   1.29× including one-time compile, 1.39× steady state at 256p on one GPU;
-   1.56× / 1.70× at 256p on four GPUs; 1.16-1.18× on the DiT-only 640p/896p
-   ceilings.
+3. The working throughput floor is **1.25× steady-state** against the
+   re-measured baseline at the end-to-end gate resolution, **256p**.
+   **Met on the corrected single-GPU rerun: 1.327× steady**, versus 1.233×
+   including compile warm-up. The user selected single-GPU closure; the
+   queued four-GPU rerun was stopped. High-resolution DiT-only ceilings do
+   not satisfy or fail an end-to-end gate: that validation belongs to later
+   resolution-specific preparation and sizing.
 4. Report the final numbers per resolution: `eval/loss` trajectory, actual
    global samples/s, local batch table, actual global samples/optimizer step,
    and peak memory. These are the Stage-4 sizing inputs.
 
 ### Stage-4 inputs
 
-- 256p, 1 GPU: 74.9-76.3 samples/s steady state, 255.5 samples/optimizer step,
+- 256p, 1 GPU: **72.98 samples/s steady state** (67.94 with compile warm-up),
+  255.5 samples/optimizer step,
   local batch table `64:16 128:16 192:16 256:16 384:8 512:8 768:4 1536:2
   2048:1`, peak 17.8 GB.
-- 256p, 4 GPU: 282.18 samples/s steady state (70.5 samples/s/GPU), 1022.5
+- 256p, 4 GPU (**historical timer; not revalidated**): 282.18 samples/s
+  steady state (70.5 samples/s/GPU), 1022.5
   samples/optimizer step, peak 19.9 GB/GPU. Scaling efficiency 92% with
-  `--stage3_no_sync`, 77% without it.
+  boundary-only reduction, 77% without it, under the old accounting. Do not
+  divide these historical figures by the corrected single-GPU rate to claim
+  current scaling; measure the target topology before hero budget commitments.
 - 640p, 1 GPU, micro=8: 15.0 samples/s (DiT-only ceiling), 14.9 GB.
 - 896p, 1 GPU, micro=8: 6.0 samples/s, 27.4 GB (DiT-only ceiling; the
   end-to-end peak adds the encoder, optimizer and DDP buffers on top).
@@ -374,6 +431,10 @@ reduction is what makes 896p micro-batches of 8 fit comfortably.
   896p run needs its own sidecars, bucket plan and time shift, and inherits the
   same mechanisms. End-to-end 640p/896p training is out of Stage-3 scope; the
   high-resolution numbers above are DiT-only ceilings.
+- Stage 3.5 refreshes captions, prepares 640p, and selects bucket plans.
+  Stage 4 derives the hero recipe from actual available budget and measured
+  end-to-end throughput, memory and scaling on those inputs; the old
+  preimplementation sample-budget estimates are provisional, not measurements.
 
 The former AdamW calibration, item-expanded sampler, bucket-weight curriculum,
 and associated gate results are superseded by this document.

@@ -1,12 +1,15 @@
 # ArtFlow Reboot — Redesign Plan
 
 Personal side project. Model ≤0.7B params. **Compute-frugal by design**:
-total budget ≈ **2.9–3.7K RTX4090-hours** on Inspire (4090 @0.33 pt/h ⇒ ~1.0–1.2K points,
+provisional budget ≈ **2.9–3.7K RTX4090-hours** on Inspire (4090 @0.33 pt/h ⇒ ~1.0–1.2K points,
 trivial vs the ~589K-pt budget of project 自动化科研 — wall-clock and queueing, not
 money, are the constraints). Reference point: the old hero run was ~800 RTX4090-h
-(256p only, unoptimized stack, 19.2M samples seen). The new recipe sees ~60–100M
-samples at 640p-equivalent cost inside ~2K 4090-h — feasibility rests on the stage-3
-efficiency work, which is why stage 3 gates stage 5.
+(256p only, unoptimized stack, 19.2M samples seen). The former ~60–100M-sample
+projection inside ~2K 4090-h was a **preimplementation estimate, not a measured
+feasibility result**. Stage 4 must derive the hero recipe from the actual available
+budget, corrected Stage-3 throughput, and measurements on the Stage-3.5 data and
+bucket plans. The provisional ledger below also needs allowances for Stages 3.5
+and 7 before it becomes an approved complete budget.
 
 Organized as a linear pipeline of stages, each with goal / tasks / exit criteria /
 compute cap. A follow-up agent should be able to execute stage by stage from this file
@@ -139,8 +142,8 @@ tokenize + Qwen encode stay online in the training loop.** Rationale:
 the world pool is assembled to a comfortable upper bound (~2M captioned records from
 `relaion-art-recap-zh` / PD12M are already cheap to keep), and the stage-4 scaling probe
 only decides how much of it enters the mix, not whether to collect it. Resolution scope:
-stage 1 precomputes **256p only**; 640p/896p precompute is deferred to stages 4/5 when
-the recipe (and thus the exact bucket sets) is known.
+stage 1 precomputes **256p only**; Stage 3.5 prepares 640p after caption enrichment.
+896p precompute remains in stages 4/5 when the resolution recipe is known.
 
 **Exit**: domain datasets validated; eval suite committed; 256p precomputed sets ready;
 `data/` layout documented in `INSPIRE.md`.
@@ -264,16 +267,20 @@ data loading, and resolution switching are retained only when matched eval/loss
 and actual global samples/s support them. The gate document is the sole current
 Stage-3 scope and acceptance reference.
 
-**Outcome (2026-09-09):** the gate is met. Sequential 1-GPU A/B at 256p, 400
-optimizer steps each: baseline 53.78 samples/s → full stack 69.27 samples/s
-including the one-time per-shape compile stalls, 74.9 samples/s steady state
-(**1.29× / 1.39×**), with the fixed `eval/loss` probe tracking the baseline
-inside ±0.11% at every matched probe. On four GPUs (150 steps per arm, same
-seed) the same stack reaches 259.52 samples/s all-in / 282.18 steady against a
-166.09 / 165.83 baseline — **1.56× / 1.70×**, 92% per-GPU scaling efficiency
-once gradients are reduced once per optimizer step instead of once per
-micro-batch; the `eval/loss` probe again matches at every step. Kept
-mechanisms: host-side caption dropout, bincount telemetry, vectorized text
+**Outcome (2026-09-09, review rerun):** Stage 3 closes on the single-GPU
+evidence, per the user's scope decision. Corrected timing includes completed
+optimizer/EMA work and telemetry/logging, excluding evaluation/checkpoint time.
+Sequential 256p A/B, 400 optimizer steps and 102,208 actual samples per arm:
+baseline **54.99 → 72.98 samples/s steady state (1.327×)**, above the 1.25×
+gate. Including compile warm-up: 55.11 → 67.94 samples/s (**1.233×**, below
+1.25×; warm-up cost is not hidden). The fixed eval-loss trajectory differs by
+at most **0.254%**, at the final probe (1.68437 baseline vs 1.68865 optimized);
+this is accepted alongside the correctness tests and earlier A/B evidence,
+not a claim of exact numerical equivalence or long-run quality proof.
+The queued 4-GPU rerun was stopped at the user's request. Earlier multi-GPU
+measurements retain diagnostic value, but their old timing and scaling figures
+are **not revalidated** and must not be combined with this corrected denominator.
+Kept mechanisms: host-side caption dropout, bincount telemetry, vectorized text
 slice, hoisted RoPE/attention tables, true early exit at k=20, per-block
 `torch.compile`, batched Muon Newton-Schulz, boundary-only DDP reduction.
 Rejected on measurement: cuDNN attention, text-encoder prefetch, CUDA-graph
@@ -281,18 +288,70 @@ Rejected on measurement: cuDNN attention, text-encoder prefetch, CUDA-graph
 ceilings, and the Stage-4 sizing inputs are in
 [`notes/stage3_gate.md`](stage3_gate.md).
 
+## Stage 3.5 — Long-caption experiments, dataset refresh, and bucket planning
+
+**Goal**: prepare the caption distribution and efficient per-resolution batching
+before the Stage-4 scaling probes. GPU/API/storage costs are TBD from small
+probes, not implicitly covered by the old compute total.
+
+- 3.5.1 **Long-caption bias experiment**: compare the current curriculum with
+  a controlled preference for longer captions *within an already selected row*.
+  Keep row/dataset marginals unchanged. Compare matched actual sample budgets,
+  eval loss, prompt adherence, caption-length coverage, throughput, and memory;
+  keep a bias only if the quality/cost tradeoff warrants it.
+- 3.5.2 **Systematic caption enrichment through ZenMux**: add more
+  **256–2048-token** captions to existing rows, not extra copies of those rows.
+  Pilot grounding/quality, token-length coverage, API cost, and rate limits;
+  cache raw responses and record provider/model version and generation settings.
+  Potentially update `kaupane/chinese-painting-collection` after validating the
+  enriched records and dataset release metadata.
+- 3.5.3 **Regenerate training/evaluation data**: materialize the accepted captions,
+  re-precompute the affected datasets, rebuild retained-prompt length metadata,
+  and regenerate the light eval dataset. Preserve train/eval row separation and
+  pin dataset revisions so all later arms use the same evaluation version.
+  Include **640p precompute** and refreshed 256p inputs.
+- 3.5.4 **Find the optimal `bucket_plan`**: screen length boundaries and
+  per-bucket micro-batch sizes, then finalize on the enriched caption distribution
+  at 256p and 640p. Measure end-to-end samples/s, padding/compile overhead, and
+  peak memory over the full 2048-token range and all aspect buckets. Record a
+  memory-safe, measured winner per resolution, with multi-GPU headroom.
+
+**Exit**: caption-bias verdict, versioned data/metadata and light eval set,
+640p precompute, measured bucket plans, and actual preparation costs recorded.
+Stage 4 tunes effective batch through `gradient_accumulation_steps`, rather than
+reopening per-bucket micro-batch-size tuning. A larger model or new resolution
+still requires a memory-safety check and, if necessary, an explicitly recorded
+bucket-plan revision.
+
 ## Stage 4 — Scaling-law probes on the stage-3 infra (≤450 4090-h nominal)
 
 **Goal (user, 2026-09-06)**: with the budget relaxed (priority-1 idle fill),
 fit the scaling law empirically and produce the COMPLETE training recipe —
 the hero can scale up from the base model. Four axes:
+
 - **Model size**: 等比 scaling of the confirmed architecture (same
   h/d/stream/mod structure, width/depth up) — e.g. 485M → ~0.7B candidates;
-- **Batch size** and **training steps** (compute axes);
+- **Effective batch size**, tuned via `gradient_accumulation_steps` with the
+  Stage-3.5 bucket plans fixed, and **training steps** (compute axes);
 - **Data size** is an INDEPENDENT axis (not coupled to compute).
+
 Scaling one axis alone is suboptimal; Stage 4 determines the ratio across
 axes for the actual budget envelope. Small-card probes only.
 
+- 4.0 **Re-estimate the hero recipe from budget and implemented performance**:
+  establish remaining GPU-hour, API/storage, and practical wall-clock budgets,
+  including queueing/preemption and preparation/evaluation/checkpoint costs.
+  Start from corrected Stage-3 single-GPU throughput and memory; refresh
+  end-to-end measurements on the Stage-3.5 data, caption bias, and bucket plans
+  at each proposed resolution/model size. Measure target-GPU scaling when
+  resources permit; otherwise label conservative assumptions explicitly.
+  High-resolution DiT-only ceilings and old-timer DDP results are not measured
+  end-to-end hero rates. Derive feasible model size, resolution-stage allocation,
+  accumulation, actual samples/step, sample budgets, and step counts; for each
+  stage, training GPU-hours = actual samples / measured global samples/s ×
+  GPU count / 3600, with startup, evaluation, checkpoint, and restart allowances
+  added separately. Replace the preimplementation estimates before selecting
+  the hero recipe; revisit this estimate as the probes finish.
 - 4.1 **Data-scaling probe** @256p: corpus arms 50K / 200K / 500K, fixed steps →
   KID + eval-loss slope → data-bound vs step-bound verdict → corpus size (D3).
 - 4.2 **Resolution-transfer probe**: 256p→640p continued vs 640p-from-scratch (short arms)
@@ -301,24 +360,32 @@ axes for the actual budget envelope. Small-card probes only.
   progressive fine-tuning is the only path).
 - 4.3 **Steps/quality curve** at chosen config → place the knee → steps per stage.
 - 4.4 **Size/batch/steps grid** (small iso-compute arms around the 485M winner,
-  e.g. 485M@32K vs 0.6-0.7B@~iso-compute, batch 128 vs 256) → scaling-law slopes
+  e.g. 485M@32K vs 0.6-0.7B@~iso-compute, accumulation settings targeting
+  average effective batches around 128 vs 256) → scaling-law slopes
   → recommended hero size×batch×steps for the stage-5 envelope.
 - 4.5 Hero recipe card: corpus, mixture, stage steps, LR schedule, exit layer,
-  arch/size, batch — written to `notes/hero_recipe.md`.
+  arch/size, per-resolution bucket plans, `gradient_accumulation_steps`, measured
+  actual samples/step and total samples, throughput/memory, GPU-hour and wall-clock
+  estimates with uncertainty and overhead allowances — written to `notes/hero_recipe.md`.
 
-**Exit**: recipe card committed; every number in it traceable to a probe arm.
+**Exit**: budget-feasible recipe card committed; every measured number traceable
+to a probe arm, every extrapolation labeled, and the old hero estimates replaced.
 
 ## Stage 5 — Hero run (≈1.6–2.2K 4090-h; single 8-GPU 4090 node, ≈8–12 days wall)
 
-**Goal**: the model. 640p bulk (~60–70% of steps) → 896p tail (~20–25%) → optional 1024p
+**Goal**: the model, using the budget-derived Stage-4 recipe. The following stage
+fractions and headline compute/wall-clock ranges remain provisional:
+640p bulk (~60–70% of steps) → 896p tail (~20–25%) → optional 1024p
 polish with NTK scaling (~10%, only if 896p samples are clean and 1024p is wanted).
 
-- Effective batch 256; LR 3e-4 linear_cosine (tuned per stage 4); logit-normal(0,1) +
+- Effective batch/accumulation and LR schedule from Stage 4, retaining chunked
+  Muon LR 0.02 plus auxiliary AdamW as the optimizer starting point; logit-normal(0,1) +
   resolution time shift; caption dropout 0.1; caption-length curriculum; EMA 0.9999.
-- At stage-3 throughput, 2K 4090-h ≈ **60–100M samples seen** at 640p-equivalent cost —
-  3–5× the old run's 19.2M, at higher resolution, with better data and RoPE. If the
-  stage-4 probe says we're step-bound rather than data-bound, extending hero hours is the
-  sanctioned lever.
+- Do not carry forward the old **60–100M samples in 2K 4090-h** projection as
+  established throughput. Stage 4 supplies the actual per-resolution sample/step
+  allocation and cost from measured performance. If its probes find the recipe
+  step-bound rather than data-bound, consider extending hero hours within the
+  agreed scheduling/budget policy.
 - Checkpoints + eval suite every interval; watch: KID per domain, anatomy prompt pass
   rate, 1024p-collapse check, memorization probes on small domains.
 - Mixture per locked table (dataset_plan.md §mixture; NC entries separate).
@@ -334,8 +401,7 @@ Fine-Tuning, [arXiv:2509.16117](https://arxiv.org/abs/2509.16117)) — online RL
 *forward* process: per prompt, sample K candidate trajectories from the old policy, score
 with a reward ensemble, normalize rewards to advantages, optimize the flow-matching
 velocity predictor with a positive/negative contrast. No likelihood estimation, no SDE
-reverse process — fits this codebase directly. (If "NFT" meant crypto-minting instead,
-flag it — that's a different stage.)
+reverse process — fits this codebase directly.
 
 - 6.1 Reward ensemble (keep simple, watch hacking): LAION aesthetic scorer (cheap, local)
   + VLM-as-judge rubric for anatomy (hands/faces/body) and prompt adherence — the API VLM
@@ -351,6 +417,34 @@ flag it — that's a different stage.)
 **Exit**: reward gain over hero baseline with no KID/diversity regression; final model +
 before/after grids on the eval suite.
 
+## Stage 7 — Publication readiness
+
+**Goal**: a usable public release whose explanations stand on their own.
+
+- 7.1 Upload the selected model to **Hugging Face**, with model card, weights,
+  inference configuration, provenance/license constraints, evaluation results,
+  and limitations; deploy and smoke-test a **Hugging Face Space** demo.
+- 7.2 Add/rewrite **README.md** as the public entry point: what the model does,
+  installation, minimal inference/training examples, model/demo links, data and
+  license caveats, evaluation, and a navigable documentation map.
+- 7.3 Remove or rewrite internal/temporary terminology and opaque references.
+  Core principle: **“不要把解释清楚一件事物的责任转包给外部不可见的指代”**.
+  Audit the repository, especially `notes/`; remove obsolete working notes or
+  rewrite them into self-contained explanations. An internal stage name, run
+  nickname, private dashboard, or unavailable discussion must not substitute
+  for explaining a method, decision, configuration, or result. Preserve useful
+  evidence in accessible, reproducible form and keep private operational details
+  out of the public-facing documentation.
+- 7.4 Add substantive explanatory notes on **Flow Matching** and
+  **Negative-aware Fine-Tuning (NFT)**: motivation, equations/notation,
+  training and sampling procedures, implementation mapping, assumptions,
+  limitations, and accessible references—not merely experiment logs.
+
+**Exit**: downloadable model and working Space; README quickstart verified from
+a clean environment; public terminology/reference audit complete; Flow Matching
+and NFT notes readable without access to internal conversations or artifacts.
+Publication/demo hosting costs are estimated separately before deployment.
+
 ---
 
 ## Compute ledger (RTX4090-hours unless noted; caps)
@@ -361,10 +455,12 @@ before/after grids on the eval suite.
 | 1 Data | 30 + API spend | API captioning replaces GPU captioning; cache raw responses |
 | 2 Ablations | 400 | Inspire fair arms only; Andromeda takes smoke/qualitative arms (free, ~¼ speed); cap raised 200→400 on 2026-09-04 to fit stream-schedule + Muon axes |
 | 3 Efficiency | 80 | buys back far more than it costs — gates stage 5 |
-| 4 Scaling ladder | 450 | small runs only |
-| 5 Hero | 1,600–2,200 | the only big spend; 8×4090, 8–12 days wall |
+| 3.5 Captions / buckets / 640p | TBD + API/storage spend | pilot, then cost caption enrichment, refreshed precompute/eval, and bucket search |
+| 4 Scaling ladder | 450 nominal | small runs; rebase hero recipe and budget on measured Stage-3/3.5 performance |
+| 5 Hero | 1,600–2,200 provisional | target topology and wall time must be justified by Stage 4 |
 | 6 NFT | 300–500 | sampling-bound |
-| **Total** | **≈2.9–3.7K 4090-h** | ≈1.0–1.2K pts @0.33 pt/h |
+| 7 Publication | TBD + hosting spend | model/Space release, documentation and reproducibility checks |
+| **Original subtotal** | **≈2.9–3.7K 4090-h** | excludes new Stages 3.5/7 and API/storage/hosting spend; Stage 4 must update the complete ledger |
 
 **Budget semantics (2026-08-26, user clarification; extended 2026-09-06)**: the
 Inspire budget is about **not crowding out other users**, not an absolute hours
@@ -397,11 +493,11 @@ daytime/evening.
   orthogonalization is part of the optimizer definition, not an optional tweak.
 - Cross-platform comparability: Andromeda results inform, never decide — fair arms live on
   Inspire 4090.
-- 4090 PCIe-only DDP: multi-GPU training is not bandwidth-bound, it is
-  *synchronization*-bound — per-micro-batch all-reduce cost 23% of per-GPU
-  throughput at 4 GPUs. Resolved in Stage 3 by reducing once per optimizer
-  step (`--stage3_no_sync`, 1.27× on the baseline, 92% per-GPU scaling at 4
-  GPUs). Multi-node is still not worth buying.
+- 4090 PCIe-only DDP: earlier experiments identified per-micro-batch
+  synchronization as a major cost; boundary-only reduction is retained.
+  The old 92% scaling figure predates the corrected timer and was not rerun
+  in the final single-GPU review. Re-measure target-topology scaling for Stage 4;
+  do not assume eight-GPU efficiency from the old four-GPU result.
 - VLM API dependency: rate limits / cost drift / provider model updates → cache raw
   responses; record exact model version in dataset metadata.
 - 896p→1024p may degrade → polish stage optional; latent upscaler as documented fallback.

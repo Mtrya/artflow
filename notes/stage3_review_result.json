@@ -1,0 +1,172 @@
+{
+  "job": "s3-review-ab-1g-0909",
+  "date": "2026-09-09",
+  "gpu_count": 1,
+  "resolution": "256p",
+  "source_base_commit": "c496da063b29da61b2548e364cda379d62439542",
+  "source_archive_sha256": "76f6fa311d66bcde031b330cfa399d91b6bae9b421c3dcd8aa305812cb25921d",
+  "artifact_directory": "/inspire/qb-ilm/project/cq-scientific-cooperation-zone/ky26021/artflow/runs/stage3/s3-review-ab-1g-0909",
+  "timer": "Completed training work including optimizer, EMA, telemetry/logging; excludes eval/checkpoint intervals. Steady state excludes first 50 steps.",
+  "summaries": {
+    "baseline": {
+      "steps": 400,
+      "samples": 102208,
+      "train_wall_s": 1854.6,
+      "samples_per_sec": 55.11,
+      "samples_per_step": 255.5,
+      "steady_steps": 350,
+      "samples_per_sec_steady": 54.99,
+      "peak_mem_gb": 25.2
+    },
+    "fullstack": {
+      "steps": 400,
+      "samples": 102208,
+      "train_wall_s": 1504.3,
+      "samples_per_sec": 67.94,
+      "samples_per_step": 255.5,
+      "steady_steps": 350,
+      "samples_per_sec_steady": 72.98,
+      "peak_mem_gb": 17.8
+    }
+  },
+  "steady_speedup": 1.3271503909801783,
+  "all_steps_speedup": 1.232807113046634,
+  "matched_total_samples": true,
+  "throughput_pass": true,
+  "eval_probes": {
+    "baseline": [
+      {
+        "step": 50,
+        "eval/loss": 2.00067,
+        "eval/loss_t015": 2.00436,
+        "eval/loss_t040": 2.00143,
+        "eval/loss_t065": 1.99892,
+        "eval/loss_t090": 1.99797
+      },
+      {
+        "step": 100,
+        "eval/loss": 1.98088,
+        "eval/loss_t015": 1.99977,
+        "eval/loss_t040": 1.98447,
+        "eval/loss_t065": 1.97175,
+        "eval/loss_t090": 1.96752
+      },
+      {
+        "step": 150,
+        "eval/loss": 1.93909,
+        "eval/loss_t015": 1.98363,
+        "eval/loss_t040": 1.94561,
+        "eval/loss_t065": 1.91704,
+        "eval/loss_t090": 1.91006
+      },
+      {
+        "step": 200,
+        "eval/loss": 1.87264,
+        "eval/loss_t015": 1.93515,
+        "eval/loss_t040": 1.87944,
+        "eval/loss_t065": 1.84087,
+        "eval/loss_t090": 1.8351
+      },
+      {
+        "step": 250,
+        "eval/loss": 1.79136,
+        "eval/loss_t015": 1.85448,
+        "eval/loss_t040": 1.78927,
+        "eval/loss_t065": 1.76153,
+        "eval/loss_t090": 1.76017
+      },
+      {
+        "step": 300,
+        "eval/loss": 1.7245,
+        "eval/loss_t015": 1.77236,
+        "eval/loss_t040": 1.71379,
+        "eval/loss_t065": 1.70613,
+        "eval/loss_t090": 1.70573
+      },
+      {
+        "step": 350,
+        "eval/loss": 1.68897,
+        "eval/loss_t015": 1.7175,
+        "eval/loss_t040": 1.67468,
+        "eval/loss_t065": 1.68258,
+        "eval/loss_t090": 1.6811
+      },
+      {
+        "step": 400,
+        "eval/loss": 1.68437,
+        "eval/loss_t015": 1.71723,
+        "eval/loss_t040": 1.66857,
+        "eval/loss_t065": 1.67692,
+        "eval/loss_t090": 1.67475
+      }
+    ],
+    "fullstack": [
+      {
+        "step": 50,
+        "eval/loss": 2.00067,
+        "eval/loss_t015": 2.00437,
+        "eval/loss_t040": 2.00144,
+        "eval/loss_t065": 1.99891,
+        "eval/loss_t090": 1.99796
+      },
+      {
+        "step": 100,
+        "eval/loss": 1.98087,
+        "eval/loss_t015": 1.99988,
+        "eval/loss_t040": 1.9845,
+        "eval/loss_t065": 1.97169,
+        "eval/loss_t090": 1.9674
+      },
+      {
+        "step": 150,
+        "eval/loss": 1.93904,
+        "eval/loss_t015": 1.984,
+        "eval/loss_t040": 1.94564,
+        "eval/loss_t065": 1.9168,
+        "eval/loss_t090": 1.90972
+      },
+      {
+        "step": 200,
+        "eval/loss": 1.87222,
+        "eval/loss_t015": 1.93609,
+        "eval/loss_t040": 1.87906,
+        "eval/loss_t065": 1.83994,
+        "eval/loss_t090": 1.83379
+      },
+      {
+        "step": 250,
+        "eval/loss": 1.79142,
+        "eval/loss_t015": 1.85695,
+        "eval/loss_t040": 1.78999,
+        "eval/loss_t065": 1.76089,
+        "eval/loss_t090": 1.75785
+      },
+      {
+        "step": 300,
+        "eval/loss": 1.72505,
+        "eval/loss_t015": 1.77687,
+        "eval/loss_t040": 1.71635,
+        "eval/loss_t065": 1.70488,
+        "eval/loss_t090": 1.7021
+      },
+      {
+        "step": 350,
+        "eval/loss": 1.68925,
+        "eval/loss_t015": 1.72396,
+        "eval/loss_t040": 1.67725,
+        "eval/loss_t065": 1.68008,
+        "eval/loss_t090": 1.67572
+      },
+      {
+        "step": 400,
+        "eval/loss": 1.68865,
+        "eval/loss_t015": 1.72424,
+        "eval/loss_t040": 1.67686,
+        "eval/loss_t065": 1.67984,
+        "eval/loss_t090": 1.67365
+      }
+    ]
+  },
+  "accuracy_verdict": "Accepted with existing correctness tests and earlier A/B evidence; final eval/loss is 0.254% higher, not proof of long-run equivalence.",
+  "multi_gpu": "Four-GPU rerun stopped while queued per user decision; corrected scaling not revalidated."
+}

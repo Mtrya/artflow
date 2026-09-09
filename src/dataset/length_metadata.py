@@ -1,5 +1,6 @@
 """Offline row-level caption length metadata."""
 
+import hashlib
 import json
 import zipfile
 from dataclasses import dataclass
@@ -345,6 +346,46 @@ def sidecar_path(dataset_dir: str) -> Path:
     return Path(dataset_dir) / SIDECAR_FILENAME
 
 
+def _source_signature(dataset_dir: str, tokenizer_path: str) -> str:
+    """Cheap cache identity: small state file plus shard/tokenizer file stats.
+
+    No Arrow contents or model weights are read. This detects ordinary dataset
+    rewrites and local tokenizer updates, not edits that preserve file stats.
+    """
+    root = Path(dataset_dir)
+    state_path = root / "state.json"
+    state = json.loads(state_path.read_text()) if state_path.is_file() else {}
+    filenames = [item["filename"] for item in state.get("_data_files", [])]
+    if not filenames:
+        filenames = sorted(path.name for path in root.glob("data-*.arrow"))
+    if not filenames:
+        raise ValueError(f"no HF Arrow data files found under {root}")
+
+    def file_stats(paths):
+        result = []
+        for path in paths:
+            stat = path.stat()
+            result.append((path.name, stat.st_size, stat.st_mtime_ns))
+        return result
+
+    tokenizer_root = Path(tokenizer_path)
+    tokenizer_files = []
+    if tokenizer_root.is_dir():
+        tokenizer_files = sorted({
+            *tokenizer_root.glob("*.json"),
+            *tokenizer_root.glob("*.model"),
+            *tokenizer_root.glob("merges.txt"),
+            *tokenizer_root.glob("vocab.txt"),
+        })
+    payload = {
+        "state": state,
+        "shards": file_stats([root / name for name in filenames]),
+        "tokenizer": str(tokenizer_root.resolve()) if tokenizer_root.is_dir() else tokenizer_path,
+        "tokenizer_files": file_stats(tokenizer_files),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
 def _load_text_columns(dataset_dir: str) -> Any:
     """Open a saved dataset's Arrow shards and keep only text-side columns.
 
@@ -394,27 +435,29 @@ def build_from_dataset(dataset_dir: str, tokenizer_path: str) -> RowLengthMetada
 
     dataset = _load_text_columns(dataset_dir)
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, local_files_only=True)
-    return RowLengthMetadata.from_hf_dataset(dataset, tokenizer)
+    metadata = RowLengthMetadata.from_hf_dataset(dataset, tokenizer)
+    metadata.metadata_info["source_signature"] = _source_signature(dataset_dir, tokenizer_path)
+    return metadata
 
 
 def ensure_sidecar(dataset_dir: str, tokenizer_path: str) -> RowLengthMetadata:
     """Load the dataset's companion file, building and writing it on first use.
 
-    If ``<dataset_dir>/length_metadata.npz`` exists it is loaded (a torn or
-    unreadable file from an interrupted write is rebuilt from the shards);
-    otherwise ``build_from_dataset`` runs and the result is persisted at
-    ``sidecar_path(dataset_dir)`` before being returned.
+    Existing files are checked using state/shard/tokenizer identity without
+    scanning captions or latents. Stale, legacy, and unreadable sidecars are
+    rebuilt once, then cached with the current identity.
     """
     path = sidecar_path(dataset_dir)
+    signature = _source_signature(dataset_dir, tokenizer_path)
     if path.is_file():
         try:
-            return RowLengthMetadata.load(path)
+            metadata = RowLengthMetadata.load(path)
+            if (metadata.metadata_info or {}).get("source_signature") == signature:
+                return metadata
         except (OSError, ValueError, EOFError, zipfile.BadZipFile):
             # Partial write or an unreadable archive: the companion is derived
             # data, so rebuilding it from the shards is always safe.
-            metadata = build_from_dataset(dataset_dir, tokenizer_path)
-            metadata.save(path)
-            return metadata
+            pass
     metadata = build_from_dataset(dataset_dir, tokenizer_path)
     metadata.save(path)
     return metadata

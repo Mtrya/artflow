@@ -221,9 +221,42 @@ def test_validate_against_dataset_rejects_row_count_mismatch(tmp_path, stub_toke
     # companion file (still on disk) must be rejected by the row check.
     other = make_dataset([(1, ["replacement row"])])
     other.save_to_disk(str(out_dir))
-    assert ensure_sidecar(str(out_dir), TOKENIZER_PATH).num_rows == metadata.num_rows
+    assert ensure_sidecar(str(out_dir), TOKENIZER_PATH).num_rows == len(other)
     with pytest.raises(ValueError, match="do not match dataset rows"):
         metadata.validate_against_dataset(load_from_disk(str(out_dir)))
+
+
+def test_sidecar_rebuilds_after_same_size_dataset_rewrite(tmp_path, stub_tokenizer_patch):
+    out_dir = tmp_path / "ds"
+    make_dataset([(1, ["short"])]).save_to_disk(str(out_dir))
+    first = ensure_sidecar(str(out_dir), TOKENIZER_PATH)
+    make_dataset([(1, ["long caption " * 100])]).save_to_disk(str(out_dir))
+    second = ensure_sidecar(str(out_dir), TOKENIZER_PATH)
+    assert first.num_rows == second.num_rows
+    assert first.prompt_lengths.tolist() != second.prompt_lengths.tolist()
+
+
+def test_sidecar_rebuilds_after_tokenizer_change(tmp_path, stub_tokenizer_patch):
+    out_dir = tmp_path / "ds"
+    make_dataset([(1, ["caption"])]).save_to_disk(str(out_dir))
+    first = ensure_sidecar(str(out_dir), TOKENIZER_PATH)
+    second = ensure_sidecar(str(out_dir), "different/tokenizer")
+    assert first.metadata_info["source_signature"] != second.metadata_info["source_signature"]
+    assert stub_tokenizer_patch.call_count == 2
+
+
+def test_sidecar_rebuilds_after_local_tokenizer_update(tmp_path, stub_tokenizer_patch):
+    out_dir = tmp_path / "ds"
+    tokenizer_dir = tmp_path / "tokenizer"
+    tokenizer_dir.mkdir()
+    tokenizer_file = tokenizer_dir / "tokenizer.json"
+    tokenizer_file.write_text('{}')
+    make_dataset([(1, ["caption"])]).save_to_disk(str(out_dir))
+    first = ensure_sidecar(str(out_dir), str(tokenizer_dir))
+    tokenizer_file.write_text('{"changed": true}')
+    second = ensure_sidecar(str(out_dir), str(tokenizer_dir))
+    assert first.metadata_info["source_signature"] != second.metadata_info["source_signature"]
+    assert stub_tokenizer_patch.call_count == 2
 
 
 def test_precompute_write_length_metadata(tmp_path, stub_tokenizer_patch):
