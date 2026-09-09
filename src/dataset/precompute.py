@@ -10,6 +10,7 @@ import gc
 import io
 import os
 import random
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import requests
@@ -73,6 +74,8 @@ def precompute(
     min_aesthetic_score: float = 0.0,
     min_watermark_prob: float = 0.6,
     bbox_field: Optional[str] = None,
+    write_length_metadata: bool = True,
+    tokenizer_path: str = "Qwen/Qwen3-0.6B",
 ) -> Dataset:
     """
     Stateless precomputation of image latents and caption preparation.
@@ -98,6 +101,24 @@ def precompute(
                     ([x1, y1, x2, y2], Gemini-style). When present, the image is
                     cropped to the box (scaled to actual size) right after fetch,
                     before bucketing. Malformed boxes drop the sample.
+        write_length_metadata: Whether the caller that saves the returned
+                    dataset is expected to persist its companion caption-length
+                    metadata (see ``write_length_metadata`` below).  This
+                    function itself never writes the companion file: the
+                    returned Dataset does not know the directory it will be
+                    saved to, and the companion must describe exactly the rows
+                    that end up on disk.
+        tokenizer_path: Tokenizer checkpoint used to tokenize captions for the
+                    companion metadata file (local directory or Hugging Face
+                    id; loaded offline with ``local_files_only=True``).
+
+    Sidecar row-order constraint:
+        The companion file written for the returned dataset must describe the
+        rows in the exact order the dataset has when saved.  Call
+        ``write_length_metadata(dataset, out_dir, tokenizer_path)`` after
+        ``dataset.save_to_disk(out_dir)``; it derives the metadata from the
+        Arrow shards at ``out_dir``, so sidecar row order is identical to the
+        row order training will load.
 
     Returns:
         Processed dataset with 'latents', 'captions', and 'resolution_bucket_id'.
@@ -366,3 +387,45 @@ def precompute(
 
     processed_dataset = processed_dataset.with_format("torch")
     return processed_dataset
+
+
+def write_length_metadata(
+    dataset: Dataset,
+    out_dir: str | Path,
+    tokenizer_path: str,
+) -> "RowLengthMetadata":
+    """Persist the companion caption-length sidecar for a saved dataset.
+
+    Writes ``<out_dir>/length_metadata.npz`` and returns the metadata object.
+    Call this AFTER ``dataset.save_to_disk(out_dir)``: the sidecar is derived
+    from the Arrow shards already saved at ``out_dir`` (see
+    ``length_metadata.build_from_dataset``), so its row order is, by
+    construction, exactly the row order of the saved dataset -- the rows
+    training's loader will read.  ``dataset`` is used as a sanity check that
+    the directory holds the same number of rows as the in-memory object the
+    caller is about to point training at.
+
+    Tokenization uses the tokenizer at ``tokenizer_path`` with the same prompt
+    contract, ``DROP_IDX`` removal, and 2048-token cap as training
+    (``encode_text``), so caption lengths are comparable to the online path.
+    Latents are never loaded and no GPU is required.
+    """
+    from .length_metadata import build_from_dataset, sidecar_path
+
+    out_dir = Path(out_dir)
+    if not (out_dir / "dataset_info.json").is_file():
+        raise ValueError(
+            f"{out_dir} does not contain a saved dataset (dataset_info.json); "
+            "call dataset.save_to_disk(out_dir) before write_length_metadata() "
+            "so the companion file describes the rows training will load"
+        )
+    metadata = build_from_dataset(str(out_dir), tokenizer_path)
+    if metadata.num_rows != len(dataset):
+        raise ValueError(
+            f"saved dataset at {out_dir} has {metadata.num_rows} rows but the "
+            f"in-memory dataset has {len(dataset)}; refusing to write a "
+            "companion file that describes different rows"
+        )
+    path = sidecar_path(out_dir)
+    metadata.save(path)
+    return metadata

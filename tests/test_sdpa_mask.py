@@ -4,8 +4,9 @@ Tests for sdpa_with_pad_mask: the masked-SDPA memory fix.
 The old path passed a bool mask straight into F.scaled_dot_product_attention,
 which falls off flash onto the math backend and materializes B*H*S*S attention
 weights per layer (saved for backward) — tens of GiB at seq ~2K and the cause
-of the stage-2 mid-training OOM spikes. The new path converts to an additive
-bias and prefers the memory-efficient kernel. These tests pin the numerics.
+of mid-training OOM spikes on long-caption batches. The new path converts to an
+additive bias and prefers the memory-efficient kernel. These tests pin the
+numerics.
 """
 
 import os

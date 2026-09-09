@@ -1,8 +1,8 @@
 """Training module for ArtFlow.
 
-This module provides training scripts and utilities for different stages:
-- stage0: Unconditional generation training
-- stage1: Conditional generation training
+This module provides training scripts and utilities:
+- train_uncond: Unconditional generation training (algorithm comparison)
+- train: Conditional generation training
 - precompute: Dataset precomputation
 """
 

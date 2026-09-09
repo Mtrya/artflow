@@ -47,7 +47,7 @@ experiments. Stage-2 arms below implement column C.
 | CFG caption dropout | 0.1 | convention |
 | VAE | Qwen-Image VAE (16ch f8) | physically locked by stage-1 256p precompute; switching (e.g. DC-AE) = full re-precompute, out of scope |
 | Text encoder | Qwen3-0.6B frozen (exit layer ablated in 2.3) | encoder-size gains saturate early (DeepFloyd IF et al.); params go to the DiT |
-| Optimizer baseline | AdamW + linear_cosine + EMA 0.9999 | convention; Muon challenger in 2.5 |
+| Optimizer after Stage 2 | **Muon (chunked orthogonalization), LR 0.02; auxiliary AdamW for parameters routed outside Muon** | Stage-2 D12 winner; fixed for Stage 3–5; the Stage-2 comparison is recorded in §2.5 |
 | Inference knobs (solver/steps/CFG/guidance distill) | deferred to stages 5/6 | orthogonal to architecture |
 
 ### B. Considered and excluded
@@ -246,42 +246,40 @@ these results validate a **true early exit at k=20** with zero feature change:
 skips layers 21–28 → ≈29% of the text-encoder forward compute saved. Stage 3
 implements it; hero recipe exit layer = 20.
 
-## Stage 3 — Infra & efficiency on the decided architecture (≤80 4090-h nominal)
+## Stage 3 — Infra and efficiency on the decided architecture
 
-**Scope (user, 2026-09-06)**: Stage 2 decided the base model ONLY; Stage 3 works
-on that fixed architecture (h1152 d24 all-single mod=layer, ~485M) and
-delivers infra: multi-resolution/multi-bucket training switching for the
-256p→640p→896p curriculum (incl. bucket-shape switching between stages and
-static-shape compile per bucket), and a **true early exit** for the frozen text
-encoder — the k20 follow-up won (user verdict 2026-09-07, see memo), so the
-forward must stop at layer 20 instead of slicing after a full forward (current
-code computes all 28 layers and saves nothing). Also possible in-stage:
-hero-size sensitivity (等比增大 the confirmed architecture) if the budget
-policy (priority-1 idle fill) allows.
+Stage 3 keeps the Stage-2 hero architecture, dataset mix, caption curriculum,
+and chunked Muon plus auxiliary AdamW optimizer. Its current implementation and
+throughput gate are defined by [`notes/stage3_gate.md`](stage3_gate.md).
 
-**Goal**: maximize samples/s before spending real compute. Gate: loss curves on a
-fixed 2K-step run match pre-optimization within noise (no numerics change).
+The work is row-preserving: sample a dataset and row first, select one caption
+inside that row with the existing curriculum, then use `(resolution,
+retained_prompt_length)` queues with per-bucket local batch sizes. Actual global
+samples, not nominal batch arithmetic, determine the accumulated gradient mean
+and the reported samples/s. The complete prompt/tokenizer cap, drop boundary,
+and sidecar contract are shared by offline metadata generation and training.
 
-4090-specific context: 48GB VRAM is roomy for ≤0.7B + online Qwen3-0.6B; **no NVLink** —
-gradients all-reduce over PCIe, so amortize with grad accum (sync once per effective
-batch) and DDP bucket overlap; single 8-GPU node, no multi-node.
+Static bucket padding/compile, the slice-vs-true-stop text-encoder choice,
+data loading, and resolution switching are retained only when matched eval/loss
+and actual global samples/s support them. The gate document is the sole current
+Stage-3 scope and acceptance reference.
 
-- torch.compile per resolution bucket (static shapes within a bucket); fix graph breaks.
-- SDPA flash/efficient backend selection, bf16 end-to-end, fused AdamW.
-- Activation checkpointing **off** (48GB fits 640p/896p easily at 0.7B; it costs ~30%
-  compute — re-enable only if the 1024p polish OOMs).
-- Grad-accum tuning: fewer, larger micro-batches; measure sync overhead per accum step.
-- Dataloader: benchmark latent-read throughput from shared disk; pre-shuffled shards,
-  `num_workers`, pin_memory, prefetch. IO must never starve the GPUs.
-- Online text encoding: batch/compile the frozen Qwen3; **true early exit at
-  layer 20** (decided by the k20 verdict — stop the forward, don't slice):
-  skips 8 of 28 layers → ≈29% of a ~10–20% step-time share saved; verify
-  against the slice-only baseline (features are bit-identical).
-- Async checkpoint save; EMA off the critical path.
-- VAE precompute throughput (batched GPU encode) for stage-4/5 precomputes.
-
-**Exit**: throughput targets hit — ≥15–20 samples/s/GPU @256p, ≥4–6 @640p (post-optimization
-measured values become the stage-5 sizing input); regression check passed.
+**Outcome (2026-09-09):** the gate is met. Sequential 1-GPU A/B at 256p, 400
+optimizer steps each: baseline 53.78 samples/s → full stack 69.27 samples/s
+including the one-time per-shape compile stalls, 74.9 samples/s steady state
+(**1.29× / 1.39×**), with the fixed `eval/loss` probe tracking the baseline
+inside ±0.11% at every matched probe. On four GPUs (150 steps per arm, same
+seed) the same stack reaches 259.52 samples/s all-in / 282.18 steady against a
+166.09 / 165.83 baseline — **1.56× / 1.70×**, 92% per-GPU scaling efficiency
+once gradients are reduced once per optimizer step instead of once per
+micro-batch; the `eval/loss` probe again matches at every step. Kept
+mechanisms: host-side caption dropout, bincount telemetry, vectorized text
+slice, hoisted RoPE/attention tables, true early exit at k=20, per-block
+`torch.compile`, batched Muon Newton-Schulz, boundary-only DDP reduction.
+Rejected on measurement: cuDNN attention, text-encoder prefetch, CUDA-graph
+`reduce-overhead` compile, whole-model `torch.compile`. Details, per-resolution
+ceilings, and the Stage-4 sizing inputs are in
+[`notes/stage3_gate.md`](stage3_gate.md).
 
 ## Stage 4 — Scaling-law probes on the stage-3 infra (≤450 4090-h nominal)
 
@@ -392,14 +390,18 @@ daytime/evening.
   k20 chosen — metrics tie k28 with best KID, user visual verdict wins on
   portrait facial structure; early exit at layer 20 is feature-identical to the
   validated slice. Stage 3 must implement the true early exit (stop at layer 20).
-- Muon outcome propagates: if 2.5 picks Muon, the stage-4 steps/quality knee and the
-  stage-5 LR schedule must be measured with Muon — no AdamW carryover. If chunking is
-  skipped the arm tests a known-bad configuration (CMuon plateau), so chunked
-  orthogonalization is part of the arm definition, not an optional tweak.
+- The Stage-2 optimizer decision propagates unchanged: Stage 3–5 quality, throughput,
+  step/quality knees, and LR schedules use chunked Muon for 2D hidden weights plus
+  auxiliary AdamW for the remaining parameters, with Muon LR 0.02. An AdamW-only
+  run is historical reference data, not a Stage-3/4 baseline. Chunked
+  orthogonalization is part of the optimizer definition, not an optional tweak.
 - Cross-platform comparability: Andromeda results inform, never decide — fair arms live on
   Inspire 4090.
-- 4090 PCIe-only DDP: if stage 3 shows sync-bound training at batch 256, raise accum or
-  shrink effective batch — don't buy multi-node.
+- 4090 PCIe-only DDP: multi-GPU training is not bandwidth-bound, it is
+  *synchronization*-bound — per-micro-batch all-reduce cost 23% of per-GPU
+  throughput at 4 GPUs. Resolved in Stage 3 by reducing once per optimizer
+  step (`--stage3_no_sync`, 1.27× on the baseline, 92% per-GPU scaling at 4
+  GPUs). Multi-node is still not worth buying.
 - VLM API dependency: rate limits / cost drift / provider model updates → cache raw
   responses; record exact model version in dataset metadata.
 - 896p→1024p may degrade → polish stage optional; latent upscaler as documented fallback.

@@ -1,11 +1,12 @@
 """
-End-of-arm KID evaluation: fixed-seed fakes vs the full held-out real set.
+End-of-run KID evaluation: fixed-seed fakes vs the full held-out real set.
 
 Replaces the old 200-sample FID/KID (statistically meaningless at that size and
 computed on a rotating subset). KID is the small-sample-appropriate metric
 (unbiased); 2K fakes vs 2.4K real with subset_size=100 gives a stable ranking
-signal for arm comparisons. FID is deliberately not computed here — it needs
->=10K samples and is revisited in the heavy eval of stages 4/5.
+signal for run comparisons (a baseline vs an ablated variant, say). FID is
+deliberately not computed here — it needs >=10K samples and belongs in the
+heavier, larger-sample evaluations.
 """
 
 import gc
@@ -49,7 +50,7 @@ def run_kid_eval(
     from datasets import load_from_disk
     from diffusers import AutoencoderKLQwenImage
 
-    print(f"Running end-of-arm KID evaluation at step {current_step}...")
+    print(f"Running KID evaluation at step {current_step}...")
     was_training = model.training
     model.eval()
 

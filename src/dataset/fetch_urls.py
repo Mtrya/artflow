@@ -23,7 +23,7 @@ UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) artflow-dataset-fetch"}
 MAX_BYTES = 25 << 20  # skip absurdly large originals
 MIN_BYTES = 4096
 
-# Hosts measured 0%-alive in the 2026-08-26 probe (dead/blocked); skip outright.
+# Hosts that measured 0% alive when probed (dead or blocking scrapers); skip outright.
 DEAD_HOSTS = {
     "i.pinimg.com", "pbs.twimg.com", "3.bp.blogspot.com", "4.bp.blogspot.com",
     "cdn01.cdn.justjared.com", "imageresizer.static9.net.au",

@@ -1,6 +1,6 @@
 """Cleaning pipeline for museum scans (borders, mounting margins, documentation photos).
 
-Rules, developed against NPM-TW IIIF scans (see notes/dataset_plan.md Domain 1):
+Rules, developed against NPM-TW (National Palace Museum, Taiwan) IIIF scans:
 
 1. chart recovery: documentation shots carry a color-calibration chart (a compact
    cluster of vivid saturated patches sitting on the black studio background, near an

@@ -2,7 +2,7 @@
 Evaluation pipelines for ArtFlow models.
 
 Functions:
-- run_evaluation_uncond: Evaluation for unconditional generation (Stage 0)
+- run_evaluation_uncond: Evaluation for unconditional generation
 - run_evaluation_light: Fast validation loop for conditional generation
 - run_evaluation_heavy: Large-scale evaluation for final metrics
 """
@@ -127,7 +127,8 @@ def run_evaluation_uncond(
         metrics = {}
 
         # FID
-        # Get real images from dataloader (just one batch for stage0)
+        # FID/KID reference: one dataloader batch of real images is a
+        # sufficient reference because generation here is unconditional.
         real_batch = next(iter(train_dataloader))
         real_latents = (
             real_batch["latents"].to(accelerator.device).to(dtype=torch.bfloat16)

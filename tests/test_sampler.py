@@ -123,8 +123,8 @@ class TestDataloaderUtils(unittest.TestCase):
             len(all_indices), 20, f"Expected 20 indices, got {len(all_indices)}"
         )
 
-    def test_collate_fn_stage1(self):
-        """Test collate_fn for Stage 1 (Raw Captions)."""
+    def test_collate_fn_raw_captions(self):
+        """Test collate_fn with raw caption strings (no text embeddings)."""
         batch_size = 4
         latent_channels = 16
         latent_h, latent_w = 32, 32

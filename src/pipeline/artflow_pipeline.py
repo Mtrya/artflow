@@ -29,7 +29,7 @@ class ArtFlowPipeline:
 
     Example:
         ```python
-        pipe = ArtFlowPipeline.from_pretrained("username/artflow-stage2")
+        pipe = ArtFlowPipeline.from_pretrained("your-org/artflow-model")
         image = pipe(
             prompt="impressionist landscape",
             height=640,
@@ -85,7 +85,7 @@ class ArtFlowPipeline:
         Load pipeline from HuggingFace Hub or a local checkpoint path.
 
         Args:
-            pretrained_model_name_or_path: HF Hub repo ID (e.g., "username/artflow-stage2")
+            pretrained_model_name_or_path: HF Hub repo ID (e.g., "your-org/artflow-model")
                 or local path to a .pt/.safetensors checkpoint file.
             dtype: Data type for model weights (default: bfloat16)
             device: Device to load models on (default: cuda if available)
@@ -327,7 +327,7 @@ class ArtFlowPipeline:
             prompt = [prompt]
         batch_size = len(prompt)
 
-        # --- Stage 1: Text encoding (text_encoder on GPU) ---
+        # --- Text encoding (text_encoder on GPU) ---
         do_cfg = guidance_scale > 1.0
 
         if self.offload:
@@ -353,7 +353,7 @@ class ArtFlowPipeline:
             self.text_encoder.to("cpu")
             torch.cuda.empty_cache()
 
-        # --- Stage 2: Denoising (transformer on GPU) ---
+        # --- Denoising (transformer on GPU) ---
         if self.offload:
             self.transformer.to(self.device)
         device = torch.device(self.device)
@@ -400,7 +400,7 @@ class ArtFlowPipeline:
             self.transformer.to("cpu")
             torch.cuda.empty_cache()
 
-        # --- Stage 3: VAE decode (vae on GPU) ---
+        # --- VAE decode (vae on GPU) ---
         if output_type == "latent":
             images = latents
         else:

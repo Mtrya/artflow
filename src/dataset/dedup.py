@@ -1,8 +1,8 @@
 """Dedup for harvested museum records.
 
-Two levels, both metadata/exact-hash based — perceptual dHash was evaluated on the
-NPM-TW 1K probe (2026-08-26) and abandoned: dark mounted-scroll paintings share a
-coarse gradient signature, so even Hamming ≤1 gives 3/3 false positives.
+Two levels, both metadata/exact-hash based — perceptual dHash was evaluated
+and abandoned: dark mounted-scroll paintings share a coarse gradient
+signature, so even Hamming ≤1 gives 3/3 false positives on the NPM-TW scans.
 
 1. exact: md5 of the image file — catches re-downloaded bytes.
 2. cross-canvas: same normalized (title, artist) under different canvas ids —

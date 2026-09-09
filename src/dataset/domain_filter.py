@@ -1,12 +1,11 @@
 """Rule-based domain assignment for harvested museum records.
 
-Assigns each metadata record a coarse domain tag used to route samples into the
-per-domain pools (see notes/dataset_plan.md Work breakdown item 3). The rules only
-use metadata fields; ambiguous leftovers are tagged "other" and can be reclassified
-by the VLM at caption time.
+Assigns each metadata record a coarse domain tag used to route samples into
+per-domain pools. The rules only use metadata fields; ambiguous leftovers are
+tagged "other" and can be reclassified by the VLM at caption time.
 
-Tags: guo_hua (Domain 1 Chinese painting/calligraphy), western (Domain 2/3 Western
-art), japanese_print, object (non-painting artifacts), other.
+Tags: guo_hua (Chinese painting/calligraphy), western (Western art),
+japanese_print, object (non-painting artifacts), other.
 
 CLI:
     python -m src.dataset.domain_filter --in data/raw/met/metadata.jsonl

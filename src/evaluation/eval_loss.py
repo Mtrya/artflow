@@ -2,9 +2,9 @@
 Fixed held-out eval-loss probe for ablation comparability.
 
 Replaces the old rotating-subset approach: the same samples, captions, noise,
-and timesteps at every probe and in every arm, so eval/loss curves are directly
-comparable across runs. Forward-only; runs on every rank (deterministic, acts
-as a natural sync point) and is logged by the main process.
+and timesteps at every probe, so eval/loss curves are directly comparable
+across runs. Forward-only; runs on every rank (deterministic, acts as a
+natural sync point) and is logged by the main process.
 """
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -78,7 +78,7 @@ class EvalLossProbe:
         std = vae_std.float().cpu().squeeze()
         self.latents = [(z - mean.view(-1, 1, 1)) / std.view(-1, 1, 1) for z in latents]
 
-        # Pre-encode text once (fixed captions; identical across probes/arms)
+        # Pre-encode text once (fixed captions; identical across probes and runs)
         txt, txt_mask, txt_pooled = encode_text(
             captions, text_encoder, tokenizer, pooling, exit_layer=exit_layer
         )
@@ -86,7 +86,7 @@ class EvalLossProbe:
         self.txt_mask = txt_mask.cpu()
         self.txt_pooled = txt_pooled.cpu() if txt_pooled is not None else None
 
-        # Fixed noise per sample (same across probes and arms)
+        # Fixed noise per sample (same across probes and runs)
         gen = torch.Generator().manual_seed(seed)
         self.noise = [torch.randn(z.shape, generator=gen) for z in self.latents]
 

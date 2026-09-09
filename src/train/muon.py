@@ -54,6 +54,31 @@ def _zeropower_via_newtonschulz5(G: torch.Tensor, steps: int = 5) -> torch.Tenso
     return X
 
 
+@torch.no_grad()
+def _zeropower_via_newtonschulz5_batched(G: torch.Tensor, steps: int = 5):
+    """Batched Newton-Schulz over a stack [N, r, c] of same-shaped matrices.
+
+    Same iteration as the 2D version, but the per-matrix GEMMs become one bmm
+    so the GPU is not left waiting on a chain of small kernels. Returns a list
+    of [r, c] tensors.
+    """
+    assert G.ndim == 3
+    a, b, c = (3.4445, -4.7750, 2.0315)
+    X = G.to(torch.bfloat16)
+    transposed = X.shape[1] > X.shape[2]
+    if transposed:
+        X = X.mT
+    norms = X.flatten(1).norm(dim=1).clamp_min(1e-7).view(-1, 1, 1)
+    X = X / norms
+    for _ in range(steps):
+        A = X @ X.mT
+        B = b * A + c * (A @ A)
+        X = a * X + B @ X
+    if transposed:
+        X = X.mT
+    return list(X.unbind(0))
+
+
 class Muon(torch.optim.Optimizer):
     """
     Muon for 2D hidden-layer weights.
@@ -95,6 +120,11 @@ class Muon(torch.optim.Optimizer):
             wd = group["weight_decay"]
             chunks = group["chunks"]
 
+            # Pass 1: momentum/nesterov (elementwise) and collect the matrices
+            # that need orthogonalization. Weight decay is applied here because
+            # it is independent of the NS result and must run once per param,
+            # not once per chunk.
+            entries = []
             for p in group["params"]:
                 if p.grad is None:
                     continue
@@ -106,25 +136,40 @@ class Muon(torch.optim.Optimizer):
                 buf.lerp_(g, 1.0 - momentum)
                 g = g.lerp_(buf, momentum) if group["nesterov"] else buf
 
+                if wd > 0:
+                    p.mul_(1.0 - lr * wd)
+
                 m, n = p.shape
                 if chunks > 1:
                     assert m % chunks == 0, f"chunks={chunks} does not divide {m}"
-                    gs = g.reshape(chunks, m // chunks, n)
-                    updated = torch.cat(
-                        [
-                            _zeropower_via_newtonschulz5(gs[i], group["ns_steps"])
-                            for i in range(chunks)
-                        ],
-                        dim=0,
-                    )
-                    scale = 0.2 * math.sqrt(max(m // chunks, n))
+                    rows = m // chunks
+                    gs = g.reshape(chunks, rows, n)
+                    scale = 0.2 * math.sqrt(max(rows, n))
+                    for index in range(chunks):
+                        entries.append(
+                            (p.narrow(0, index * rows, rows), gs[index], scale)
+                        )
                 else:
-                    updated = _zeropower_via_newtonschulz5(g, group["ns_steps"])
-                    scale = 0.2 * math.sqrt(max(m, n))
+                    entries.append((p, g, 0.2 * math.sqrt(max(m, n))))
 
-                if wd > 0:
-                    p.mul_(1.0 - lr * wd)
-                p.add_(updated.to(p.dtype), alpha=-lr * scale)
+            if group.get("batched_ns", True) and len(entries) > 1:
+                # Pass 2: one bmm chain per distinct matrix shape. Same NS math
+                # per matrix, without a serial chain of tiny GEMM launches.
+                by_shape = {}
+                for entry in entries:
+                    by_shape.setdefault(tuple(entry[1].shape), []).append(entry)
+                for items in by_shape.values():
+                    stacked = torch.stack([item[1] for item in items])
+                    updates = _zeropower_via_newtonschulz5_batched(
+                        stacked, group["ns_steps"]
+                    )
+                    for (dest, _, scale), updated in zip(items, updates):
+                        dest.add_(updated.to(dest.dtype), alpha=-lr * scale)
+                continue
+
+            for dest, matrix, scale in entries:
+                updated = _zeropower_via_newtonschulz5(matrix, group["ns_steps"])
+                dest.add_(updated.to(dest.dtype), alpha=-lr * scale)
 
         return loss
 
@@ -149,6 +194,7 @@ def build_param_groups(
     adam_wd: float = 0.01,
     adam_betas=(0.9, 0.95),
     muon_momentum: float = 0.95,
+    batched_ns: bool = True,
 ) -> List[torch.optim.Optimizer]:
     """
     Split model parameters into Muon (2D hidden) and AdamW (everything else)
@@ -182,7 +228,11 @@ def build_param_groups(
             continue
         chunks = _chunk_hint(name, p.shape)
         if chunks not in muon_groups:
-            muon_groups[chunks] = {"params": [], "chunks": chunks}
+            muon_groups[chunks] = {
+                "params": [],
+                "chunks": chunks,
+                "batched_ns": batched_ns,
+            }
         muon_groups[chunks]["params"].append(p)
 
     optimizers: List[torch.optim.Optimizer] = []

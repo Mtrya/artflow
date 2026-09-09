@@ -10,7 +10,7 @@ from typing import Dict, Tuple
 
 from datasets import load_dataset, load_from_disk
 
-from ..dataset.precompute import precompute
+from ..dataset.precompute import precompute, write_length_metadata
 
 
 def parse_resolution_buckets(bucket_str: str, offset: int) -> Dict[int, Tuple[int, int]]:
@@ -98,6 +98,13 @@ def parse_args():
         "--range", type=int, default=-1, help="Range of images to process (for testing)"
     )
     parser.add_argument("--device", type=str, default="cuda", help="Device to use")
+    parser.add_argument(
+        "--tokenizer",
+        type=str,
+        default="Qwen/Qwen3-0.6B",
+        help="Tokenizer used to measure retained caption lengths for the "
+        "length-metadata sidecar written next to the saved dataset",
+    )
     parser.add_argument("--non_zh_drop_prob", type=float, default=0.0, help="Probability of dropping non-zh samples")
     parser.add_argument("--resolution_tolerance", type=float, default=1.0, help="Tolerance factor for resolution dropping")
     parser.add_argument("--min_caption_tokens", type=int, default=1, help="Minimum caption tokens to allow")
@@ -168,6 +175,11 @@ def main():
     )
     print(f"Saving processed dataset to {args.output_dir}...")
     processed_dataset.save_to_disk(args.output_dir)
+    # The length-metadata sidecar is derived from the saved Arrow shards, so it
+    # must be written after save_to_disk and stays aligned with the row order on
+    # disk. Training reads it from <dataset_dir>/length_metadata.npz.
+    print("Writing caption length metadata...")
+    write_length_metadata(processed_dataset, args.output_dir, args.tokenizer)
     print("Done!")
 
 

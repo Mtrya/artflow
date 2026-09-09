@@ -10,13 +10,17 @@ Common components like TimestepEmbeddings, MSRoPE (Multimodal Scalable RoPE), an
 are shared across implementations.
 """
 
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Sequence
 import functools
 import math
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+# Optional SDPA backend restriction for the masked (padded-text) attention
+# path; None keeps the library default.
+_SDPA_BACKENDS = None
 
 
 def sdpa_with_pad_mask(
@@ -29,23 +33,72 @@ def sdpa_with_pad_mask(
 
     A bool mask forces PyTorch off the flash path; the math fallback then
     materializes B*H*S^2 attention weights per layer (saved for backward),
-    which at seq ~2K is tens of GiB and caused the stage-2 OOM spikes on
-    long-caption batches. We convert the mask to an additive bias in q.dtype
+    which at seq ~2K is tens of GiB per layer and OOMs long-caption batches.
+    We convert the mask to an additive bias in q.dtype
     and prefer the memory-efficient kernel (never materializes S^2 scores);
     mask=None keeps the default (flash) path untouched.
     """
     if attn_mask is None:
         return F.scaled_dot_product_attention(q, k, v, dropout_p=0.0)
 
-    from torch.nn.attention import SDPBackend, sdpa_kernel
+    return sdpa_with_bias(q, k, v, pad_bias_from_mask(attn_mask, q.dtype))
 
-    bias = torch.zeros(attn_mask.shape, dtype=q.dtype, device=q.device)
-    bias = bias.masked_fill(~attn_mask, float("-inf"))
-    backends = [SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
+
+def set_sdpa_backends(names: Optional[Sequence[str]]) -> None:
+    """Restrict SDPA backends for masked (padded-text) attention.
+
+    ``None`` keeps the library default (memory-efficient first). Otherwise
+    masked attention is limited to the named ``SDPBackend`` members, with the
+    math backend appended as a fallback. Training keeps the default: on a
+    single 4090 at 256p (micro-batch 16, 128-192 text tokens) cuDNN attention
+    is ~30% slower than memory-efficient on the forward+backward training
+    step, despite a faster forward-only kernel with an additive pad bias.
+    """
+    global _SDPA_BACKENDS
+    if names is None:
+        _SDPA_BACKENDS = None
+        return
+    from torch.nn.attention import SDPBackend
+
+    resolved = []
+    for name in names:
+        member = getattr(SDPBackend, name.strip().upper(), None)
+        if member is None:
+            raise ValueError(f"unknown SDPA backend {name!r}")
+        resolved.append(member)
+    _SDPA_BACKENDS = tuple(resolved)
+
+
+def _sdpa_backends():
+    if _SDPA_BACKENDS is not None:
+        return list(_SDPA_BACKENDS)
+    from torch.nn.attention import SDPBackend
+
+    return [SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
+
+
+def sdpa_with_bias(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    bias: torch.Tensor,
+) -> torch.Tensor:
+    """SDPA with a precomputed additive bias of shape [B, 1, 1, S_k]."""
+    from torch.nn.attention import sdpa_kernel
+
+    backends = _sdpa_backends()
     if q.device.type != "cuda":
+        from torch.nn.attention import SDPBackend
+
         backends = [SDPBackend.MATH]
     with sdpa_kernel(backends):
         return F.scaled_dot_product_attention(q, k, v, attn_mask=bias, dropout_p=0.0)
+
+
+def pad_bias_from_mask(attn_mask: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
+    """Convert a bool keep-mask [B, 1, 1, S_k] into an additive SDPA bias."""
+    bias = torch.zeros(attn_mask.shape, dtype=dtype, device=attn_mask.device)
+    return bias.masked_fill(~attn_mask, float("-inf"))
 
 
 class TimestepEmbeddings(nn.Module):
@@ -217,6 +270,18 @@ class MSRoPE(nn.Module):
         ]  # placing text tokens on a diagonal in the 2D position space
 
         return img_freqs, txt_freqs
+
+    def prepare_freqs(
+        self, img_hw: Tuple[int, int], txt_seq_len: int, device
+    ) -> torch.Tensor:
+        """Concatenated [S_img + S_txt, D/2] complex freqs, reusable across blocks.
+
+        Identical to applying ``forward()`` and concatenating the two halves;
+        hoisting it out of the block loop removes one table lookup and two
+        concatenations per layer.
+        """
+        img_freqs, txt_freqs = self.forward(img_hw, txt_seq_len, device)
+        return torch.cat([img_freqs, txt_freqs], dim=0)
 
     @functools.lru_cache(maxsize=None)
     def _compute_image_freqs(self, height: int, width: int) -> torch.Tensor:
@@ -633,6 +698,8 @@ class SingleStreamAttention(nn.Module):
         img_hw: Tuple[int, int],
         txt_seq_len: int,
         txt_attention_mask: Optional[torch.Tensor] = None,
+        rope_freqs: Optional[torch.Tensor] = None,
+        attn_bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         B, S, C = x.shape
 
@@ -646,24 +713,35 @@ class SingleStreamAttention(nn.Module):
         q = self.q_norm(q)
         k = self.k_norm(k)
 
-        # Need to apply different RoPE to img and txt parts
-        # Assuming x is [img, txt]
-        S_img = img_hw[0] * img_hw[1]
+        if rope_freqs is not None:
+            # Frequencies already cover [img, txt] in that order, so RoPE is a
+            # single elementwise pass over the concatenated sequence.
+            q = apply_rotary_emb(q.transpose(1, 2), rope_freqs).transpose(1, 2)
+            k = apply_rotary_emb(k.transpose(1, 2), rope_freqs).transpose(1, 2)
+        else:
+            # Need to apply different RoPE to img and txt parts
+            # Assuming x is [img, txt]
+            S_img = img_hw[0] * img_hw[1]
 
-        q_img = q[:, :, :S_img, :]
-        k_img = k[:, :, :S_img, :]
-        q_txt = q[:, :, S_img:, :]
-        k_txt = k[:, :, S_img:, :]
+            q_img = q[:, :, :S_img, :]
+            k_img = k[:, :, :S_img, :]
+            q_txt = q[:, :, S_img:, :]
+            k_txt = k[:, :, S_img:, :]
 
-        img_freqs, txt_freqs = self.rope(img_hw, txt_seq_len, x.device)
+            img_freqs, txt_freqs = self.rope(img_hw, txt_seq_len, x.device)
 
-        q_img = apply_rotary_emb(q_img.transpose(1, 2), img_freqs).transpose(1, 2)
-        k_img = apply_rotary_emb(k_img.transpose(1, 2), img_freqs).transpose(1, 2)
-        q_txt = apply_rotary_emb(q_txt.transpose(1, 2), txt_freqs).transpose(1, 2)
-        k_txt = apply_rotary_emb(k_txt.transpose(1, 2), txt_freqs).transpose(1, 2)
+            q_img = apply_rotary_emb(q_img.transpose(1, 2), img_freqs).transpose(1, 2)
+            k_img = apply_rotary_emb(k_img.transpose(1, 2), img_freqs).transpose(1, 2)
+            q_txt = apply_rotary_emb(q_txt.transpose(1, 2), txt_freqs).transpose(1, 2)
+            k_txt = apply_rotary_emb(k_txt.transpose(1, 2), txt_freqs).transpose(1, 2)
 
-        q = torch.cat([q_img, q_txt], dim=2)
-        k = torch.cat([k_img, k_txt], dim=2)
+            q = torch.cat([q_img, q_txt], dim=2)
+            k = torch.cat([k_img, k_txt], dim=2)
+
+        if attn_bias is not None:
+            x = sdpa_with_bias(q, k, v, attn_bias)
+            x = x.transpose(1, 2).reshape(B, S, C)
+            return self.proj(x)
 
         # Prepare attention mask
         attn_mask = None
@@ -761,6 +839,8 @@ class SingleStreamDiTBlock(nn.Module):
         img_hw: Tuple[int, int],
         txt_seq_len: int,
         txt_attention_mask: Optional[torch.Tensor] = None,
+        rope_freqs: Optional[torch.Tensor] = None,
+        attn_bias: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # Modulation
         # c: [B, c_dim]
@@ -788,7 +868,14 @@ class SingleStreamDiTBlock(nn.Module):
         # 1. Attention Block
         x_norm = modulate(self.norm1(x), shift_msa, scale_msa)
 
-        x_attn = self.attn(x_norm, img_hw, txt_seq_len, txt_attention_mask)
+        x_attn = self.attn(
+            x_norm,
+            img_hw,
+            txt_seq_len,
+            txt_attention_mask,
+            rope_freqs=rope_freqs,
+            attn_bias=attn_bias,
+        )
 
         x = x + gate_msa.unsqueeze(1) * x_attn
 

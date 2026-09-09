@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Stage 0: Unconditional Generation (Algorithm Ablation)
+# Unconditional generation (algorithm comparison)
 
 export PYTHONPATH=.
 
@@ -34,7 +34,7 @@ NUM_HEADS=8
 
 # Launch training
 python -m src.train.train_uncond \
-    --run_name "artflow-stage0-fm-ot" \
+    --run_name "artflow-uncond-fm-ot" \
     --output_dir $OUTPUT_DIR \
     --precomputed_dataset_path $PRECOMPUTED_PATH \
     --batch_size $BATCH_SIZE \

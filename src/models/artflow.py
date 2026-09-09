@@ -1,6 +1,6 @@
 """
-Unified ArtFlow DiT model for Stage 1 Architecture Ablation.
-Supports configurable conditioning (Pure/Fused), block schedules (Double/Single stream),
+Unified ArtFlow DiT model for the architecture comparison, supporting
+configurable conditioning (Pure/Fused), block schedules (Double/Single stream),
 and modulation strategies.
 """
 
@@ -17,12 +17,14 @@ try:
         DoubleStreamDiTBlock,
         SingleStreamDiTBlock,
         TimestepEmbeddings,
+        pad_bias_from_mask,
     )
 except ImportError:
     from dit_blocks import (
         DoubleStreamDiTBlock,
         SingleStreamDiTBlock,
         TimestepEmbeddings,
+        pad_bias_from_mask,
     )
 
 
@@ -180,6 +182,7 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
         txt: torch.Tensor,
         txt_pooled: Optional[torch.Tensor] = None,
         txt_mask: Optional[torch.Tensor] = None,
+        fast_attn: bool = False,
     ) -> torch.Tensor:
         """
         x: (N, C, H, W)
@@ -187,6 +190,9 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
         txt: (N, L_txt, D_txt)
         txt_pooled: (N, D_txt) - Required if conditioning_scheme="fused"
         txt_mask: (N, L_txt)
+        fast_attn: hoist the per-layer RoPE frequencies and the padded-text
+            attention bias out of the block loop. Same math, one table lookup
+            and one mask build per forward instead of one per layer.
         """
         _, _, H, W = x.shape
         x = self.x_embedder(x)  # (N, D, H/p, W/p)
@@ -207,8 +213,46 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
         img_hw = (H // self.patch_size, W // self.patch_size)
         txt_seq_len = txt.shape[1]
 
+        rope_freqs = None
+        attn_bias = None
+        if fast_attn and self.blocks:
+            first = self.blocks[0]
+            if not isinstance(first, SingleStreamDiTBlock):
+                raise ValueError("fast_attn is only implemented for single-stream blocks")
+            rope_freqs = first.attn.rope.prepare_freqs(
+                img_hw, txt_seq_len, x.device
+            )
+            if txt_mask is not None:
+                keep = torch.cat(
+                    [
+                        torch.ones(
+                            txt_mask.shape[0],
+                            img_hw[0] * img_hw[1],
+                            device=txt_mask.device,
+                            dtype=txt_mask.dtype,
+                        ),
+                        txt_mask,
+                    ],
+                    dim=1,
+                )
+                attn_bias = pad_bias_from_mask(
+                    (keep > 0).unsqueeze(1).unsqueeze(2), x.dtype
+                )
+
         for block in self.blocks:
-            x, txt = block(x, txt, c, img_hw, txt_seq_len, txt_mask)
+            if isinstance(block, SingleStreamDiTBlock):
+                x, txt = block(
+                    x,
+                    txt,
+                    c,
+                    img_hw,
+                    txt_seq_len,
+                    txt_mask,
+                    rope_freqs=rope_freqs,
+                    attn_bias=attn_bias,
+                )
+            else:
+                x, txt = block(x, txt, c, img_hw, txt_seq_len, txt_mask)
 
         x = self.final_layer(x)
         x = self.unpatchify(x, H, W)

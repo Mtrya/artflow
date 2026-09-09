@@ -271,6 +271,11 @@ class TestWeightedSamplerReshuffle:
         ]
         dataset = self._create_mock_dataset(samples)
 
+        # The weighted draw uses the global RNG; pin it so the assertion below
+        # cannot flake on a run where the small dataset happens not to be picked.
+        import random
+
+        random.seed(0)
         sampler = ResolutionBucketSampler(
             dataset,
             batch_size=2,

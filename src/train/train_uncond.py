@@ -1,6 +1,7 @@
 """
 Main training script for ArtFlow.
-Stage 0: unconditional image generation with WikiArt Monet subset, for algorithm ablation
+Unconditional image generation with the WikiArt Monet subset, used for the
+algorithm comparison.
 """
 
 import argparse
@@ -26,7 +27,9 @@ from ..utils.vae_codec import get_vae_stats
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train ArtFlow Stage 0")
+    parser = argparse.ArgumentParser(
+        description="Train ArtFlow (unconditional, algorithm comparison)"
+    )
     parser.add_argument(
         "--run_name", type=str, default="artflow_run", help="Name of the run"
     )
@@ -109,7 +112,7 @@ def main():
     accelerator = Accelerator(mixed_precision=args.mixed_precision, log_with="swanlab")
     if accelerator.is_main_process:
         accelerator.init_trackers(
-            project_name="artflow-stage0",
+            project_name="artflow-uncond",
             config=vars(args),
             init_kwargs={"swanlab": {"experiment_name": args.run_name}},
         )
@@ -121,7 +124,7 @@ def main():
         print(f"Algorithm: {args.algorithm}")
 
     # 1. Load and Preprocess Data
-    # For Stage 0, we use fixed resolution and no text conditioning (unconditional)
+    # Unconditional training: fixed resolution and no text conditioning
     if accelerator.is_main_process:
         print(f"Loading precomputed dataset from {args.precomputed_dataset_path}...")
 

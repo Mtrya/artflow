@@ -1,8 +1,8 @@
 """
-Fixed-prompt sample grids for cross-arm visual comparability.
+Fixed-prompt sample grids for cross-run visual comparability.
 
 Every eval uses the same prompt suite and per-prompt deterministic seeds, so
-grid images are directly comparable across steps and across ablation arms.
+grid images are directly comparable across steps and across ablation runs.
 Bucket shapes are derived from the eval dataset itself (never hand-written),
 which keeps generation resolutions consistent with training data.
 """

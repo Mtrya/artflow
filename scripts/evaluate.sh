@@ -6,7 +6,7 @@ export PYTHONPATH=.venv/bin/python
 
 export TOKENIZERS_PARALLELISM=false
 
-# Model configuration for stage1 baseline
+# Model configuration for the conditional baseline
 MODEL_CONFIG='{
   "hidden_size": 1152,
   "num_heads": 16,

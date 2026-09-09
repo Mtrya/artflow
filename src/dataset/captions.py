@@ -73,70 +73,74 @@ def format_artist_name(text: str) -> str:
     return text.replace("-", " ").title()
 
 
+def caption_probabilities_from_token_counts(
+    token_counts: List[int],
+    stage: float,
+    min_prob: float = 0.15,
+    max_prob: float = 0.80,
+) -> List[float]:
+    """Return the existing short-to-long curriculum probabilities.
+
+    ``token_counts`` is deliberately accepted separately from the caption text so
+    offline row metadata and the online sampler can use exactly the same
+    distribution as :func:`sample_caption`.
+    """
+    if len(token_counts) == 0:
+        raise ValueError("caption probabilities require at least one caption")
+
+    token_counts = [int(count) for count in token_counts]
+    total_tokens = sum(token_counts)
+    if total_tokens == 0 or len(token_counts) == 1:
+        return [1.0 / len(token_counts)] * len(token_counts)
+
+    mean_tokens = total_tokens / len(token_counts)
+    deviations = [(count - mean_tokens) / mean_tokens for count in token_counts]
+    preference_strength = 2.0
+    alpha = float(np.clip(stage, 0.0, 1.0))
+    scores = [
+        max(1.0 + preference_strength * (alpha - 0.5) * deviation, 1e-6)
+        for deviation in deviations
+    ]
+
+    max_prob = (
+        min(max_prob, 1.0 - min_prob * (len(token_counts) - 1))
+        if len(token_counts) > 1
+        else 1.0
+    )
+    if max_prob < min_prob:
+        max_prob = min_prob
+
+    total_score = sum(scores)
+    probabilities = [score / total_score for score in scores]
+    clipped_probs = [np.clip(probability, min_prob, max_prob) for probability in probabilities]
+    prob_sum = sum(clipped_probs)
+    return [float(probability / prob_sum) for probability in clipped_probs]
+
+
+def sample_caption_index_from_token_counts(
+    token_counts: List[int],
+    stage: float,
+    min_prob: float = 0.15,
+    max_prob: float = 0.80,
+    rng=None,
+) -> int:
+    """Sample a caption index using the legacy curriculum distribution."""
+    probabilities = caption_probabilities_from_token_counts(
+        token_counts, stage=stage, min_prob=min_prob, max_prob=max_prob
+    )
+    chooser = random if rng is None else rng
+    return chooser.choices(range(len(probabilities)), weights=probabilities, k=1)[0]
+
+
 def sample_caption(
     captions: List[str], stage: float, min_prob: float = 0.15, max_prob: float = 0.80
 ) -> str:
-    """
-    Sample a caption using stage-controlled symmetric preference scores.
-
-    This method creates a smooth curriculum from short to long captions by computing
-    deviation from mean token count and applying stage-dependent preference:
-
-    - stage=0.0: Strongly favor short captions (below-mean length)
-    - stage=0.5: No preference (uniform distribution)
-    - stage=1.0: Strongly favor long captions (above-mean length)
-
-    Args:
-        captions: Available captions to choose from.
-        stage: Training stage in [0, 1] that interpolates between short- and long-caption preferences.
-        min_prob: Minimum probability assigned to any caption after clipping.
-        max_prob: Maximum probability assigned to any caption after clipping.
-
-    Returns:
-        A single caption sampled according to the curriculum distribution.
-
-    Raises:
-        ValueError: If no captions are provided.
-    """
+    """Sample one caption using the stage-controlled curriculum distribution."""
     if not captions:
         raise ValueError("sample_caption requires at least one caption")
-
     token_counts = _estimate_token_counts(captions)
-    total_tokens = sum(token_counts)
-
-    if total_tokens == 0 or len(captions) == 1:
-        probabilities = [1.0 / len(captions)] * len(captions)
-    else:
-        # Compute deviation from mean token count (symmetric around 0)
-        mean_tokens = total_tokens / len(captions)
-        deviations = [(count - mean_tokens) / mean_tokens for count in token_counts]
-        preference_strength = 2.0
-        alpha = float(np.clip(stage, 0.0, 1.0))
-
-        scores = [1.0 + preference_strength * (alpha - 0.5) * dev for dev in deviations]
-
-        # Ensure positive scores
-        scores = [max(score, 1e-6) for score in scores]
-
-        # Apply min/max probability clipping
-        max_prob = (
-            min(max_prob, 1.0 - min_prob * (len(captions) - 1))
-            if len(captions) > 1
-            else 1.0
-        )
-        if max_prob < min_prob:
-            max_prob = min_prob
-
-        # Normalize to probabilities
-        total_score = sum(scores)
-        probabilities = [s / total_score for s in scores]
-
-        # Clip probabilities
-        clipped_probs = [np.clip(p, min_prob, max_prob) for p in probabilities]
-        prob_sum = sum(clipped_probs)
-        probabilities = [p / prob_sum for p in clipped_probs]
-
-    sampled_idx = random.choices(range(len(captions)), weights=probabilities, k=1)[0]
-
+    sampled_idx = sample_caption_index_from_token_counts(
+        token_counts, stage=stage, min_prob=min_prob, max_prob=max_prob
+    )
     return captions[sampled_idx]
 

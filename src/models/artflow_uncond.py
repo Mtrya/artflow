@@ -1,5 +1,6 @@
 """
-Unconditional DiT model for ArtFlow (Stage 0: Algorithm Ablation).
+Unconditional DiT model for ArtFlow, used for the algorithm comparison
+(score-matching diffusion vs flow matching, with or without optimal transport).
 """
 
 import torch

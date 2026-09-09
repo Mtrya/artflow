@@ -1,0 +1,120 @@
+# ArtFlow training configuration.
+#
+# One file per experiment. Everything that defines *what* is trained lives
+# here; the command line only carries run-time control (which config to load,
+# where to write, whether to resume, whether to profile).
+#
+# Values are grouped by the part of the training loop they feed. Where a value
+# came from a measurement, the comment says what was measured and where the
+# number can be reproduced.
+
+[data]
+# Row-level sampling weights: one "path:weight" per dataset, space separated.
+# A dataset is drawn first, then a row inside it, then exactly one caption
+# inside that row, so a row with several captions is not sampled several times.
+mix = ""
+# Per-resolution table of [[max_caption_length, micro_batch], ...]. A row is
+# assigned to the first bucket whose max_caption_length is >= its retained
+# token count. Every resolution id present in the data must appear here.
+bucket_plan = ""
+# Probability of replacing a caption with the empty string for classifier-free
+# guidance.
+caption_dropout_prob = 0.1
+# Caption-selection curriculum endpoints. 0.0 prefers the shortest caption in
+# a row, 1.0 the longest; the value is interpolated linearly over training.
+curriculum_start = 0.0
+curriculum_end = 1.0
+# How often the sampler is told the current curriculum position, in optimizer
+# steps.
+stage_sync_interval = 1
+
+[model]
+# Width and depth of the transformer. The shipped recipe is 1152 x 24.
+hidden_size = 1152
+num_heads = 16
+double_stream_depth = 0
+single_stream_depth = 24
+mlp_ratio = 2.67
+# "fused" folds the pooled text vector into the modulation path; "pure" keeps
+# it out. Measured: fused won the architecture sweep on eval/loss.
+conditioning_scheme = "fused"
+double_stream_modulation = "none"
+# "layer" shares one modulation projection per layer; "none" gives every
+# block its own. Measured: layer won on eval/loss and used ~8% less memory.
+single_stream_modulation = "layer"
+ffn_type = "gated"
+qkv_bias = true
+# Positions the image patch grid at the origin of the RoPE coordinate system
+# and pins text to a fixed diagonal. Measured: ties on eval/loss at 256p and
+# transfers better at higher resolution than the alternative.
+rope_centered_grid = true
+
+[text_encoder]
+# Frozen encoder; only its hidden states are used, never its gradients.
+path = "Qwen/Qwen3-0.6B"
+# Hidden state index to read. Measured: stopping after layer 20 matches the
+# full forward bit-for-bit and skips the remaining 8 layers (~29% of the
+# encoder forward).
+exit_layer = 20
+
+[optim]
+learning_rate = 3e-4
+start_learning_rate = 1e-5
+min_learning_rate = 0.5e-4
+lr_scheduler_type = "linear_cosine"
+lr_warmup_steps = 500
+max_grad_norm = 1.0
+# Muon orthogonalizes 2D hidden weights; every other parameter is updated by
+# an auxiliary AdamW. Measured: Muon beat AdamW by 1.1% eval/loss and 24% KID
+# at equal steps, for ~10% more step time.
+muon_lr = 0.02
+muon_wd = 0.01
+muon_momentum = 0.95
+
+[train]
+max_steps = 50000
+seed = 42
+# Micro-batches per optimizer step. Together with the bucket table this fixes
+# the number of samples per optimizer step.
+gradient_accumulation_steps = 16
+num_workers = 8
+use_ema = true
+# EMA memory is roughly 1/(1-decay) steps: 0.9999 spans ~10k steps, 0.999
+# ~1k. Match it to the run length so the averaged weights track the live ones.
+ema_decay = 0.999
+ema_update_interval = 1
+# Logit-normal timestep sampling concentrates training on mid-noise levels.
+use_logit_normal_sampling = true
+logit_normal_mu = 0.0
+logit_normal_sigma = 1.0
+checkpoint_interval = 500
+# How often the (expensive) image-space evaluation runs. The cheap fixed-sample
+# loss probe is [eval].loss_interval.
+eval_interval = 100000
+# Optimizer steps dropped from the reported steady-state throughput, so a
+# short run is not penalised for one-time compile and allocator warm-up.
+steady_state_skip_steps = 50
+
+[eval]
+dataset_path = ""
+batch_size = 8
+num_samples = 16
+# Fixed-sample loss probe. It runs at a fixed seed and fixed timesteps, so two
+# runs at the same step are directly comparable.
+loss_interval = 50
+loss_samples = 512
+prompts_file = "assets/eval/prompts_v1.jsonl"
+compute_metrics = false
+kid_at_end = false
+kid_num_fake = 2000
+
+[paths]
+vae = "REPA-E/e2e-qwenimage-vae"
+output_dir = "output"
+
+[telemetry]
+log_interval = 25
+# Periodically return cached blocks to the allocator. Long runs with variable
+# shapes fragment without this.
+cache_clear_interval = 100
+swanlab_project = "artflow"
