@@ -2,7 +2,7 @@
 
 # Evaluation script for baseline checkpoints
 
-export PYTHONPATH=.venv/bin/python
+export PYTHONPATH=.
 
 export TOKENIZERS_PARALLELISM=false
 
