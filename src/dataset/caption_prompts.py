@@ -23,15 +23,15 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-PROMPT_VERSION = "cap-v1"
+PROMPT_VERSION = "cap-v6"
 
-# Retained-token bands from the plan.  A request targets the middle of its band
+# Retained-token bands.  A request targets the middle of its band
 # and is accepted anywhere inside it.
 LENGTH_BANDS = {
+    "64-255": (64, 255),
     "256-511": (256, 511),
-    "512-1023": (512, 1023),
-    "1024-1535": (1024, 1535),
-    "1536-2048": (1536, 2048),
+    "512-895": (512, 895),
+    "896-1280": (896, 1280),
 }
 BAND_NAMES = tuple(LENGTH_BANDS)
 
@@ -40,14 +40,31 @@ WORDS_PER_TOKEN = {"en": 0.757, "zh": 1.21}
 LANGUAGES = ("en", "zh")
 FORMATS = ("prose", "structured")
 
-# Openers the existing corpus already forbids; a caption that starts with one
-# is rejected rather than trimmed, because the rest of the sentence is usually
-# built around it.
-BOILERPLATE_OPENERS = (
-    "this image", "the image", "this picture", "the picture", "this painting shows",
-    "the painting shows", "in this image", "the artwork depicts", "this artwork",
-    "这张图片", "这幅图片", "这幅画", "该作品", "这是一幅", "图中", "画面中",
-)
+
+
+def metadata_for_caption(artist: Optional[str], title: Optional[str],
+                         language: str) -> Dict[str, str]:
+    """Tidy museum fields into what a caption may use.
+
+    The harvested fields are catalogue strings: the artist often lists Chinese
+    and romanised names together, and the title carries a Chinese and an English
+    version separated by a pipe.  Keep the part that matches the caption's
+    language and drop the romanisation, so the model is not tempted to paste a
+    catalogue line into the caption.
+    """
+    fields: Dict[str, str] = {}
+    if artist:
+        parts = [p.strip() for p in artist.split(",")]
+        keep = [p for p in parts if p and not any(ch.isascii() and ch.isalpha() for ch in p)]
+        cleaned = "、".join(keep) if keep else parts[0].strip()
+        if cleaned:
+            fields["作者" if language == "zh" else "artist"] = cleaned
+    if title:
+        zh, _, en = title.partition(" | ")
+        value = (zh if language == "zh" else en or zh).strip()
+        if value and value.lower() not in {"untitled", "無題", "无题", "no title"}:
+            fields["作品名" if language == "zh" else "title"] = value
+    return fields
 
 
 @dataclass
@@ -61,6 +78,11 @@ class CaptionRequest:
     domain: str
     metadata: Dict[str, str] = field(default_factory=dict)
     extra_notes: str = ""
+    # Where inside the band to aim, 0 = lower edge, 1 = upper edge.  The
+    # default is a third of the way in because models overshoot more often
+    # than they undershoot.  Models with a measured systematic bias get a
+    # position near the opposite edge; the acceptance band never changes.
+    target_position: float = 1.0 / 3.0
 
     def __post_init__(self) -> None:
         if self.language not in LANGUAGES:
@@ -80,15 +102,18 @@ class CaptionRequest:
 
     @property
     def target_tokens(self) -> int:
-        return (self.low_tokens + self.high_tokens) // 2
+        position = min(max(self.target_position, 0.0), 1.0)
+        return int(round(self.low_tokens
+                         + position * (self.high_tokens - self.low_tokens)))
 
     def target_units(self) -> int:
         return int(round(self.target_tokens * WORDS_PER_TOKEN[self.language]))
 
     def unit_range(self) -> tuple:
+        factor = WORDS_PER_TOKEN[self.language]
         return (
-            int(self.low_tokens * WORDS_PER_TOKEN[self.language] * 0.95),
-            int(self.high_tokens * WORDS_PER_TOKEN[self.language] * 1.05),
+            int(self.low_tokens * factor * 0.95),
+            int(self.high_tokens * factor * 1.05),
         )
 
     @property
@@ -106,13 +131,26 @@ class CaptionRequest:
             "target": str(self.target_units()),
             "low": str(low),
             "high": str(high),
-            "format_rules": _STRUCTURED_RULES[self.language] if self.format == "structured"
-            else _PROSE_RULES[self.language],
+            "format_rules": self._format_rules(),
             "domain_rules": _DOMAIN_RULES[self.language].get(
                 self.domain, _DOMAIN_RULES[self.language]["generic"]),
             "metadata_block": self._metadata_block(),
             "extra_notes": self.extra_notes.strip(),
         }
+
+    def _format_rules(self) -> str:
+        """Formatting instructions, tightened for the shortest band.
+
+        The structured format asks for several paragraphs, which by itself
+        pushes a caption past a short target: a paragraph per region of the
+        picture is more than a 64-255 token caption can hold.  In that band the
+        request collapses to a single paragraph.
+        """
+        rules = (_STRUCTURED_RULES if self.format == "structured"
+                 else _PROSE_RULES)[self.language]
+        if self.band == "64-255":
+            rules += _SHORT_BAND_NOTE[self.language]
+        return rules
 
     def _metadata_block(self) -> str:
         if not self.metadata:
@@ -126,23 +164,85 @@ class CaptionRequest:
 _EN_TEMPLATE = """You are writing training captions for a text-to-image model. \
 Write one caption for the single image attached to this message.
 
-Length: about {target} {unit}. Acceptable range {low}-{high} {unit}. This is a \
-hard requirement: a caption outside the range is unusable. Reach the length by \
-describing more of what is actually there, never by repeating yourself, listing \
-synonyms, or padding with generic praise.
+Length: about {target} {unit}. Acceptable range {low}-{high} {unit}. Staying \
+inside that range matters more than reaching the target, and a caption at the \
+lower end is better than one that keeps growing: stop as soon as you have \
+described what is worth describing. Reach the length by describing more of what \
+is actually there, never by repeating yourself, listing synonyms, padding with \
+generic praise, or saying the same thing again in other words.
 
 {format_rules}
 
+No speculation. Write what is visible, the way someone states what they want:
+"a woman in a red silk dress", not "what appears to be a woman, possibly in a
+dress". The caption must not contain "appears to be", "appears", "seems",
+"looks like", "possibly", "probably", "perhaps", "maybe", "some kind of",
+"a type of", "or similar", or a question mark, and that list is not the whole
+of it - any other way of saying "I am not sure" is equally not allowed. Where a
+material or an object could be one of two things, name the one the picture best
+supports - "a silk dress", not "a dress that looks like silk or satin" and not
+"a silk or satin dress". Where a detail cannot be read off the picture, leave
+it out and describe something else that is visible; do not announce that it is
+unclear. Naming what is shown - an ethnicity, a garment, a material, an object,
+a colour - is a description of the picture, not an invention, so state it
+directly.
+
+Voice: write the way a person describes the picture they want to see, not the
+way a catalogue entry describes a museum object. Say what is there and where it
+is, in plain words.
+
+No evaluation. State what is visible, not how good it is. Do not praise the
+work or its maker, do not judge the composition, technique or mood, and do not
+summarise what the picture "conveys". Phrases like "masterfully rendered",
+"beautifully composed", "skilfully executed", "conveys a serene atmosphere",
+"demonstrates the artist's control" carry nothing a reader can picture, and are
+not allowed. When you need more length, describe visible things you have not
+covered yet - further figures, objects, text, patterns, materials, light - not
+more adjectives.
+
+Medium and style: the caption must name the medium explicitly and early -
+photograph, oil painting, watercolour, drawing, print, digital artwork, or
+whatever is actually there - together with the visible evidence for it: film
+grain, lens blur, brushstrokes, canvas or paper texture, ink wash, halftone
+dots. A caption that never says what kind of image this is is unusable. Do not
+describe a photograph as a painting or a painting as a photograph. Where the
+style of the making is visible - loose or tight brushwork, high-contrast
+lighting, flat colour areas, wet or dry ink - describe those visible traits in
+plain words. Do not assign the work to a school or movement you cannot verify,
+and do not invent a period or an attribution. When a picture could pass for
+either a photograph or a painting, decide from the strongest visible evidence
+and name the one it is.
+
+People and dress: when people are visible, describe how they look - skin tone,
+hair, apparent age, what they are wearing - and name the ethnicity or region
+their visible features point to (East Asian, South Asian, Southeast Asian,
+African, European, Middle Eastern, Latin American). Leave the region out only
+when the picture really does not show enough to tell; do not put a nationality
+on a face that does not indicate one. Give a garment its own name when you know
+it - hanfu, kimono, hanbok, sari, ao dai, cheongsam, kaftan, abaya, hijab,
+thobe, dashiki, kente, lederhosen - and otherwise describe its cut, fabric and
+pattern. A picture with people in it is not fully described if their appearance
+is never mentioned. State this the way you state everything else; do not rate
+or compliment anyone's looks.
+
 Grounding rules:
 - Every statement must be visible in this image or come from the metadata below.
+- If the metadata names an artist or a title, you may name them where it reads
+  naturally - in the opening sentence, for instance - but it is equally fine to
+  leave them out and describe only what is in the picture. Never name an artist
+  or a title that the metadata does not give.
 - Do not invent an artist, title, date, place, collection history, symbolism, \
 or the maker's intention.
 - Do not guess at what is outside the frame, and do not describe a different \
 image from the one attached.
-- If something is unclear or ambiguous, say so briefly instead of choosing a \
-specific answer.
+- If the image contains any writing - an inscription, a poem, a signature, a \
+seal, a printed label - transcribe what you can actually read inside the \
+caption itself, in quotation marks, and say where it sits. Do not summarise it \
+as "an inscription" and do not invent characters you cannot read.
 - Do not open with "This image", "The image", "This painting", or any similar \
-phrase. Start with the content itself.
+pointer phrase. Starting with the medium is natural and expected: "A photograph \
+of ...", "An oil painting ...", "A pencil drawing ...". Otherwise start with the \
+content itself.
 
 {domain_rules}
 {metadata_block}{extra_notes}
@@ -151,17 +251,35 @@ Output only the caption text. No headings, no preamble, no closing remarks."""
 
 _ZH_TEMPLATE = """你为文生图模型撰写训练用的图像描述。请为随本条消息附上的这张图写一条描述。
 
-长度：约 {target} {unit}。可接受范围 {low}–{high} {unit}。这是硬性要求，超出范围的描述无法使用。\
-请通过描述画面中真实存在的内容来达到长度，不要靠重复、堆砌近义词或空泛的赞美凑字数。
+长度：约 {target} {unit}。可接受范围 {low}–{high} {unit}。控制在范围内比写满目标字数更重要，\
+宁可写到范围下限、也不要越写越长：值得写的内容写完就停。请通过描述画面中真实存在的内容来达到长度，\
+不要靠重复、堆砌近义词、空泛的赞美或把写过的内容换个说法再写一遍来凑字数。
 
 {format_rules}
 
+不要写猜测。像用户点单一样直接陈述看得见的东西："一位穿红色丝绸长裙的女性"，而不是"看起来像是一位女性，可能穿着长裙"。\
+描述里不允许出现"看起来""像是""似乎是""好像是""大概是""可能是""也许是""某种""之类的"，也不要用问号；\
+这个清单没有列全，其他任何表示"我不确定"的说法同样不许用。\
+材质或器物只能在两种之间二选一时，写画面更支持的那一种，不要写"像是丝绸或缎面"、也不要写"丝绸或缎面的裙子"。\
+画面里读不出来的细节就不写，改去写别的看得见的内容，也不要专门说明"这里看不清"。\
+写出画面里看得见的东西——族裔、服饰、材质、器物、颜色——是在描述画面，不是编造，直接写出来。
+
+语气：写成一个用户在描述自己想要的那张画，而不是美术馆图录在描述一件藏品。用朴素的话说清画面上有什么、在哪里、是什么样。
+
+不要评价。只写看得见的东西，不评判它好不好。不要夸作品或作者，不要评价构图、技法、气韵，也不要总结画面"传达"了什么。"笔法细腻""技艺精湛""构图巧妙""虚实结合""意境深远""栩栩如生""恰到好处""十分自然"这类说法读者想象不出任何东西，禁止使用。长度不够时，继续写画面中还没提到的具体内容——别处的人物、器物、文字、纹样、材质、光线——而不是加形容词。
+
+媒介与风格：描述必须在开头或显要位置用自己的话点明媒介——照片、油画、水彩、素描、版画、数字绘画，或画面里实际是什么——并写出可见的依据：胶片颗粒、镜头虚化、笔触、画布或纸张纹理、水墨晕染、网点。完全没有说明画面类型的描述不可用。不要把照片写成画，也不要把画写成照片。如果制作方式的风格特征可见——笔触松散还是紧实、光线对比强烈、色块平涂、墨色干湿——用朴素的话描述这些可见特征。不要把作品归于你无法核实的流派或时期，也不要编造年代或归属。照片和绘画不好区分时，\
+按最明显的可见证据判断它到底是哪一种，然后按那一种写。
+
+人物与服饰：画面里出现人物时，要写清他们的样子——肤色、发色发型、大致年龄、穿的是什么——并写出可见特征指向的族裔或地域（东亚、南亚、东南亚、非洲、欧洲、中东、拉丁美洲）。只有画面确实看不出时才不写，不要给看不出族裔的脸硬安一个国籍。服饰有专名就用专名（汉服、和服、韩服、纱丽、奥黛、旗袍、唐装、藏袍、蒙古袍、苗族银饰、长袍、头巾等），没有专名就写清款式、面料和纹样。画面里明明有人物却完全不提他们长什么样，这样的描述是不完整的。和写其他内容一样平实地写，不要评价或夸赞谁的长相。
+
 依据要求：
 - 每一句话都必须来自这张图上可见的内容，或来自下方给出的元数据。
+- 元数据里如果给出了作者或作品名，可以在读起来自然的地方提一下（比如开头一句），也可以完全不提、只写画面里有什么。元数据里没有的作者或作品名，一个字都不要写。
 - 不要编造作者、标题、年代、地点、收藏史、象征含义或创作意图。
 - 不要猜测画面之外的内容，也不要描述与附图无关的另一张图。
-- 看不清或不确定的地方，简短说明不确定，不要随便给一个具体答案。
-- 不要用"这张图片""这幅画""该作品""这是一幅"之类的开头，直接从内容写起。
+- 画面里如果有文字——题诗、题款、署名、印章、印刷标签——把你能真正认出来的字直接写进描述里，用引号括起，并说明它在什么位置。不要只笼统地说"有题跋"，也不要把认不出的字编造出来。
+- 不要用"这张图片""这幅画""该作品""这是一幅"之类的指代式开头。以媒介开头是自然且应当的，例如"一张照片里……""一幅油画……""一张铅笔素描……"；否则直接从内容写起。
 
 {domain_rules}
 {metadata_block}{extra_notes}
@@ -174,15 +292,25 @@ _PROSE_RULES = {
     "zh": "格式：连贯的叙述性文字。可以分段，但不要小标题、不要项目符号、不要罗列。",
 }
 
+# Structured output is organised the way a person walks a reader through a
+# picture — by where things are — not by art-analysis categories.  Headings
+# such as "notable details" or "medium and technique" read like a catalogue
+# entry, which is the voice this corpus must not have.
 _STRUCTURED_RULES = {
-    "en": "Format: grouped description. Write short labelled groups, each a "
-          "sentence or two of continuous prose, covering in order: main "
-          "subjects and their attributes; placement and spatial relationships; "
-          "setting and background; medium, technique and rendering; light and "
-          "colour; notable details. Label each group on its own line. Do not "
-          "write it as instructions for editing an image.",
-    "zh": "格式：分组描述。每组用一行小标题开头，后面接一到两句连贯文字，依次覆盖：主体与其特征；\
-位置与空间关系；环境与背景；媒介、技法与画法；光线与色彩；值得注意的细节。不要写成修图或改图的指令。",
+    "en": "Format: a few short paragraphs, each starting with where it looks "
+          "or what it covers in plain words (for example \"In the centre\", "
+          "\"Along the left edge\", \"Overall\"), then one or two sentences. "
+          "Do not use analytical headings such as \"medium and technique\" or "
+          "\"notable details\", and do not write it as instructions for "
+          "editing an image.",
+    "zh": "格式：分成几个短段，每段用一句朴素的方位或范围说明开头（例如“画面中央”“左侧边缘”“整体来看”），\
+后接一到两句描述。不要使用“媒介、技法与画法”“值得注意的细节”这类分析式小标题，也不要写成修图或改图的指令。",
+}
+
+_SHORT_BAND_NOTE = {
+    "en": " At this length one paragraph is enough: write a single continuous "
+          "passage, and stop when it is complete.",
+    "zh": "这个长度一段写完即可，写成连贯的一整段，写完就停。",
 }
 
 _DOMAIN_RULES = {
@@ -235,56 +363,168 @@ _METADATA_PRESENT = {
 # match the picture, which requires looking at the image.
 # ---------------------------------------------------------------------------
 
+# Phrases that judge the picture instead of describing it.  A caption full of
+# these reaches its token target without telling a reader what to draw, so the
+# rate is measured per batch even though it is not a hard rejection.
+EVALUATION_PHRASES = (
+    "笔法细腻", "技艺精湛", "技法娴熟", "构图巧妙", "构图疏密得当", "虚实结合",
+    "意境深远", "栩栩如生", "恰到好处", "十分自然", "生动传神", "跃然纸上",
+    "艺术造诣", "匠心", "精湛", "高超", "别具一格", "相得益彰", "引人入胜",
+    "masterfully", "beautifully composed", "skilfully", "skillfully", "exquisite",
+    "conveys a sense", "demonstrates the artist", "testament to", "evokes a",
+    "meticulously", "impeccable", "breathtaking", "captures the essence",
+)
+
+
+# Words that turn a description into a guess.  A caption written this way reads
+# as a comment on a picture rather than as a request for one, so the rate is
+# measured per batch even though it is not a hard rejection.
+HEDGING_PHRASES = (
+    "appears to be", "appear to be", "appears to", "appear to",
+    "seems to be", "seem to be", "seems to", "seem to",
+    "looks like", "look like", "is likely", "are likely",
+    "possibly", "probably", "perhaps", "maybe", "some kind of", "a type of",
+    "or similar",
+    "看起来", "似乎是", "好像", "大概是", "可能是", "也许是", "像是", "大约",
+)
+
+
 @dataclass
 class CheckResult:
     ok: bool
     reasons: List[str] = field(default_factory=list)
     retained_tokens: int = 0
     in_band: bool = False
+    evaluation_hits: List[str] = field(default_factory=list)
+    hedging_hits: List[str] = field(default_factory=list)
 
     @property
     def usable(self) -> bool:
         return self.ok
 
 
-def check_caption(text: str, request: CaptionRequest, tokenizer) -> CheckResult:
-    """Apply the non-visual acceptance rules to one generated caption."""
-    reasons: List[str] = []
+_EN_OPENER = re.compile(
+    r"^\s*(?:in\s+)?(?:this|the)\s+"
+    r"(?:image|picture|photo|photograph|painting|artwork|drawing|scroll|work)"
+    r"(?:\s+(?:shows|depicts|displays|features|presents|contains|is|of|showing|depicting))?"
+    r"\s*(?:[,:;\u2014-]\s*)?",
+    re.IGNORECASE,
+)
+_ZH_OPENER = re.compile(
+    r"^\s*(?:这张|这幅|这帧|该|此|这)\s*(?:图片|图画|画作|作品|照片|画|图)?\s*"
+    r"(?:显示|展示|描绘|呈现|表现|拍摄|是|为)(?:了|着|出)?\s*[，,：:、]?\s*"
+)
+
+
+def strip_boilerplate(text: str, min_keep: float = 0.4) -> str:
+    """Drop a catalogue-style opening, if that leaves a usable caption.
+
+    "This image shows a woman ..." becomes "A woman ..."; "这张图片展示了一位
+    老人" becomes "一位老人".  The removal is only applied when what remains is
+    still a substantial share of the text, so a caption that is nothing but an
+    opener is left as it is rather than cut down to a fragment.
+    """
     cleaned = (text or "").strip()
+    if not cleaned:
+        return cleaned
+    match = _EN_OPENER.match(cleaned) or _ZH_OPENER.match(cleaned)
+    if not match:
+        return cleaned
+    remainder = cleaned[match.end():].lstrip()
+    if len(remainder) < max(8, int(len(cleaned) * min_keep)):
+        return cleaned
+    if remainder[:1].isascii() and remainder[:1].isalpha():
+        remainder = remainder[0].upper() + remainder[1:]
+    return remainder
+
+
+def normalize_caption(text: str) -> str:
+    """Remove a wrapping code fence and a catalogue-style opening.
+
+    Markdown inside the caption is acceptable content, so it is left alone.
+    A fence around the whole answer is a transport wrapper rather than part of
+    the text, so it is removed.  Openers are only removed when what remains
+    still reads as a caption; otherwise the text is kept as written, because a
+    slightly stiff opening is not a reason to throw a description away.
+    """
+    cleaned = (text or "").strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        cleaned = "\n".join(lines).strip()
+    return strip_boilerplate(cleaned)
+
+
+def check_caption(text: str, request: CaptionRequest, tokenizer) -> CheckResult:
+    """Apply the non-visual acceptance rules to one generated caption.
+
+    ``tokenizer=None`` skips the length gate and records the character count
+    instead.  A machine that generates captions but has no tokenizer can then
+    hand the text to a later pass that measures retained tokens exactly;
+    nothing about the request itself depends on the tokenizer.
+    """
+    reasons: List[str] = []
+    cleaned = normalize_caption(text)
     if not cleaned:
         return CheckResult(ok=False, reasons=["empty"])
 
-    retained = retained_length(cleaned, tokenizer)
     low, high = request.low_tokens, request.high_tokens
-    in_band = low <= retained <= high
-    if not in_band:
-        reasons.append(f"length {retained} outside {low}-{high}")
+    in_band = False
+    if tokenizer is None:
+        retained = len(cleaned)
+    else:
+        retained = retained_length(cleaned, tokenizer, truncate=False)
+        # The band is a request, not a contract.  A caption that came out
+        # shorter or longer than asked is still a description of the picture,
+        # so length never disqualifies it; ``in_band`` records whether the
+        # request was met, and the sampler buckets by the achieved length.
+        in_band = low <= retained <= high
 
-    head = cleaned.lower()[:60]
-    for opener in BOILERPLATE_OPENERS:
-        if head.startswith(opener):
-            reasons.append(f"boilerplate opener: {opener}")
-            break
-
+    # A catalogue-style opening is removed by normalize_caption when that is
+    # possible; if it survives, the caption is still used.  Only a defect of the
+    # text itself disqualifies it.
     if _has_duplicate_sentences(cleaned):
         reasons.append("repeated sentences")
 
-    if _has_markdown_noise(cleaned):
-        reasons.append("markdown or fence noise")
-
+    hits = [phrase for phrase in EVALUATION_PHRASES if phrase in cleaned.lower()]
+    hedging = [phrase for phrase in HEDGING_PHRASES if phrase in cleaned.lower()]
     return CheckResult(ok=not reasons, reasons=reasons, retained_tokens=retained,
-                       in_band=in_band)
+                       in_band=in_band, evaluation_hits=hits, hedging_hits=hedging)
 
 
-def retained_length(text: str, tokenizer) -> int:
-    """Retained prompt tokens for a caption, using the training contract."""
+def length_only_reject(reasons) -> bool:
+    """True when the only objections to a caption are about its length.
+
+    Length is a request, not a requirement: a caption that came out shorter or
+    longer than asked still describes the picture, and the bucket plan can
+    accommodate it.  What is dropped is a caption that opens with boilerplate or
+    repeats itself, which is a defect of the text rather than of its size.
+    """
+    reasons = list(reasons or [])
+    return bool(reasons) and all(reason.startswith("length ") for reason in reasons)
+
+
+def retained_length(text: str, tokenizer, truncate: bool = True) -> int:
+    """Retained prompt tokens for a caption.
+
+    ``truncate=True`` applies the training contract, which cuts the prompt at
+    the model's sequence length.  Pass ``truncate=False`` to measure how long a
+    caption really is: the bucket plan must not assume captions stop at the
+    sequence limit.
+    """
     from ..utils.prompt_contract import (
         DROP_IDX, MAX_SEQUENCE_LENGTH, PROMPT_TEMPLATE, RETAINED_MIN_LENGTH, SYSTEM_PROMPT,
     )
 
     prompt = PROMPT_TEMPLATE.format(system_prompt=SYSTEM_PROMPT, user_prompt=text)
-    encoded = tokenizer(prompt, truncation=True,
-                        max_length=MAX_SEQUENCE_LENGTH + DROP_IDX, padding=False)
+    if truncate:
+        encoded = tokenizer(prompt, truncation=True,
+                            max_length=MAX_SEQUENCE_LENGTH + DROP_IDX, padding=False)
+    else:
+        encoded = tokenizer(prompt, truncation=False, padding=False)
     return max(len(encoded["input_ids"]) - DROP_IDX, RETAINED_MIN_LENGTH)
 
 
@@ -296,5 +536,3 @@ def _has_duplicate_sentences(text: str) -> bool:
     return len(sentences) != len(set(sentences))
 
 
-def _has_markdown_noise(text: str) -> bool:
-    return "```" in text or text.lstrip().startswith("#") or "**" in text

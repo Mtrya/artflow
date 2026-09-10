@@ -1,5 +1,8 @@
 """Prompt-template constants shared by CPU metadata builders and GPU encoding."""
 
+# Training truncates the prompt here.  The caption prompts ask for much shorter
+# targets (the length bands top out at 1,280 retained tokens), but a caption
+# that came out longer than asked is kept rather than cut at the request size.
 MAX_SEQUENCE_LENGTH = 2048
 DROP_IDX = 38
 RETAINED_MIN_LENGTH = 1

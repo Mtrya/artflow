@@ -1,0 +1,6 @@
+{
+  "64-255": "deepseek:deepseek-flash",
+  "256-511": "deepseek:deepseek-flash",
+  "512-895": "deepseek:deepseek-flash",
+  "896-1280": "deepseek:deepseek-flash"
+}

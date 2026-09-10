@@ -1,6 +1,6 @@
 """Collect the artifact findings of the captioning passes into one lookup.
 
-Stage 1 asked a vision model, for every labelled row, whether the photograph
+The captioning passes asked a vision model, for every labelled row, whether the photograph
 contains things that are not the artwork (colour chart, ruler, label, studio
 desk, glare).  The findings live in two kinds of file: the main label pass
 stores them under ``label.artifacts``, and the follow-up pass that re-scanned

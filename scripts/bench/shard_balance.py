@@ -26,7 +26,7 @@ def main():
         meta = RowLengthMetadata.load(path / "length_metadata.npz")
         counts = np.diff(meta.caption_offsets)
         rows = np.repeat(np.arange(meta.num_rows), counts)
-        tokens = meta.curriculum_lengths.astype(float)
+        tokens = meta.prompt_lengths.astype(float)
         totals = np.bincount(rows, weights=tokens, minlength=meta.num_rows)
         means = np.divide(totals, counts, out=np.zeros_like(totals), where=counts > 0)
         deviations = np.divide(tokens - means[rows], means[rows],

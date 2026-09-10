@@ -37,9 +37,26 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
+from src.dataset.caption_prompts import LENGTH_BANDS
+
 # Length bands and their intended share of accepted additions (plan section 3.3).
-BAND_SHARES = (("256-511", 0.50), ("512-1023", 0.30),
-               ("1024-1535", 0.15), ("1536-2048", 0.05))
+# A dataset whose captions serve a different purpose can pass its own split on
+# the command line; the shares are normalised, so they need not sum to one.
+BAND_SHARES = (("256-511", 0.55), ("512-895", 0.30), ("896-1280", 0.15))
+
+
+def parse_band_shares(spec: str) -> Tuple[Tuple[str, float], ...]:
+    """Read ``"64-255:0.4 256-511:0.25 ..."`` into normalised band shares."""
+    shares = []
+    for part in spec.split():
+        name, _, weight = part.rpartition(":")
+        if name not in LENGTH_BANDS:
+            raise SystemExit(f"unknown length band {name!r}")
+        shares.append((name, float(weight)))
+    total = sum(weight for _, weight in shares)
+    if total <= 0:
+        raise SystemExit("band shares must sum to something positive")
+    return tuple((name, weight / total) for name, weight in shares)
 
 # Domains that drive the specialised top-up and the vocabulary rules.
 DOMAIN_BY_SOURCE = {
@@ -62,6 +79,7 @@ DOMAIN_BY_SOURCE = {
     "d4_inat": "photograph",
     "d3_human_recaption": "photograph",
     "d3_people_supp": "photograph",
+    "d3_pexels": "photograph",
 }
 
 
@@ -104,6 +122,8 @@ class Row:
     width: Optional[int]
     height: Optional[int]
     bbox: Optional[List[float]]
+    artist: Optional[str] = None
+    title: Optional[str] = None
 
     @property
     def domain(self) -> str:
@@ -139,11 +159,21 @@ def load_artifact_flags(path: Optional[str]) -> Dict[str, List[str]]:
     return flags
 
 
-def load_rows(manifest_dir: Path, datasets: Optional[Iterable[str]]) -> List[Row]:
+def load_rows(manifest_dir: Path, datasets: Optional[Iterable[str]],
+              include_eval: bool = False) -> List[Row]:
+    """Rows of the training manifests, one per image.
+
+    The held-out manifest is skipped by default: its rows are not part of the
+    training mixture, so spending the enrichment budget on them would take
+    captions away from rows the trainer actually draws.  ``include_eval`` is
+    for the separate job of giving the held-out rows a second caption at a
+    different length, which is what makes an evaluation able to report whether
+    the model follows long text at all.
+    """
     rows: List[Row] = []
     for path in sorted(manifest_dir.glob("*.jsonl")):
         name = path.stem
-        if name == "light_eval":
+        if name == "light_eval" and not include_eval:
             continue
         if datasets and name not in datasets:
             continue
@@ -162,18 +192,34 @@ def load_rows(manifest_dir: Path, datasets: Optional[Iterable[str]]) -> List[Row
                     width=raw.get("width"),
                     height=raw.get("height"),
                     bbox=raw.get("bbox"),
+                    artist=raw.get("artist"),
+                    title=raw.get("title"),
                 ))
     return rows
 
 
+def dataset_domain(rows: Iterable[Row]) -> Dict[str, str]:
+    """Domain of each dataset, decided by the rows it actually contains.
+
+    The mixture refers to datasets by manifest name (``d1``), while the domain
+    rules are written per sub-source (``d1_npm_tw``).  Deriving the domain from
+    the rows keeps the two consistent when a dataset is renamed or a sub-source
+    is added, instead of relying on the names lining up.
+    """
+    counts: Dict[str, Counter] = defaultdict(Counter)
+    for row in rows:
+        counts[row.manifest][row.domain] += 1
+    return {name: counter.most_common(1)[0][0] for name, counter in counts.items()}
+
+
 def allocate(total: int, mix: Dict[str, float], specialized_share: float,
-             dataset_rows: Dict[str, int]) -> Dict[str, int]:
+             dataset_rows: Dict[str, int], dataset_domains: Dict[str, str]) -> Dict[str, int]:
     """Row budget per dataset: draw share plus a Chinese-painting top-up."""
     broad = total * (1.0 - specialized_share)
     budgets = {name: broad * weight for name, weight in mix.items()}
 
-    chinese_weight = sum(mix.get(name, 0.0) for name in mix
-                         if DOMAIN_BY_SOURCE.get(name) == "chinese_painting")
+    chinese = [name for name in mix if dataset_domains.get(name) == "chinese_painting"]
+    chinese_weight = sum(mix[name] for name in chinese)
     top_up = total * specialized_share
     if chinese_weight <= 0:
         # No Chinese painting in the mix: spread the top-up by draw share so
@@ -181,9 +227,8 @@ def allocate(total: int, mix: Dict[str, float], specialized_share: float,
         for name in budgets:
             budgets[name] += top_up * mix[name]
     else:
-        for name in budgets:
-            if DOMAIN_BY_SOURCE.get(name) == "chinese_painting":
-                budgets[name] += top_up * (mix[name] / chinese_weight)
+        for name in chinese:
+            budgets[name] += top_up * (mix[name] / chinese_weight)
 
     # A dataset cannot supply more rows than it has.
     capped = {name: min(int(round(value)), dataset_rows.get(name, 0))
@@ -237,7 +282,8 @@ def pick_rows(rows: List[Row], count: int, seed: int) -> List[Row]:
     return chosen[:count]
 
 
-def assign_request(row: Row, index: int, seed: int, specialized: bool) -> Dict[str, object]:
+def assign_request(row: Row, index: int, seed: int, specialized: bool,
+                   band_shares: Tuple[Tuple[str, float], ...] = BAND_SHARES) -> Dict[str, object]:
     """Language, format and length band for one selected row."""
     draw = stable_hash(row.image_id, seed + 2)
     # Language: 50:50 for the broad portion, 80:20 Chinese-first for the
@@ -248,17 +294,19 @@ def assign_request(row: Row, index: int, seed: int, specialized: bool) -> Dict[s
     fmt = "structured" if stable_hash(row.image_id, seed + 3) < 0.5 else "prose"
 
     # Length band, biased by how much detail the row can support.  A detail
-    # crop or a small image is capped at the 512-1023 band.
+    # crop or a small image is capped at the second-longest band in use, since
+    # it cannot fill a long description with content that is actually there.
     band_draw = stable_hash(row.image_id, seed + 4)
     cumulative = 0.0
-    band = BAND_SHARES[-1][0]
-    for name, share in BAND_SHARES:
+    band = band_shares[-1][0]
+    for name, share in band_shares:
         cumulative += share
         if band_draw < cumulative:
             band = name
             break
-    if band in ("1024-1535", "1536-2048") and (row.is_detail or 0 < row.pixels < 512 * 512):
-        band = "512-1023"
+    fallback = band_shares[-2][0] if len(band_shares) > 1 else band
+    if band == band_shares[-1][0] and (row.is_detail or 0 < row.pixels < 512 * 512):
+        band = fallback
 
     return {
         "image_id": row.image_id,
@@ -268,6 +316,10 @@ def assign_request(row: Row, index: int, seed: int, specialized: bool) -> Dict[s
         "bbox": row.bbox,
         "width": row.width,
         "height": row.height,
+        # Carried so the caption can name the artist or the work when it reads
+        # naturally; the caption prompt may leave them out.
+        "artist": row.artist,
+        "title": row.title,
         "existing_captions": len(row.captions),
         "language": language,
         "format": fmt,
@@ -286,6 +338,9 @@ def main() -> None:
     parser.add_argument("--mix", required=True,
                         help='space separated "dataset:weight" (names match manifest stems)')
     parser.add_argument("--specialized-share", type=float, default=0.30)
+    parser.add_argument("--band-shares", default=None,
+                        help='length bands as "band:weight ..." (default: the '
+                             "enrichment split); normalised, so it need not sum to one")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--datasets", default=None,
                         help="comma separated manifest stems to restrict to (default: all)")
@@ -293,6 +348,9 @@ def main() -> None:
                         help="image_id/artifacts JSONL; flagged rows are excluded")
     parser.add_argument("--keep-flagged", action="store_true",
                         help="enrich artifact-flagged rows anyway")
+    parser.add_argument("--include-eval", action="store_true",
+                        help="also read light_eval.jsonl; used to give the held-out "
+                             "rows a caption variant, not to enrich the training mixture")
     parser.add_argument("--flagged-only", action="store_true",
                         help="emit exactly the artifact-flagged rows, no budget or "
                              "stratification; used to build the re-crop pass")
@@ -306,7 +364,7 @@ def main() -> None:
     mix = {name: weight / total_weight for name, weight in mix.items()}
 
     datasets = set(args.datasets.split(",")) if args.datasets else None
-    rows = load_rows(Path(args.manifest_dir), datasets)
+    rows = load_rows(Path(args.manifest_dir), datasets, include_eval=args.include_eval)
     flagged = load_artifact_flags(args.artifact_index)
     if args.flagged_only:
         selected = [row for row in rows if row.image_id in flagged]
@@ -333,12 +391,15 @@ def main() -> None:
         per_dataset[_dataset_for(row)].append(row)
 
     available = {name: len(group) for name, group in per_dataset.items()}
-    budgets = allocate(args.target_total, mix, args.specialized_share, available)
+    budgets = allocate(args.target_total, mix, args.specialized_share, available,
+                       dataset_domain(rows))
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    band_shares = parse_band_shares(args.band_shares) if args.band_shares else BAND_SHARES
     written = Counter()
     specialized_counts = Counter()
+    band_counts = Counter()
     with out_path.open("w", encoding="utf-8") as handle:
         for name in sorted(mix):
             group = per_dataset.get(name, [])
@@ -348,9 +409,11 @@ def main() -> None:
             broad_budget = args.target_total * (1 - args.specialized_share) * mix[name]
             for position, row in enumerate(chosen):
                 specialized = position >= int(round(broad_budget))
-                record = assign_request(row, written[name], args.seed, specialized)
+                record = assign_request(row, written[name], args.seed, specialized,
+                                        band_shares)
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
                 written[name] += 1
+                band_counts[record["band"]] += 1
                 if specialized:
                     specialized_counts[name] += 1
 
@@ -360,6 +423,10 @@ def main() -> None:
               f"{written[name]:9d} {specialized_counts[name]:12d}")
     print(f"{'TOTAL':>22s} {len(rows):10d} {sum(budgets.values()):9d} {sum(written.values()):9d} "
           f"{sum(specialized_counts.values()):12d}")
+    total_rows = sum(band_counts.values())
+    print("length bands: " + "  ".join(
+        f"{band} {band_counts[band]} ({band_counts[band] / max(total_rows, 1):.1%})"
+        for band, _ in band_shares))
     print(f"wrote {out_path}")
 
 

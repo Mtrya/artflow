@@ -4,36 +4,13 @@ Caption processing and curriculum sampling utilities.
 Functions:
 - clean_caption: Remove artifacts from caption text
 - format_artist_name: Format artist names for display
-- sample_caption: Curriculum-based caption sampling for training
 """
 
-import re
 import random
 from dataclasses import dataclass
 from typing import List, Optional
 
 import numpy as np
-
-
-def _estimate_token_counts(texts: List[str]) -> List[int]:
-    """
-    Approximate token counts based on first character for language determination.
-    - English and similar: ~1.3 tokens per word
-    - Chinese and similar: ~0.6 token per character
-    This method should be extremely fast but has low accuracy for language detection or token approximation.
-    """
-    results = []
-    for text in texts:
-        if not text:
-            results.append(0)
-            continue
-
-        first_char = text[0]
-        if re.match(r'[a-zA-Z]', first_char):
-            results.append(int(len(text.split()) * 1.3))
-        else:
-            results.append(int(len(text) * 0.6))
-    return results
 
 
 def clean_caption(text: str) -> str:
@@ -82,9 +59,9 @@ def caption_probabilities_from_token_counts(
 ) -> List[float]:
     """Return the existing short-to-long curriculum probabilities.
 
-    ``token_counts`` is deliberately accepted separately from the caption text so
-    offline row metadata and the online sampler can use exactly the same
-    distribution as :func:`sample_caption`.
+    ``token_counts`` is deliberately accepted separately from the caption text
+    so offline row metadata and the online sampler use exactly the same
+    distribution: both pass the retained lengths the trainer encodes.
     """
     if len(token_counts) == 0:
         raise ValueError("caption probabilities require at least one caption")
@@ -131,19 +108,6 @@ def sample_caption_index_from_token_counts(
     )
     chooser = random if rng is None else rng
     return chooser.choices(range(len(probabilities)), weights=probabilities, k=1)[0]
-
-
-def sample_caption(
-    captions: List[str], stage: float, min_prob: float = 0.15, max_prob: float = 0.80
-) -> str:
-    """Sample one caption using the stage-controlled curriculum distribution."""
-    if not captions:
-        raise ValueError("sample_caption requires at least one caption")
-    token_counts = _estimate_token_counts(captions)
-    sampled_idx = sample_caption_index_from_token_counts(
-        token_counts, stage=stage, min_prob=min_prob, max_prob=max_prob
-    )
-    return captions[sampled_idx]
 
 
 # ---------------------------------------------------------------------------

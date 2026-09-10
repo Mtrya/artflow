@@ -39,9 +39,12 @@ checkpoint*
 output/*/*.png
 wandb
 swanlog
-data
 
-precomputed_dataset
-output
-literature
-scored_images
+# Local corpora and results, at the repository root only.  Without the leading
+# slash these also swallow scripts/data, which holds the harvesters and
+# publishers and does belong in the repository.
+/data/
+/precomputed_dataset/
+/output/
+/literature/
+/scored_images/

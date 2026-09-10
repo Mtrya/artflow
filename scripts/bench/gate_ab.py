@@ -34,7 +34,7 @@ def main():
     root = Path(args.workroot)
     repo = Path.cwd()
     sys.path.insert(0, str(repo))
-    out = root / "runs" / "stage3" / args.name
+    out = root / "runs" / "throughput" / args.name
     out.mkdir(parents=True, exist_ok=False)
     os.environ.update(
         PYTHONPATH=str(repo), HF_HOME=str(root / "cache/hf"),
@@ -67,7 +67,7 @@ def main():
         f'output_dir = {json.dumps(str(out))}\n'
         f'[train]\nmax_steps = {args.steps}\ncheckpoint_interval = {args.steps}\n'
         f'[eval]\ndataset_path = {json.dumps(str(root / "precomputed_dataset/light-eval@256p"))}\n'
-        '[telemetry]\nswanlab_project = "artflow-stage3"\n'
+        '[telemetry]\nswanlab_project = "artflow-throughput"\n'
     )
     launcher = [sys.executable, "-m", "src.train.train"]
     if args.gpus > 1:

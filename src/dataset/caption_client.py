@@ -21,6 +21,7 @@ import hashlib
 import io
 import json
 import os
+import random
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -51,8 +52,11 @@ class Provider:
         return f"{self.root}/models"
 
 
+DEEPSEEK_ROOT = "https://api.deepseek.com"
+
 PROVIDERS = {
     "zenmux": Provider(name="zenmux", root=ZENMUX_ROOT, key_env="ZENMUX_API_KEY"),
+    "deepseek": Provider(name="deepseek", root=DEEPSEEK_ROOT, key_env="DEEPSEEK_API_KEY"),
     "openrouter": Provider(
         name="openrouter", root=OPENROUTER_ROOT, key_env="OPENROUTER_API_KEY",
         extra_headers={"HTTP-Referer": "https://github.com/kaupane/artflow",
@@ -87,6 +91,25 @@ def model_id(model: str) -> str:
 DEFAULT_MAX_EDGE = 1024
 DEFAULT_JPEG_QUALITY = 88
 
+# Status codes a retry can plausibly fix.  Everything else is an answer rather
+# than a failure, and is cached so the same request is never paid for twice.
+TRANSIENT_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
+
+
+def _retry_delay(attempt: int, response: Optional[httpx.Response]) -> float:
+    """Seconds to wait before retrying, honouring ``Retry-After`` when present."""
+    if response is not None:
+        header = response.headers.get("retry-after")
+        if header:
+            try:
+                return min(max(float(header), 1.0), 120.0)
+            except ValueError:
+                pass
+    # A rate limit needs more patience than a dropped connection: the provider
+    # is asking for less traffic, and every worker backs off at the same time.
+    base = 4.0 if response is not None and response.status_code == 429 else 2.0
+    return min(base * 2 ** attempt, 90.0) + random.uniform(0.0, 1.5)
+
 
 class CaptionAPIError(RuntimeError):
     """A request failed in a way that should be visible to the caller."""
@@ -114,6 +137,9 @@ def fetch_pricing(model: str, provider: Optional[Provider] = None,
     first entry is recorded so the caller can see what was assumed.
     """
     provider = provider or provider_for(model)
+    static = STATIC_PRICING.get(model_id(model))
+    if static is not None:
+        return static
     response = httpx.get(provider.models_url, headers=_auth_headers(provider), timeout=timeout)
     response.raise_for_status()
     for entry in response.json()["data"]:
@@ -125,6 +151,24 @@ def fetch_pricing(model: str, provider: Optional[Provider] = None,
                                   f"{entry.get('pricings') or entry.get('pricing')}")
         return price
     raise CaptionAPIError(f"model {model} not offered by the provider")
+
+
+# Providers whose model list carries no prices, transcribed from their public
+# pricing pages.  DeepSeek bills half rate outside 01:00-04:00 and 06:00-10:00
+# UTC on weekdays, so the value here is the off-peak rate; calls made during
+# peak hours cost twice this.  Recorded per response so an old artifact is not
+# reinterpreted with a new price.
+STATIC_PRICING = {
+    "deepseek-v4-flash-vision-exp": ModelPricing(prompt=0.22, completion=0.66),
+    # Same flash tier as the other v4 models; DeepSeek has not published a
+    # separate line for this preview id.
+    "deepseek-v4.1-flash-expires-on-0910": ModelPricing(prompt=0.22, completion=0.66),
+    "deepseek-v4-flash": ModelPricing(prompt=0.22, completion=0.66),
+    # Current API id for the flash tier (the /models endpoint now lists
+    # deepseek-flash, not deepseek-v4-flash).
+    "deepseek-flash": ModelPricing(prompt=0.21, completion=0.63),
+    "deepseek-v4-pro": ModelPricing(prompt=0.66, completion=1.98),
+}
 
 
 def _pricing_from_entry(entry: Dict) -> Optional[ModelPricing]:
@@ -191,6 +235,10 @@ class Response:
     cached: bool = False
     error: Optional[str] = None
     finish_reason: Optional[str] = None
+    # A failure that a retry can plausibly fix (rate limit, gateway error,
+    # dropped connection).  Such a response is never written to the cache, so
+    # the next run sends the request again instead of replaying the failure.
+    transient: bool = False
 
     @property
     def prompt_tokens(self) -> int:
@@ -220,6 +268,7 @@ class Response:
             "cached": self.cached,
             "error": self.error,
             "finish_reason": self.finish_reason,
+            "transient": self.transient,
         }
 
     @classmethod
@@ -236,7 +285,7 @@ class CaptionClient:
     """
 
     def __init__(self, cache_dir: str | Path, model: str, pricing: Optional[ModelPricing] = None,
-                 concurrency: int = 8, timeout: float = 600.0, max_retries: int = 4,
+                 concurrency: int = 8, timeout: float = 600.0, max_retries: int = 6,
                  provider: Optional[Provider] = None):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -304,12 +353,14 @@ class CaptionClient:
                                                       timeout=self.timeout)
                 except (httpx.HTTPError, OSError) as exc:
                     response.error = f"{type(exc).__name__}: {exc}"
-                    await asyncio.sleep(min(2 ** attempt * 2, 30))
+                    response.transient = True
+                    await asyncio.sleep(_retry_delay(attempt, None))
                     continue
                 response.latency_s = time.time() - start
-                if http_response.status_code == 429 or http_response.status_code >= 500:
+                if http_response.status_code in TRANSIENT_STATUS:
                     response.error = f"HTTP {http_response.status_code}: {http_response.text[:200]}"
-                    await asyncio.sleep(min(2 ** attempt * 2, 30))
+                    response.transient = True
+                    await asyncio.sleep(_retry_delay(attempt, http_response))
                     continue
                 if http_response.status_code != 200:
                     response.error = f"HTTP {http_response.status_code}: {http_response.text[:400]}"
@@ -323,6 +374,11 @@ class CaptionClient:
                 response.text = (message.get("content") or "").strip()
                 response.usage = data.get("usage") or {}
                 response.finish_reason = data["choices"][0].get("finish_reason")
+                # A retry may have succeeded after an earlier attempt failed.
+                # The stale error would otherwise be recorded next to a good
+                # caption and read as a failed row.
+                response.error = None
+                response.transient = False
                 # Providers that bill directly report the charge; prefer it over
                 # the price list, which can lag a promotion or a price change.
                 reported = response.usage.get("cost")
@@ -331,8 +387,9 @@ class CaptionClient:
                 if not response.text:
                     response.error = "empty content"
                 break
-        cache_path.write_text(json.dumps(response.to_record(), ensure_ascii=False),
-                              encoding="utf-8")
+        if not response.transient:
+            cache_path.write_text(json.dumps(response.to_record(), ensure_ascii=False),
+                                  encoding="utf-8")
         return response
 
 

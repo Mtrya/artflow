@@ -9,7 +9,6 @@ from typing import Any, List, Mapping, Optional
 
 import numpy as np
 
-from .captions import _estimate_token_counts
 from ..utils.prompt_contract import (
     DROP_IDX,
     MAX_SEQUENCE_LENGTH,
@@ -19,8 +18,29 @@ from ..utils.prompt_contract import (
 )
 
 
-METADATA_VERSION = "row-length-v2"
+METADATA_VERSION = "row-length-v3"
 PROMPT_METADATA_VERSION = "qwen-prompt-v1"
+
+
+def prompt_contract_signature() -> str:
+    """Identity of the prompt contract the retained lengths are defined under.
+
+    A retained length is a function of the prompt template, the system prompt,
+    the sequence cap, the drop index and the floor.  If any of those change
+    while the dataset and the tokenizer stay as they are, a previously built
+    sidecar describes lengths the trainer will never compute, and the sampler
+    would silently bucket rows by those numbers.  Folding the contract into the
+    sidecar's source identity makes such a change rebuild it instead.
+    """
+    payload = {
+        "prompt_metadata_version": PROMPT_METADATA_VERSION,
+        "max_sequence_length": MAX_SEQUENCE_LENGTH,
+        "drop_idx": DROP_IDX,
+        "retained_min_length": RETAINED_MIN_LENGTH,
+        "prompt_template": PROMPT_TEMPLATE,
+        "system_prompt": SYSTEM_PROMPT,
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
 def prompt_metadata_contract(num_rows: int) -> dict:
@@ -85,21 +105,23 @@ def _tokenize_prompt_lengths(tokenizer: Any, prompts: List[str]) -> np.ndarray:
 
 @dataclass
 class RowLengthMetadata:
-    """Flattened per-caption lengths indexed by row caption offsets.
+    """Flattened per-caption retained lengths indexed by row caption offsets.
 
     ``caption_offsets`` has one more element than the number of rows.  For row
     ``r``, caption metadata is stored in ``[caption_offsets[r]:
     caption_offsets[r + 1]]``.  ``prompt_lengths`` are the effective retained
-    lengths after the complete prompt, ``DROP_IDX`` removal, and the 2048-token
-    cap.  They are at least one so an empty retained sequence has the same
-    shape contract online and offline. ``curriculum_lengths`` are the
-    inexpensive heuristic counts used by the existing within-row caption
-    curriculum.
+    lengths after the complete prompt, ``DROP_IDX`` removal, and the
+    contract's retained-token cap.  They are at least one so an empty retained sequence has the same
+    shape contract online and offline.
+
+    There is one length per caption, not two.  The trainer encodes the capped
+    window, so that is the number both the bucket decision and the within-row
+    caption curriculum use; a second, uncapped length would only invite the two
+    to disagree.
     """
 
     resolution_ids: np.ndarray
     caption_offsets: np.ndarray
-    curriculum_lengths: np.ndarray
     prompt_lengths: np.ndarray
     metadata_version: Any = METADATA_VERSION
     metadata_info: Optional[Mapping[str, Any]] = None
@@ -107,7 +129,6 @@ class RowLengthMetadata:
     def __post_init__(self):
         self.resolution_ids = np.asarray(self.resolution_ids, dtype=np.int64)
         self.caption_offsets = np.asarray(self.caption_offsets, dtype=np.int64)
-        self.curriculum_lengths = np.asarray(self.curriculum_lengths, dtype=np.int64)
         self.prompt_lengths = np.asarray(self.prompt_lengths, dtype=np.int64)
         if self.caption_offsets.ndim != 1 or self.caption_offsets.size != self.resolution_ids.size + 1:
             raise ValueError("caption_offsets must have one more element than resolution_ids")
@@ -116,7 +137,7 @@ class RowLengthMetadata:
         if np.any(np.diff(self.caption_offsets) < 0):
             raise ValueError("caption_offsets must be non-decreasing")
         count = int(self.caption_offsets[-1]) if self.caption_offsets.size else 0
-        if self.curriculum_lengths.size != count or self.prompt_lengths.size != count:
+        if self.prompt_lengths.size != count:
             raise ValueError("caption length arrays must match caption_offsets[-1]")
         if np.any(self.prompt_lengths < RETAINED_MIN_LENGTH) or np.any(
             self.prompt_lengths > MAX_SEQUENCE_LENGTH
@@ -180,7 +201,6 @@ class RowLengthMetadata:
                 handle,
                 resolution_ids=self.resolution_ids,
                 caption_offsets=self.caption_offsets,
-                curriculum_lengths=self.curriculum_lengths,
                 prompt_lengths=self.prompt_lengths,
                 metadata_version=np.asarray(self.metadata_version),
                 metadata_info=np.asarray(
@@ -196,7 +216,6 @@ class RowLengthMetadata:
             required = {
                 "resolution_ids",
                 "caption_offsets",
-                "curriculum_lengths",
                 "prompt_lengths",
                 "metadata_version",
             }
@@ -216,7 +235,6 @@ class RowLengthMetadata:
             return cls(
                 resolution_ids=data["resolution_ids"],
                 caption_offsets=data["caption_offsets"],
-                curriculum_lengths=data["curriculum_lengths"],
                 # v1 sidecars used zero for an empty retained sequence; normalize
                 # that legacy representation to the current one-token contract.
                 prompt_lengths=np.maximum(
@@ -249,7 +267,6 @@ class RowLengthMetadata:
 
         resolution_ids: List[int] = []
         offsets = [0]
-        curriculum_lengths: List[int] = []
         retained_lengths: List[int] = []
         prompt_buffer: List[str] = []
 
@@ -270,7 +287,6 @@ class RowLengthMetadata:
                 captions = list(captions)
             captions = [str(caption) for caption in captions]
             resolution_ids.append(int(row[resolution_column]))
-            curriculum_lengths.extend(_estimate_token_counts(captions))
             prompt_buffer.extend(_prompt_text(caption) for caption in captions)
             offsets.append(offsets[-1] + len(captions))
             if len(prompt_buffer) >= tokenizer_batch_size:
@@ -289,7 +305,6 @@ class RowLengthMetadata:
         return cls(
             resolution_ids=resolution_ids_array,
             caption_offsets=np.asarray(offsets, dtype=np.int64),
-            curriculum_lengths=np.asarray(curriculum_lengths, dtype=np.int64),
             prompt_lengths=np.asarray(retained_lengths, dtype=np.int64),
             metadata_version=metadata_version,
             metadata_info=metadata_info,
@@ -382,6 +397,7 @@ def _source_signature(dataset_dir: str, tokenizer_path: str) -> str:
         "shards": file_stats([root / name for name in filenames]),
         "tokenizer": str(tokenizer_root.resolve()) if tokenizer_root.is_dir() else tokenizer_path,
         "tokenizer_files": file_stats(tokenizer_files),
+        "prompt_contract": prompt_contract_signature(),
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
@@ -452,7 +468,11 @@ def ensure_sidecar(dataset_dir: str, tokenizer_path: str) -> RowLengthMetadata:
     if path.is_file():
         try:
             metadata = RowLengthMetadata.load(path)
-            if (metadata.metadata_info or {}).get("source_signature") == signature:
+            fresh = (metadata.metadata_info or {}).get("source_signature") == signature
+            # A file written by an older code version can hold the same fields
+            # with different meaning, so the format version is part of identity
+            # too.
+            if fresh and metadata.metadata_version == METADATA_VERSION:
                 return metadata
         except (OSError, ValueError, EOFError, zipfile.BadZipFile):
             # Partial write or an unreadable archive: the companion is derived

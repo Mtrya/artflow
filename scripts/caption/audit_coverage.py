@@ -26,7 +26,7 @@ questions:
 Reads only ``length_metadata.npz`` sidecars, so it is CPU-only and never
 touches latents or images.  Lengths are the retained prompt lengths defined by
 ``src/utils/prompt_contract.py``: prompt template applied, system prefix
-dropped, capped at 2048 tokens, floored at 1.
+dropped, capped at the training maximum, floored at 1.
 
 CLI:
     python -m scripts.caption.audit_coverage \
@@ -45,8 +45,8 @@ from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 
-THRESHOLDS = (128, 256, 512, 1024, 1536, 2048)
-BANDS = ((1, 255), (256, 511), (512, 1023), (1024, 1535), (1536, 2048))
+THRESHOLDS = (128, 256, 512, 896, 1280)
+BANDS = ((1, 255), (256, 511), (512, 895), (896, 1280))
 
 
 @dataclass

@@ -7,7 +7,6 @@ from datasets import Dataset
 
 from src.dataset.captions import (
     caption_probabilities_from_token_counts,
-    sample_caption,
     sample_caption_index_from_token_counts,
 )
 from src.dataset.length_metadata import RowLengthMetadata
@@ -42,7 +41,6 @@ def metadata(resolutions, caption_lengths, prompt_lengths=None):
     return RowLengthMetadata(
         resolution_ids=np.asarray(resolutions),
         caption_offsets=np.asarray(offsets),
-        curriculum_lengths=np.asarray(curriculum),
         prompt_lengths=np.asarray(prompt_lengths),
     )
 
@@ -124,11 +122,14 @@ def test_partial_queue_persists_until_a_later_row_fills_it():
     del sampler2
 
 
-def test_bucket_boundary_is_inclusive_and_2048_is_valid():
-    plan = BucketPlan({1: [LenBucket(64, 1), LenBucket(128, 1), LenBucket(2048, 1)]})
+def test_bucket_boundary_is_inclusive_at_the_maximum_length():
+    from src.utils.prompt_contract import MAX_SEQUENCE_LENGTH
+
+    plan = BucketPlan({1: [LenBucket(64, 1), LenBucket(128, 1),
+                           LenBucket(MAX_SEQUENCE_LENGTH, 1)]})
     assert plan.bucket_for(1, 64)[0] == 0
     assert plan.bucket_for(1, 128)[0] == 1
-    assert plan.bucket_for(1, 2048)[0] == 2
+    assert plan.bucket_for(1, MAX_SEQUENCE_LENGTH)[0] == 2
     assert BucketPlan({1: [LenBucket(64, 1)]}).bucket_for(1, 64)[0] == 0
 
 
@@ -205,5 +206,4 @@ def test_caption_helpers_match_sample_caption_distribution_shape():
     random.seed(2)
     idx = sample_caption_index_from_token_counts(counts, 0.5)
     random.seed(2)
-    assert sample_caption(["a", "bbbb", "cccccccccc"], 0.5) in {"a", "bbbb", "cccccccccc"}
     assert idx in range(3)

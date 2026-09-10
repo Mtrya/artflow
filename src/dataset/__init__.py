@@ -14,7 +14,6 @@ environments without the torch stack.
 __all__ = [
     "clean_caption",
     "format_artist_name",
-    "sample_caption",
     "caption_probabilities_from_token_counts",
     "sample_caption_index_from_token_counts",
     "get_resolution_bucket",
@@ -40,7 +39,6 @@ __all__ = [
 _LAZY = {
     "clean_caption": (".captions", "clean_caption"),
     "format_artist_name": (".captions", "format_artist_name"),
-    "sample_caption": (".captions", "sample_caption"),
     "caption_probabilities_from_token_counts": (
         ".captions", "caption_probabilities_from_token_counts"
     ),

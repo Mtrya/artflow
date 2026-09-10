@@ -1,7 +1,7 @@
 """Second cropping round for rows whose training view still shows artifacts.
 
-Stage 1 cropped each photograph once, from a box the model gave for the whole
-page.  For digitised book pages that is not enough: the first box often keeps
+Each photograph was first cropped once, from a box a vision model gave for the
+whole page.  For digitised book pages that is not enough: the first box often keeps
 the colour chart or the accession strip that sits beside the artwork, because
 the model was looking at a page where the strip is a small part of the frame.
 
@@ -115,10 +115,20 @@ async def run(args) -> None:
     done = set()
     if os.path.exists(args.out):
         for line in Path(args.out).open(encoding="utf-8"):
-            if line.strip():
-                done.add(json.loads(line)["image_id"])
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            # Only an answer counts as done.  A row that failed is retried on
+            # the next run rather than being skipped forever.
+            if record.get("round2"):
+                done.add(record["image_id"])
+    def has_thumb(row) -> bool:
+        entry = index.get(row["image_id"]) or {}
+        name = entry.get("thumb_path")
+        return bool(name) and os.path.exists(Path(args.thumb_dir, Path(name).name))
+
     todo = [row for row in refine if row["image_id"] in index
-            and row["image_id"] not in done]
+            and row["image_id"] not in done and has_thumb(row)]
     if args.limit:
         todo = todo[:args.limit]
     if not todo:

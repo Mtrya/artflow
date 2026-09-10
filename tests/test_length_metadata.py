@@ -11,6 +11,7 @@ import pytest
 from datasets import Dataset, load_from_disk
 
 from src.dataset.length_metadata import (
+    METADATA_VERSION,
     SIDECAR_FILENAME,
     RowLengthMetadata,
     build_from_dataset,
@@ -120,7 +121,6 @@ def test_build_from_dataset_matches_independent_retokenization(tmp_path, stub_to
     assert metadata.resolution_ids.tolist() == expected["resolution_ids"]
     assert metadata.num_rows == len(rows)
     assert metadata.num_captions == len(expected["prompt_lengths"])
-    assert metadata.curriculum_lengths.size == metadata.prompt_lengths.size
     # The 4000-character caption pins the 2048 retained cap.
     assert int(metadata.prompt_lengths.max()) == MAX_SEQUENCE_LENGTH
     assert int(metadata.prompt_lengths.min()) >= RETAINED_MIN_LENGTH
@@ -181,7 +181,7 @@ def test_ensure_sidecar_builds_then_loads_idempotently(tmp_path, stub_tokenizer_
     with mock.patch("transformers.AutoTokenizer.from_pretrained") as later:
         second = ensure_sidecar(str(out_dir), TOKENIZER_PATH)
         later.assert_not_called()
-    for field in ("resolution_ids", "caption_offsets", "curriculum_lengths", "prompt_lengths"):
+    for field in ("resolution_ids", "caption_offsets", "prompt_lengths"):
         assert np.array_equal(getattr(first, field), getattr(second, field)), field
     assert first.metadata_info == second.metadata_info
 
@@ -348,3 +348,47 @@ def test_real_qwen_tokenizer_build_matches_training_rule(tmp_path):
     assert metadata.prompt_lengths.tolist() == expected
     assert metadata.num_rows == len(rows)
     assert all(RETAINED_MIN_LENGTH <= length <= MAX_SEQUENCE_LENGTH for length in metadata.prompt_lengths)
+
+
+def test_sidecar_rebuilds_when_the_prompt_contract_changes(tmp_path, stub_tokenizer_patch):
+    """A contract change must invalidate the sidecar even if data and tokenizer
+    are untouched: the stored lengths would otherwise describe a window the
+    trainer no longer computes."""
+    import src.dataset.length_metadata as length_metadata
+
+    dataset_dir = tmp_path / "ds"
+    make_dataset(synthetic_rows()).save_to_disk(str(dataset_dir))
+
+    first = ensure_sidecar(str(dataset_dir), TOKENIZER_PATH)
+    assert max(first.prompt_lengths) > MAX_SEQUENCE_LENGTH // 2
+
+    monkeypatched = MAX_SEQUENCE_LENGTH // 2
+    with mock.patch.object(length_metadata, "MAX_SEQUENCE_LENGTH", monkeypatched):
+        second = ensure_sidecar(str(dataset_dir), TOKENIZER_PATH)
+        assert max(second.prompt_lengths) <= monkeypatched
+
+    assert (second.metadata_info["source_signature"]
+            != first.metadata_info["source_signature"])
+
+
+def test_sidecar_rebuilds_when_the_metadata_version_changes(tmp_path, stub_tokenizer_patch):
+    """A sidecar written by an older code version is rebuilt: the same field
+    names can carry different meaning across versions."""
+    dataset_dir = tmp_path / "ds"
+    make_dataset(synthetic_rows()).save_to_disk(str(dataset_dir))
+    ensure_sidecar(str(dataset_dir), TOKENIZER_PATH)
+
+    stored = RowLengthMetadata.load(sidecar_path(str(dataset_dir)))
+    stale = RowLengthMetadata(
+        resolution_ids=stored.resolution_ids,
+        caption_offsets=stored.caption_offsets,
+        prompt_lengths=stored.prompt_lengths,
+        metadata_version="row-length-v2",
+        metadata_info=stored.metadata_info,
+    )
+    stale.save(sidecar_path(str(dataset_dir)))
+
+    rebuilt = ensure_sidecar(str(dataset_dir), TOKENIZER_PATH)
+    assert rebuilt.metadata_version == METADATA_VERSION
+    assert RowLengthMetadata.load(
+        sidecar_path(str(dataset_dir))).metadata_version == METADATA_VERSION

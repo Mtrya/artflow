@@ -51,9 +51,11 @@ def _stationary_probabilities(entry, policy: CaptionPolicy) -> np.ndarray:
             result[offsets[row_idx]:offsets[row_idx + 1]] = averaged[position]
     return result
 from .length_metadata import RowLengthMetadata
+from ..utils.prompt_contract import MAX_SEQUENCE_LENGTH
 
 
-MAX_RETAINED_LENGTH = 2048
+# A bucket plan cannot bound more tokens than the prompt contract retains.
+MAX_RETAINED_LENGTH = MAX_SEQUENCE_LENGTH
 
 
 class ResolutionBucketSampler(Sampler):
@@ -224,7 +226,7 @@ class BucketPlan:
 
     Each resolution maps to ordered ``LenBucket`` values.  A length is assigned
     to the first bucket whose ``max_length`` is greater than or equal to it, so
-    a retained length of 2048 is valid when the final bound is 2048.
+    a retained length of 1280 is valid when the final bound is 1280.
     """
 
     def __init__(self, by_resolution: Mapping[int, Sequence[LenBucket | Tuple[int, int]]]):
@@ -524,9 +526,9 @@ class RowLengthQueueBatchSampler(Sampler[List[RowRef]]):
                 )
             caption_idx = _weighted_index(self._rng, probabilities)
         else:
-            curriculum_lengths = entry.curriculum_lengths[caption_slice]
+            lengths = entry.prompt_lengths[caption_slice]
             caption_idx = sample_caption_index_from_token_counts(
-                curriculum_lengths.tolist(), stage=self._stage, rng=self._rng
+                lengths.tolist(), stage=self._stage, rng=self._rng
             )
         flat_caption_idx = caption_slice.start + caption_idx
         resolution_id = int(entry.resolution_ids[row_idx])

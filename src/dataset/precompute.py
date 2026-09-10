@@ -25,6 +25,18 @@ from .buckets import get_resolution_bucket
 from .captions import clean_caption, format_artist_name
 
 
+def _caption_token_counts(tokenizer, captions: List[str]) -> List[int]:
+    """Length of each caption under the training tokenizer.
+
+    The caption filter decides whether a sample is kept, so it measures the same
+    way the trainer does.  A per-character estimate used to stand in for this,
+    and it undercounted Chinese by roughly a quarter - enough to keep or drop a
+    row depending on which side of the threshold the guess landed.
+    """
+    encoded = tokenizer(captions, truncation=False, padding=False)
+    return [len(ids) for ids in encoded["input_ids"]]
+
+
 def _fetch_image(image_data: Union[str, Image.Image]) -> Optional[Image.Image]:
     """
     Fetch image from URL or return PIL Image.
@@ -75,7 +87,7 @@ def precompute(
     min_watermark_prob: float = 0.6,
     bbox_field: Optional[str] = None,
     write_length_metadata: bool = True,
-    tokenizer_path: str = "Qwen/Qwen3-0.6B",
+    tokenizer_path: Optional[str] = "Qwen/Qwen3-0.6B",
 ) -> Dataset:
     """
     Stateless precomputation of image latents and caption preparation.
@@ -93,8 +105,9 @@ def precompute(
         non_zh_drop_prob: Probability of dropping samples where LANGUAGE field
                           is not "zh". Only applies if dataset has LANGUAGE field.
                           Default 0.0 means no language filtering.
-        max_caption_tokens: Maximum estimated tokens for any single caption.
-                            Samples with longer captions will be dropped.
+        max_caption_tokens: Maximum tokens for any single caption, measured with
+                            the training tokenizer. Samples with longer
+                            captions will be dropped.
         min_aesthetic_score: Minimum aesthetic score for samples.
                             Samples with lower aesthetic scores will be dropped.
         bbox_field: Optional column with a normalized [0, 1000]² bbox
@@ -125,8 +138,15 @@ def precompute(
         'captions' will be a List[str] for each example.
     """
     from diffusers import AutoencoderKLQwenImage
+    from transformers import AutoTokenizer
     from ..utils.vae_codec import encode_image
-    from .captions import _estimate_token_counts
+
+    # The caption filter measures with the tokenizer the trainer uses.  Pass
+    # ``tokenizer_path=None`` to run without one, in which case the filter is
+    # skipped rather than decided by a guess.  Writing the length sidecar needs
+    # the same checkpoint anyway, so a production run already has it.
+    tokenizer = (AutoTokenizer.from_pretrained(tokenizer_path, local_files_only=True)
+                 if tokenizer_path else None)
 
     # Load VAE
     print(f"Loading VAE from {vae_path}...")
@@ -213,15 +233,22 @@ def precompute(
                     else:
                         current_captions.append(item)
 
-            token_counts = _estimate_token_counts(current_captions)
-            if not current_captions or not any(count > min_caption_tokens for count in token_counts):
+            # An empty caption list is dropped either way; the length bounds are
+            # only applied when there is a tokenizer to measure with.
+            if not current_captions:
                 skip_indices.add(idx)
                 dropped_caption_length += 1
                 continue
-            elif any(count > max_caption_tokens for count in token_counts):
-                skip_indices.add(idx)
-                dropped_caption_length += 1
-                continue
+            if tokenizer is not None:
+                token_counts = _caption_token_counts(tokenizer, current_captions)
+                if not any(count > min_caption_tokens for count in token_counts):
+                    skip_indices.add(idx)
+                    dropped_caption_length += 1
+                    continue
+                if any(count > max_caption_tokens for count in token_counts):
+                    skip_indices.add(idx)
+                    dropped_caption_length += 1
+                    continue
             
             # 4. Aesthetic score filter
             score = aesthetic_scores[idx]
@@ -371,11 +398,17 @@ def precompute(
     columns_to_remove = [col for col in dataset.column_names if col not in columns_to_keep]
 
     print("Starting precomputation...")
+    # The cache key covers the manifest and this function, not the photographs
+    # the manifest points at, so a cached result outlives a repair to an image
+    # and the run silently keeps the latents of the damaged file.  A source is
+    # skipped by the caller once its output exists, so there is nothing to be
+    # gained by letting the cache decide that here.
     processed_dataset = dataset.map(
         _process_batch,
         batched=True,
         batch_size=batch_size,
         remove_columns=columns_to_remove,
+        load_from_cache_file=False,
         desc="Precomputing latents and captions",
     )
 
@@ -406,7 +439,7 @@ def write_length_metadata(
     caller is about to point training at.
 
     Tokenization uses the tokenizer at ``tokenizer_path`` with the same prompt
-    contract, ``DROP_IDX`` removal, and 2048-token cap as training
+    contract, ``DROP_IDX`` removal, and the same retained-token cap as training
     (``encode_text``), so caption lengths are comparable to the online path.
     Latents are never loaded and no GPU is required.
     """

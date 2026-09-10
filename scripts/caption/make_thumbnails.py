@@ -30,11 +30,10 @@ from PIL import Image, PngImagePlugin
 PngImagePlugin.MAX_TEXT_CHUNK = 32 * 1024 * 1024
 
 
-def crop_to_bbox(image: Image.Image, bbox: Optional[List[float]]) -> Tuple[Image.Image, Optional[List[int]]]:
-    """Apply the precompute crop rule: normalised 0-1000 box, 32px minimum."""
+def crop_box_for(bbox: Optional[List[float]], width: int, height: int) -> Optional[List[int]]:
+    """The integer crop the precompute applies for a normalised 0-1000 box."""
     if not bbox:
-        return image, None
-    width, height = image.size
+        return None
     x1, y1, x2, y2 = (float(v) for v in bbox)
     left = max(0, min(width, x1 / 1000.0 * width))
     top = max(0, min(height, y1 / 1000.0 * height))
@@ -42,14 +41,28 @@ def crop_to_bbox(image: Image.Image, bbox: Optional[List[float]]) -> Tuple[Image
     bottom = max(0, min(height, y2 / 1000.0 * height))
     if right - left < 32 or bottom - top < 32:
         raise ValueError("bbox too small")
-    box = (int(round(left)), int(round(top)), int(round(right)), int(round(bottom)))
-    return image.crop(box), list(box)
+    return [int(round(left)), int(round(top)), int(round(right)), int(round(bottom))]
+
+
+def crop_to_bbox(image: Image.Image, bbox: Optional[List[float]]) -> Tuple[Image.Image, Optional[List[int]]]:
+    """Apply the precompute crop rule: normalised 0-1000 box, 32px minimum."""
+    if not bbox:
+        return image, None
+    box = crop_box_for(bbox, *image.size)
+    return image.crop(tuple(box)), box
 
 
 def make_thumbnail(path: str, bbox: Optional[List[float]], out_path: Path,
                    max_edge: int, quality: int) -> Dict:
     Image.MAX_IMAGE_PIXELS = None
     with Image.open(path) as handle:
+        image_width, image_height = handle.size
+        # A JPEG can be decoded at a reduced scale, which skips most of the
+        # work for the very large scans in this corpus.  Ask for the target edge
+        # itself: the decoder picks the largest reduction that still covers it,
+        # so a 4000 px source is decoded at 1/2 rather than at full size.
+        if handle.format == "JPEG" and max(image_width, image_height) > max_edge:
+            handle.draft("RGB", (max_edge, max_edge))
         image = handle.convert("RGB")
         image_width, image_height = image.size
         image, crop_box = crop_to_bbox(image, bbox)
@@ -73,6 +86,33 @@ def make_thumbnail(path: str, bbox: Optional[List[float]], out_path: Path,
     }
 
 
+def thumbnail_geometry(path: str, bbox: Optional[List[float]],
+                       thumb_path: Path) -> Dict:
+    """Geometry of an already-written thumbnail, without re-encoding it.
+
+    Opening a JPEG reads only its header, so the source dimensions and the
+    crop that was applied are cheap to recover; this is what lets the index be
+    rebuilt for thumbnails that already exist.
+    """
+    Image.MAX_IMAGE_PIXELS = None
+    with Image.open(path) as handle:
+        image_width, image_height = handle.size
+    crop_box = crop_box_for(bbox, image_width, image_height)
+    with Image.open(thumb_path) as handle:
+        thumb_size = handle.size
+    payload = thumb_path.read_bytes()
+    return {
+        "thumb_path": str(thumb_path),
+        "thumb_bytes": len(payload),
+        "thumb_sha256": hashlib.sha256(payload).hexdigest()[:32],
+        "thumb_width": thumb_size[0],
+        "thumb_height": thumb_size[1],
+        "crop_box": crop_box,
+        "image_width": image_width,
+        "image_height": image_height,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--selection", required=True, help="selection manifest JSONL")
@@ -82,6 +122,9 @@ def main() -> None:
     parser.add_argument("--quality", type=int, default=88)
     parser.add_argument("--shard", type=int, default=0)
     parser.add_argument("--shards", type=int, default=1)
+    parser.add_argument("--index-only", action="store_true",
+                        help="write index entries for thumbnails that already exist "
+                             "instead of encoding them")
     args = parser.parse_args()
 
     out_dir = Path(args.out)
@@ -100,6 +143,17 @@ def main() -> None:
             image_id = record["image_id"]
             target = out_dir / f"{image_id}.jpg"
             if target.is_file():
+                if args.index_only:
+                    try:
+                        info = thumbnail_geometry(record["local_path"], record.get("bbox"), target)
+                    except Exception as exc:
+                        failed += 1
+                        index.write(json.dumps(
+                            {"image_id": image_id, "error": f"{type(exc).__name__}: {exc}"},
+                            ensure_ascii=False) + "\n")
+                        continue
+                    index.write(json.dumps({"image_id": image_id, **info},
+                                           ensure_ascii=False) + "\n")
                 skipped += 1
                 continue
             try:

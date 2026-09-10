@@ -9,7 +9,7 @@ import os
 # Add src to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.dataset.captions import clean_caption, sample_caption
+from src.dataset.captions import clean_caption
 from src.dataset.precompute import precompute
 
 
@@ -38,15 +38,6 @@ class TestPrecomputeEngine(unittest.TestCase):
         self.assertEqual(clean_caption(""), "")
         self.assertEqual(clean_caption('""""""'), "")
 
-    def test_sample_caption(self):
-        captions = [
-            "Short",
-            "Medium length caption",
-            "Very long caption with many words",
-        ]
-        # Test sampling returns one of the captions
-        sampled = sample_caption(captions, stage=0.5)
-        self.assertIn(sampled, captions)
 
     @patch("diffusers.AutoencoderKLQwenImage")
     @patch("src.utils.vae_codec.encode_image")

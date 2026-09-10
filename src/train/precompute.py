@@ -172,6 +172,7 @@ def main():
         min_aesthetic_score=args.min_aesthetic_score,
         min_watermark_prob=args.min_watermark_prob,
         bbox_field=args.bbox_field,
+        tokenizer_path=args.tokenizer,
     )
     print(f"Saving processed dataset to {args.output_dir}...")
     processed_dataset.save_to_disk(args.output_dir)

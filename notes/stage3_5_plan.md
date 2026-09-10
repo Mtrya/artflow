@@ -1,6 +1,10 @@
 # Stage 3.5 — Caption enrichment, selection policy, and bucket planning
 
-Status: design agreed in interview on 2026-09-09; not implemented or executed.
+Status: design agreed on 2026-09-09. Caption production, review, selection and
+publication were executed and are recorded in [the pilot record](stage3_5_pilot.md);
+the caption-policy training comparison (§5, §6) and the 640p precompute (§9) have
+not been run. Sections below are kept as written at design time, so quantities in
+§2 and §3.4 are forecasts, not results.
 
 This document specifies the design for Stage 3.5 of [the redesign plan](redesign_plan.md).
 It does not authorize launching jobs, spending API credit, publishing a dataset,
@@ -469,70 +473,183 @@ not consume a second RNG sample. Measure instrumentation overhead in profiling.
 
 The planner accepts model configuration, hardware/memory budget, resolution/aspect
 shapes, software/precision/attention/compile settings, dataset length metadata,
-row weights, caption policy, and expected run duration. Output per-resolution
-length boundaries and micro-batch sizes with measured evidence and limitations.
+row weights, caption policy, desired bucket count K, and expected run duration.
+Output per-resolution length boundaries and micro-batch sizes with measured
+evidence and limitations. K is initially an input, not another large GPU sweep.
 
 The optimizer may change execution grouping, **not** the selected row/caption
 distribution, loss weights, token cap, or inclusion of rare lengths. Different
 caption policies need quality-per-compute comparisons; different plans processing
 the same stream can correctly be compared by samples/s.
 
-No claim of universal optimality: seek the best measured plan within the candidate
-space, profiling budget, and target configuration. Stage 4 reuses the procedure
-for other model sizes and tunes effective batch through accumulation.
+The agreed design is **CPU boundary optimization → GPU batch-size screening →
+optional timing-informed boundary refinement → end-to-end validation**. The first
+stage can find an exact optimum for a specified padding-compute model; it does
+not establish globally optimal hardware throughput. Stage 4 reuses the procedure
+for other model sizes and tunes effective batch through accumulation. This design
+remains within the existing profiling allocation, not a new compute budget.
 
-### 8.2 Distribution and hardware profile
+### 8.2 Input distribution and padding-cost model
 
 Compute expected sample-weighted retained-length distributions from row metadata,
 mixture weights, and exact caption probabilities across early/middle/late
 curriculum. Do not use a flat histogram of stored captions or assume the shortest
 and longest caption are deterministic curriculum endpoints. Condition on
 resolution/aspect shape and account for caption dropout in execution estimates.
+For a single plan spanning a changing curriculum, specify how its phases are
+weighted by expected sample exposure and report performance in each phase too.
 
-Profile a small table of image shape × padded text length × micro-batch size:
+For one fixed model and image shape, define:
 
-- Use the actual architecture and frozen text encoder, not a fixed-size surrogate.
-- Include text encoding, DiT forward/backward, optimizer/EMA overhead, and memory
-  after optimizer-state initialization. Account for input/preparation overhead.
-- Use a coarse batch-size search and local refinement, with measured memory
-  headroom. Largest fitting micro-batch is not necessarily fastest per sample.
-- Record steady runtime, compilation/startup cost, allocated/reserved memory,
-  variability, and OOM outcomes. Do not assume cache state or aspect shapes are free.
-- Cache measurements by model, GPU, software, and execution settings so changing
-  caption distributions does not require rerunning the entire GPU profile.
+- p(l): probability of sampling retained caption length l, before padding.
+- L_cap: configured maximum retained length, taken from the prompt contract.
+- h_0 = 0 < h_1 < ... < h_K = L_cap: ordered bucket upper bounds.
+- C(l): estimated per-sample compute with text length l for this image shape/model.
 
-The existing `scripts/bench/transformer_ceiling.py` is a DiT-only starting point,
-not a sufficient end-to-end cost model.
+For integer lengths, bucket i contains **h_(i-1) + 1 through h_i**. Its lower bound
+is implied by the previous upper bound; l_min and l_max are not independent
+variables. This matches the sampler's first-fitting-upper-bound contract and
+prevents gaps or overlaps. Cover the configured cap even if the empirical tail
+has zero observed mass; do not reduce the token cap as an optimization shortcut.
 
-### 8.3 Hybrid candidate boundaries and cheap search
-
-Construct candidate boundaries from the union of:
-
-1. Weighted length quantiles: opportunities to split dense regions.
-2. A raw-token grid: control padding across wide intervals.
-3. Measured performance or memory transition points.
-4. Mandatory terminal coverage at 2048.
-
-For bucket b with sample probability P[b], micro-batch B[b], and approximate
-measured micro-batch time t[b], its contribution to time/sample is:
+The expected padding-compute waste is:
 
 ```text
-P[b] * t[b] / B[b]
+W(h_1, ..., h_K) = sum_i sum_{l=h_(i-1)+1}^{h_i}
+                  p(l) * [C(h_i) - C(l)]
 ```
 
-Search to minimize the sum, adding appropriately amortized optimizer and compile
-costs, subject to memory and compiled-shape limits. Do not double-count optimizer
-cost if it is already included in the table. Text-encoder cost can depend on the
-actual lengths within a bucket, not only its DiT padding bound, so profile or
-estimate representative within-bucket distributions and validate finalists.
+The unpadded term sum_l p(l) * C(l) is independent of the boundaries. Therefore
+minimizing W is equivalent to minimizing expected padded compute under this model.
 
-A dynamic-programming interval search is suitable for the additive approximation.
-Return a small frontier over shape counts/startup costs rather than an enormous
-GPU sweep. Dense ranges may justify narrow buckets; a sparse wide tail may share
-one bucket; a memory cliff may warrant a split even without a density peak.
-Do not optimize only padding percentage or average the speeds of buckets.
+A useful initial DiT work proxy is:
 
-### 8.4 Replay and end-to-end validation
+```text
+C(l) = alpha * (I + l) + gamma * (I + l)^2
+```
+
+I is image-token count; nonnegative architecture-dependent coefficients represent
+linear projection/MLP work and quadratic attention work. Estimate and record their
+relative scale from the actual architecture or a small calibration, not universal
+constants. Overall positive scaling does not change the optimal boundaries, but
+the linear/quadratic balance can. This is a compute proxy, not an exact latency
+model for the frozen encoder, kernels, optimizer, or data path.
+
+This objective already balances distribution and raw lengths: a wide interval
+with little probability mass may reasonably share a bucket, while a dense region
+or an expensive increase in sequence length can justify narrower intervals.
+
+### 8.3 Exact CPU boundary optimization, not a general closed form
+
+For an arbitrary empirical distribution, do not assume a closed-form expression
+for the optimal boundaries. Solve the ordered interval partition exactly for the
+chosen additive cost using dynamic programming. The general interval-clustering
+method is described by [Nielsen and Nock, Optimal interval clustering](https://arxiv.org/abs/1403.2485);
+the padding objective below is our application of that method.
+
+Define the cost of placing lengths a+1 through b in one bucket:
+
+```text
+A(a, b) = sum_{l=a+1}^{b} p(l) * [C(b) - C(l)]
+
+F(b) = sum_{l=1}^{b} p(l)
+G(b) = sum_{l=1}^{b} p(l) * C(l)
+
+A(a, b) = C(b) * [F(b) - F(a)] - [G(b) - G(a)]
+```
+
+Prefix sums F and G make every interval-cost query constant-time. The recurrence
+for the minimum cost covering lengths 1 through b with k buckets is:
+
+```text
+D(k, b) = min_{a < b} [D(k-1, a) + A(a, b)]
+D(0, 0) = 0
+D(0, b > 0) = infinity
+```
+
+Use only feasible predecessor states, retain argmin pointers, and backtrack from
+D(K, L_cap). With M candidate upper bounds, the straightforward complexity is
+O(K * M^2), independent of the number of dataset rows after histogram construction.
+The bounded retained-token range permits considering every integer boundary on
+the CPU; first measure this solver rather than assuming a coarse grid is needed.
+
+If boundary alignment or CPU cost warrants a restricted candidate set, use an
+explicit grid, weighted quantiles, and/or measured transition points, always
+including the cap. Label the result exact **within that candidate set**, not over
+all integer boundaries. Use deterministic tie-breaking in zero-mass regions.
+
+There is a useful approximate analytic interpretation. For smooth p and C and
+sufficiently narrow buckets, expanding the padding cost locally gives an interval
+cost of approximately p(l) * C'(l) * width^2 / 2. Minimizing total cost for fixed K
+then gives:
+
+```text
+local bucket width proportional to 1 / sqrt(p(l) * C'(l))
+```
+
+Equivalently, place approximate boundaries at equal increments of the cumulative
+integral of sqrt(p(l) * C'(l)). This explains the density/compute tradeoff and can
+initialize candidates, but is not an exact formula for sparse/discrete histograms,
+wide buckets, or zero-density regions. The dynamic program is the reference
+solution for the discrete proxy objective.
+
+### 8.4 GPU batch-size screening after boundary selection
+
+With the CPU-selected intervals fixed, screen batch size for each interval and
+image shape. Choose the feasible batch size minimizing measured time per sample,
+not simply the largest batch that fits:
+
+```text
+B_star(a, b) = argmin_{B feasible} t(a, b, B) / B
+```
+
+t(a, b, B) is representative micro-batch time for retained lengths in (a, b],
+padded to b. Use the actual architecture and frozen text encoder, a coarse batch
+search followed by local refinement, and a declared memory safety margin.
+
+- Include text encoding, DiT forward/backward, and input/preparation overhead.
+  Account for optimizer/EMA cost at the reference accumulation setting.
+- Check memory after optimizer-state initialization; report both allocated and
+  reserved memory, OOM outcomes, and variability.
+- Measure representative within-bucket lengths and actual dropout behavior.
+  Frozen-encoder time can depend on actual lengths and batch maxima rather than
+  only the DiT's final padding bound.
+- Record compilation/startup cost separately from steady time. Check rare shapes
+  explicitly even if they did not occur in the sampled profiling stream.
+- Cache results by model, GPU, software, execution settings, and the profiled
+  length-distribution assumptions. Reuse compatible measurements when the input
+  distribution changes, but do not silently reuse an incompatible timing estimate.
+
+The existing `scripts/bench/transformer_ceiling.py` is a DiT-only starting point,
+not a sufficient end-to-end cost model. A small fixed-boundary screen is the
+default; an exhaustive GPU sweep over all possible intervals is not required.
+
+### 8.5 Optional timing-informed boundary refinement
+
+The two-stage result is optimal for the initial padding proxy, not necessarily
+for throughput. A slightly smaller upper bound might allow a more efficient
+batch size or kernel, creating a runtime transition the FLOP proxy cannot see.
+
+After screening, optionally refine nearby boundaries or rerun the CPU optimizer
+on a bounded candidate set with measured/estimated timing costs:
+
+```text
+A_time(a, b) = [F(b) - F(a)] * min_{B feasible} t(a, b, B) / B
+```
+
+Use the same recurrence with A_time in place of A. A globally optimal result for
+this additive timing table requires valid costs for every allowed interval;
+unmeasured costs must be estimated explicitly, and unsupported intervals cannot
+be treated as free. Only profile additional intervals near promising candidates
+or observed memory/performance transitions within the budget.
+
+Add optimizer or amortized compilation costs only where the chosen cost model
+does not already include them. Label approximation assumptions. Full-run compile
+cache behavior, queue tails, and distributed synchronization need not be additive;
+they remain end-to-end validation concerns. Do not average bucket throughputs to
+estimate global throughput: sum sample-weighted time/sample and invert instead.
+
+### 8.6 Replay and end-to-end validation
 
 Replay actual sampler behavior on the CPU to inspect emitted row/caption
 proportions, incomplete queue tails, sample batches, rank imbalance, and rare
