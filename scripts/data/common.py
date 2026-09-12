@@ -1,4 +1,4 @@
-"""Shared helpers for stage-1 data fetchers.
+"""Shared helpers for the data fetchers.
 
 All fetchers write to data/raw/<source>/:
   images/            downloaded image files named <source_id>.<ext>

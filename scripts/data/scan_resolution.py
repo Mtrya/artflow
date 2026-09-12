@@ -2,8 +2,8 @@
 """Scan image dimensions (header-only, no decode) across dataset roots and
 report per-dataset resolution availability for 256/640/896/1024 training.
 
-Usage (on the Inspire notebook, GPFS local):
-    ../venv-harvest/bin/python scripts/data/scan_resolution.py \
+Usage (on the machine that holds the dataset roots):
+    python scripts/data/scan_resolution.py \
         --roots rootA rootB ... --out data/meta/res_stats.jsonl --workers 8
 
 Each root's basename is the dataset id; --datasets lets you override per-root

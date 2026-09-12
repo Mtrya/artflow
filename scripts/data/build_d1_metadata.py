@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Build consolidated D1 (Chinese painting) metadata on the Inspire notebook.
+"""Build consolidated D1 (Chinese painting) metadata.
 
 Merges clean metadata + VLM labels (+ bbox for npm_tw, + artifacts pass for
-museum sets) into one JSONL with absolute image paths on GPFS.
+museum sets) into one JSONL with absolute image paths under the shared
+workspace root.
 
 Filters: npm_tw keeps view_type full/mounted/detail; museum sets keep
 full/mounted AND culture==chinese. rolled/junk/error rows are dropped.
 
-Run on notebook:  ../venv-harvest/bin/python ../repo/scripts/data/build_d1_metadata.py
-Output: $W/data/meta/d1/d1_metadata.jsonl
+Run on the machine that holds the workspace:
+    python $ARTFLOW_ROOT/repo/scripts/data/build_d1_metadata.py
+Output: $ARTFLOW_ROOT/data/meta/d1/d1_metadata.jsonl
 """
 import glob
 import json

@@ -1,7 +1,9 @@
-"""Run a sequential Stage-3 A/B using the same data/config and corrected timer.
+"""Compare the throughput fast-path flag stack against baseline flags, sequentially.
 
-Run from the repository root on an Inspire GPU job. Outputs include the exact
-TOML override, each arm's stdout, and a machine-readable gate result.
+Both runs use the same data and config and are scored by the trainer's own
+throughput summary. Run from the repository root on a single CUDA GPU. Outputs
+include the exact TOML override, each run's stdout, and a machine-readable gate
+result.
 """
 
 import argparse

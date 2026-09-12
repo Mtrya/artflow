@@ -1,0 +1,16 @@
+# Caption selection: exact retained lengths, with the ramp shifted up.
+#
+# The same selector as b-beta-ramp.toml with both ends of the preference ramp
+# moved up: it starts near neutral (beta = -0.5) instead of clearly favouring
+# short captions, and ends more strongly in favour of long ones (beta = 1.5).
+# The pair of files is a comparison of how much long-caption preference the
+# curriculum should carry, not of the selector itself.
+[data]
+caption_policy = "beta"
+curriculum_start = 0.0
+curriculum_end = 1.0
+caption_beta_start = -0.5
+caption_beta_end = 1.5
+caption_schedule = "linear"
+caption_short_reserve = 0.20
+caption_short_threshold = 256

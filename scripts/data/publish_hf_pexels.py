@@ -8,7 +8,8 @@ corpus.  The alt text the API returned is used while training but is not
 republished: it is Pexels' own copy, and the same terms discourage passing
 their content on in bulk.
 
-Run on the machine that holds the fetch metadata and the caption output:
+Run on the machine that holds the fetch metadata and the caption output ($W is
+the shared workspace root, $ARTFLOW_ROOT):
 
     HF_TOKEN=... python -m scripts.data.publish_hf_pexels \\
         --metadata $W/data/raw/pexels_people/metadata.jsonl \\

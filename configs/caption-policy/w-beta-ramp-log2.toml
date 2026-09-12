@@ -1,0 +1,20 @@
+# Caption-loss weighting on top of the beta-ramp policy.
+#
+# Caption selection is identical to b-beta-ramp.toml; the only change is the
+# per-sample loss weight: max(1, log2(L / caption_loss_weight_reference)) at
+# the sample's own retained length L.  Long captions count more, nothing is
+# downweighted below its plain share, and each step stays a weighted mean.
+# Compared against the b-beta-ramp run, which differs only in this weighting.
+[data]
+caption_policy = "beta"
+curriculum_start = 0.0
+curriculum_end = 1.0
+caption_beta_start = -1.0
+caption_beta_end = 1.0
+caption_schedule = "linear"
+caption_short_reserve = 0.20
+caption_short_threshold = 256
+
+[train]
+caption_loss_weight_curve = "log2"
+caption_loss_weight_reference = 128

@@ -117,17 +117,38 @@ eval_interval = 100000
 # Optimizer steps dropped from the reported steady-state throughput, so a
 # short run is not penalised for one-time compile and allocator warm-up.
 steady_state_skip_steps = 50
+# Per-sample loss weight as a function of the caption's retained length.
+# "none" (the default) leaves every weight at 1.0, so a step is the plain
+# arithmetic mean over its samples; "log2" gives each sample
+# max(1, log2(L / caption_loss_weight_reference)) evaluated at that sample's own
+# retained length L. A curve rather than a table: it extends itself to whatever
+# length shows up, and 1.0 is the floor, so a caption shorter than the reference
+# is never downweighted below its plain share.
+#
+# The weights reweight the samples of a step, they do not resize the step: the
+# gradient is divided by the sum of the weights of that step, so the loss stays
+# a weighted mean and a reweighted run remains comparable with an unweighted
+# one at equal step counts. A caption dropped for classifier-free guidance
+# keeps weight 1.0 — the curve says how much a caption's length should matter,
+# not how the unconditional examples should be weighted. Where the weight went
+# is logged as caption/weight_mean (the mean weight over the conditioned
+# samples) and caption/grad_weighted_mean_tokens (the weight-weighted mean
+# caption length the step's gradient worked on). An unknown curve or a
+# reference below 2 is rejected at startup rather than repaired.
+caption_loss_weight_curve = "none"
+caption_loss_weight_reference = 128
 
 [eval]
 dataset_path = ""
 batch_size = 8
-num_samples = 16
-# Fixed-sample loss probe. It runs at a fixed seed and fixed timesteps, so two
-# runs at the same step are directly comparable.
+# Fixed-sample loss probe. It runs at a fixed seed, fixed captions per image
+# and fixed timesteps, so two runs at the same step are directly comparable.
+# Captions are drawn per caption-length band, so loss_samples is a budget per
+# band: up to one sample per band for an image, and bands the held-out set
+# cannot fill report how short they fell.
 loss_interval = 50
 loss_samples = 512
 prompts_file = "assets/eval/prompts_v1.jsonl"
-compute_metrics = false
 kid_at_end = false
 kid_num_fake = 2000
 

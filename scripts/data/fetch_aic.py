@@ -1,4 +1,4 @@
-"""Stage-1 probe fetcher: Art Institute of Chicago (api.artic.edu, IIIF, CC0).
+"""Probe fetcher: Art Institute of Chicago (api.artic.edu, IIIF, CC0).
 
 Two slices:
   (a) impressionism-era paintings: is_public_domain=true, classification painting,
@@ -11,14 +11,15 @@ License: CC0 (is_public_domain). Writes images/ + metadata.parquet per common.py
 
 Access quirk: api.artic.edu works direct, but www.artic.edu (IIIF) sits behind
 a Cloudflare managed challenge ("Just a moment...") for datacenter/CN IPs.
-It passes from a US exit — image downloads go through the local mihomo proxy
-(127.0.0.1:7897); select a US node (e.g. Washington) if the challenge returns.
+It passes from an exit in a permitted region — image downloads go through the
+proxy in $ARTFLOW_PROXY; point that at such an exit if the challenge returns.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 from pathlib import Path
 
@@ -86,7 +87,9 @@ def main() -> None:
     out = Path(args.out)
     img_dir = out / "images"
     session = make_session()
-    img_session = make_session(proxy="http://127.0.0.1:7897")  # Cloudflare on www.artic.edu
+    # www.artic.edu (IIIF) sits behind a Cloudflare managed challenge for
+    # datacenter/CN addresses; image downloads go through $ARTFLOW_PROXY.
+    img_session = make_session(proxy=os.environ.get("ARTFLOW_PROXY"))
 
     n_impr = min(500, args.limit // 2)
     recs = fetch_slice(session, QUERY_IMPRESSIONISM, n_impr)

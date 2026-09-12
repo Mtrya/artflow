@@ -18,6 +18,8 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
+from .caption_loss_weights import CaptionLossWeights
+
 
 @dataclass(frozen=True)
 class DataConfig:
@@ -85,7 +87,7 @@ class OptimConfig:
 
 @dataclass(frozen=True)
 class TrainLoopConfig:
-    """How long the loop runs and how it accumulates and averages."""
+    """How long the loop runs, and how it accumulates, weights and averages."""
 
     max_steps: int = 50000
     seed: int = 42
@@ -100,6 +102,14 @@ class TrainLoopConfig:
     checkpoint_interval: int = 500
     eval_interval: int = 100000
     steady_state_skip_steps: int = 50
+    # Per-sample loss weight as a function of the caption's retained length:
+    # "none" (every weight 1.0, the default) or "log2" for
+    # max(1, log2(L / caption_loss_weight_reference)).  A curve the trainer
+    # does not know is a configuration error, not something to repair on the
+    # way in.  See src/train/caption_loss_weights.py for what the weights act
+    # on, what they are normalized by, and why.
+    caption_loss_weight_curve: str = "none"
+    caption_loss_weight_reference: int = 128
 
 
 @dataclass(frozen=True)
@@ -108,11 +118,9 @@ class EvalConfig:
 
     dataset_path: str = ""
     batch_size: int = 8
-    num_samples: int = 16
     loss_interval: int = 50
     loss_samples: int = 512
     prompts_file: str = "assets/eval/prompts_v1.jsonl"
-    compute_metrics: bool = False
     kid_at_end: bool = False
     kid_num_fake: int = 2000
 
@@ -156,10 +164,8 @@ _RENAMES = {
     ("text_encoder", "exit_layer"): "text_encoder_exit_layer",
     ("eval", "dataset_path"): "eval_dataset_path",
     ("eval", "batch_size"): "eval_batch_size",
-    ("eval", "num_samples"): "num_eval_samples",
     ("eval", "loss_interval"): "eval_loss_interval",
     ("eval", "loss_samples"): "eval_loss_samples",
-    ("eval", "compute_metrics"): "eval_compute_metrics",
     ("eval", "kid_at_end"): "kid_eval_at_end",
     ("paths", "vae"): "vae_path",
     ("telemetry", "log_interval"): "telemetry_log_interval",
@@ -217,6 +223,12 @@ def _validate(config: TrainConfig) -> None:
         raise ValueError("[train].gradient_accumulation_steps must be >= 1")
     if config.train.max_steps < 1:
         raise ValueError("[train].max_steps must be >= 1")
+    # A loss-weight curve that is not usable is a configuration error, not
+    # something to repair on the way in.
+    CaptionLossWeights(
+        curve=config.train.caption_loss_weight_curve,
+        reference=config.train.caption_loss_weight_reference,
+    )
     for name in ("curriculum_start", "curriculum_end"):
         value = getattr(config.data, name)
         if not 0.0 <= value <= 1.0:

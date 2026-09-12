@@ -8,7 +8,8 @@ but EXCLUDING color charts, rulers, accession labels, desk/background.
 
 Output: one JSONL row per image with a normalized bbox [y0, x0, y1, x1] on a
 0..1000 grid (Gemini convention). Crops are applied later (see
-scripts/data/apply_bboxes.py), typically on GPFS after transfer. Raw responses
+scripts/data/apply_bboxes.py), typically on the machine that holds the clean
+images, after transfer. Raw responses
 are cached so reruns are idempotent and pay nothing twice.
 
 CLI:

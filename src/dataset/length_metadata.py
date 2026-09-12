@@ -310,26 +310,6 @@ class RowLengthMetadata:
             metadata_info=metadata_info,
         )
 
-    @classmethod
-    def from_dataset(cls, dataset: Any, tokenizer: Any, **kwargs) -> "RowLengthMetadata":
-        return cls.from_hf_dataset(dataset, tokenizer, **kwargs)
-
-    @classmethod
-    def from_hf(cls, dataset: Any, tokenizer: Any, **kwargs) -> "RowLengthMetadata":
-        return cls.from_hf_dataset(dataset, tokenizer, **kwargs)
-
-    @classmethod
-    def build(cls, dataset: Any, tokenizer: Any, **kwargs) -> "RowLengthMetadata":
-        return cls.from_hf_dataset(dataset, tokenizer, **kwargs)
-
-
-def build_row_length_metadata(dataset: Any, tokenizer: Any, **kwargs) -> RowLengthMetadata:
-    """Functional wrapper for offline metadata generation."""
-    return RowLengthMetadata.from_hf_dataset(dataset, tokenizer, **kwargs)
-
-
-build_length_metadata = build_row_length_metadata
-
 
 # ---------------------------------------------------------------------------
 # Dataset-companion sidecar API.

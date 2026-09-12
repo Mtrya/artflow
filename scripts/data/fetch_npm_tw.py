@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -32,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import download_image, make_session, phash_dedup_report, save_parquet
 
 BASE = "https://digitalarchive.npm.gov.tw"
-PROXY = "http://127.0.0.1:7897"
+PROXY = os.environ.get("ARTFLOW_PROXY")
 CATEGORY = "繪畫"
 PAGE_SIZE = 100
 
@@ -57,7 +58,7 @@ def _new_session(proxy: bool):
 
 
 def robust_get(url: str, tries: int = 8, **kw):
-    """GET that flips between direct and local proxy on connection/TLS errors."""
+    """GET that flips between direct and proxied requests on connection/TLS errors."""
     last = None
     for i in range(tries):
         if _sess["s"] is None:

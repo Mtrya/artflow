@@ -1,7 +1,8 @@
-"""Predict rank-local samples/microbatch from Stage-3 metadata, without latents.
+"""Predict rank-local samples/microbatch from prompt-length metadata, without latents.
 
 This is the long-run expectation, ignoring bounded incomplete bucket tails.
-It uses the exact within-row curriculum probabilities and the gate bucket table.
+It uses the exact within-row curriculum probabilities and the bucket table
+defined in gate_ab.py.
 """
 
 import argparse

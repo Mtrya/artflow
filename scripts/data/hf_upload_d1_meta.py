@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Convert d1_metadata.jsonl to parquet and upload metadata + README to the HF repo.
 
-Run on the Inspire notebook after shard uploads finish:
-    HF_TOKEN=... ../venv-harvest/bin/python ../repo/scripts/data/hf_upload_d1_meta.py
+Run on the machine that holds the shared workspace after shard uploads finish:
+
+    HF_TOKEN=... python $ARTFLOW_ROOT/repo/scripts/data/hf_upload_d1_meta.py
 """
 import json
 import os

@@ -215,11 +215,6 @@ class LenBucket:
         if int(self.batch_size) < 1:
             raise ValueError("LenBucket.batch_size must be positive")
 
-    @property
-    def hi(self) -> int:
-        """Alias used by the training padding contract."""
-        return int(self.max_length)
-
 
 class BucketPlan:
     """Per-resolution closed length buckets.
@@ -716,17 +711,20 @@ def row_length_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     if any(batch_id < 0 for batch_id in batch_ids):
         raise ValueError("batch IDs must be non-negative")
 
+    dataset_ids = [int(field(sample, "dataset_id", "entry_id")) for sample in batch]
+    row_indices = [int(field(sample, "row_idx", "row_index")) for sample in batch]
+
     return {
         "latents": torch.stack(latents, dim=0),
         "captions": captions,
-        "dataset_ids": torch.tensor(
-            [int(field(sample, "dataset_id", "entry_id")) for sample in batch],
-            dtype=torch.long,
-        ),
-        "row_indices": torch.tensor(
-            [int(field(sample, "row_idx", "row_index")) for sample in batch],
-            dtype=torch.long,
-        ),
+        "dataset_ids": torch.tensor(dataset_ids, dtype=torch.long),
+        "row_indices": torch.tensor(row_indices, dtype=torch.long),
+        # Which row of which dataset each sample came from, kept as host values:
+        # per-draw bookkeeping (how many distinct rows a run has consumed, how
+        # often a row repeats) then needs no device round-trip per micro-batch,
+        # unlike the tensors above, which move to the compute device with the
+        # rest of the batch.
+        "row_positions": list(zip(dataset_ids, row_indices)),
         "caption_indices": torch.tensor(
             [int(field(sample, "caption_idx", "caption_index")) for sample in batch],
             dtype=torch.long,

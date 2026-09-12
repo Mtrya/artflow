@@ -22,7 +22,8 @@ def record(tmp_path, prompt_id, width=64, height=64, generator="ernie-image-turb
 
 
 def test_rows_carry_the_prompt_as_the_caption(tmp_path):
-    rows, stats = build_rows([record(tmp_path, "syn-000000")])
+    verdicts = {"syn-000000": {"ok": True, "flaws": []}}
+    rows, stats = build_rows([record(tmp_path, "syn-000000")], verdicts, {})
     assert len(rows) == 1
     assert rows[0]["text"] == "prompt syn-000000"
     assert rows[0]["image"]["path"] == "syn-000000.jpg"
@@ -33,13 +34,13 @@ def test_rows_carry_the_prompt_as_the_caption(tmp_path):
 def test_a_missing_picture_is_reported_not_written(tmp_path):
     gone = record(tmp_path, "syn-000001")
     Path(gone["path"]).unlink()
-    rows, stats = build_rows([record(tmp_path, "syn-000000"), gone])
+    rows, stats = build_rows([record(tmp_path, "syn-000000"), gone], {}, {})
     assert [row["image_id"] for row in rows] == ["syn-000000"]
     assert stats["image missing"] == 1
 
 
 def test_one_row_per_picture(tmp_path):
-    rows, stats = build_rows([record(tmp_path, "syn-000000"), record(tmp_path, "syn-000000")])
+    rows, stats = build_rows([record(tmp_path, "syn-000000"), record(tmp_path, "syn-000000")], {}, {})
     assert len(rows) == 1
     assert stats["duplicate record"] == 1
 
@@ -48,20 +49,20 @@ def test_rows_name_the_model_behind_the_recipe(tmp_path):
     # Generation records carry the recipe that ran, not the model's name.
     entry = record(tmp_path, "syn-000000", generator="qwen-image-lightning")
     entry.pop("generator")
-    rows, _stats = build_rows([entry])
+    rows, _stats = build_rows([entry], {}, {})
     assert rows[0]["generator"] == "Qwen-Image with the 8-step distilled sampler"
 
 
 def test_an_unknown_recipe_is_passed_through(tmp_path):
     entry = record(tmp_path, "syn-000000", generator="something-else")
     entry.pop("generator")
-    rows, _stats = build_rows([entry])
+    rows, _stats = build_rows([entry], {}, {})
     assert rows[0]["generator"] == "something-else"
 
 
 def test_shards_are_named_for_the_reader_and_hold_the_bytes(tmp_path):
     records = [record(tmp_path, f"syn-{index:06d}") for index in range(5)]
-    rows, _stats = build_rows(records)
+    rows, _stats = build_rows(records, {}, {})
     # Let each shard take two pictures, so the split is decided by the test and
     # not by how well a solid-colour JPEG happens to compress.  A shard closes
     # once it reaches the limit, so the limit has to land inside the second row.
@@ -78,3 +79,17 @@ def test_shards_are_named_for_the_reader_and_hold_the_bytes(tmp_path):
     payload = table.column("image").to_pylist()[0]
     assert payload["bytes"].startswith(b"\xff\xd8\xff")
     assert b"huggingface" in (table.schema.metadata or {})
+
+
+def test_rows_carry_the_rescue_outcome(tmp_path):
+    records = [record(tmp_path, "syn-000000"), record(tmp_path, "syn-000001")]
+    verdicts = {"syn-000000": {"ok": True, "flaws": []},
+                "syn-000001": {"ok": False, "flaws": ["frame", "anatomy"]}}
+    rescued = {"syn-000000": "一位穿交领襦裙的女子站在庭院里。"}
+    rows, _stats = build_rows(records, verdicts, rescued)
+    assert rows[0]["rescue_ok"] is True
+    assert rows[0]["rescue_flaws"] == []
+    assert rows[0]["caption_rescued"] == "一位穿交领襦裙的女子站在庭院里。"
+    assert rows[1]["rescue_ok"] is False
+    assert rows[1]["rescue_flaws"] == ["frame", "anatomy"]
+    assert rows[1]["caption_rescued"] == ""

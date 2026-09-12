@@ -65,6 +65,30 @@ def shift_timesteps(
     return apply_time_shift(t, time_shift)
 
 
+def sample_weighted_mse(
+    error: torch.Tensor, sample_weights: torch.Tensor
+) -> torch.Tensor:
+    """Weighted mean of the per-sample mean squared errors of ``error``.
+
+    The samples are combined as ``sum(w_i * L_i) / sum(w_i)``: a weighted mean,
+    not a weighted sum.  A sum would scale a step's gradient with the weights
+    themselves, which is a learning-rate change wearing a reweighting's
+    clothes, and two runs would no longer be comparable at equal step counts.
+
+    The reduction runs in float32 whatever the compute dtype is, because the
+    weight sum is a normalization: a denominator rounded to the compute dtype
+    would bias every loss the weights touch.
+    """
+    if sample_weights.shape != (error.shape[0],):
+        raise ValueError(
+            "sample weights must hold one multiplier per sample, got "
+            f"{tuple(sample_weights.shape)} for a batch of {error.shape[0]}"
+        )
+    weights = sample_weights.float()
+    per_sample = (error.float() ** 2).flatten(1).mean(dim=1)
+    return (per_sample * weights).sum() / weights.sum()
+
+
 class BaseAlgorithm(ABC):
     @abstractmethod
     def sample_zt(
@@ -88,6 +112,7 @@ class BaseAlgorithm(ABC):
         z0: torch.Tensor,
         z1: torch.Tensor,
         t: torch.Tensor,
+        sample_weights: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Compute the loss for the algorithm.
@@ -96,6 +121,11 @@ class BaseAlgorithm(ABC):
             z0: Source samples (noise), [B, C, H, W]
             z1: Target samples (data), [B, C, H, W]
             t: Timesteps, [B] or [B, 1, 1, 1]
+            sample_weights: Optional per-sample multipliers, one per row of the
+                batch. With them the returned scalar is the weighted mean of
+                the per-sample losses instead of their plain mean, which is how
+                a run raises the share of its gradient that long captions
+                receive; without them the computation is unchanged.
         Returns:
             Scalar loss value
         """
@@ -138,11 +168,15 @@ class ScoreMatchingDiffusion(BaseAlgorithm):
         z0: torch.Tensor,
         z1: torch.Tensor,
         t: torch.Tensor,
+        sample_weights: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if t.dim() == 1:
             t = t.view(-1, 1, 1, 1)
 
         std = self._marginal_prob_std(t)
+
+        if sample_weights is not None:
+            return sample_weighted_mse(model_output * std + z0, sample_weights)
 
         # Stable formulation:
         # loss = || s(x, t) - s_target ||^2 * std^2
@@ -213,8 +247,11 @@ class FlowMatchingDiffusion(BaseAlgorithm):
         z0: torch.Tensor,
         z1: torch.Tensor,
         t: torch.Tensor,
+        sample_weights: torch.Tensor | None = None,
     ) -> torch.Tensor:
         velocity_target = self._velocity_target(z0, z1, t)
+        if sample_weights is not None:
+            return sample_weighted_mse(model_output - velocity_target, sample_weights)
         return F.mse_loss(model_output, velocity_target)
 
 
@@ -238,6 +275,9 @@ class FlowMatchingOT(BaseAlgorithm):
         z0: torch.Tensor,
         z1: torch.Tensor,
         t: torch.Tensor,
+        sample_weights: torch.Tensor | None = None,
     ) -> torch.Tensor:
         velocity_target = z1 - z0
+        if sample_weights is not None:
+            return sample_weighted_mse(model_output - velocity_target, sample_weights)
         return F.mse_loss(model_output, velocity_target)

@@ -1,0 +1,10 @@
+# Caption selection: the reference recipe.
+#
+# One caption per drawn row, chosen by the original heuristic that walks from
+# short captions towards long ones as training progresses.  Every value here
+# matches the corresponding default in configs/base.toml; the file exists so a
+# comparison run states its policy explicitly instead of inheriting one.
+[data]
+caption_policy = "legacy"
+curriculum_start = 0.0
+curriculum_end = 1.0

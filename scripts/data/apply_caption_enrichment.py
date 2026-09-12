@@ -23,7 +23,11 @@ CLI:
         --dataset-dir precomputed_dataset/d3-human@256p \\
         --manifest data/meta/precompute/d3_human.jsonl \\
         --captions data/caption_enrich/production/captions_frozen.jsonl \\
-        --out-dir precomputed_enriched/d3-human@256p
+        --out-dir /tmp/d3-human@256p
+
+The output is written beside the input rather than over it, so the enrichment can
+be compared with what it replaces; the checked result then takes the input's
+place.  One directory per source is the layout training reads.
 """
 
 from __future__ import annotations

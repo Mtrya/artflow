@@ -31,6 +31,8 @@ plus `notes/dataset_plan.md` (data-source detail).
 | D10 | VLM captioning | **Via API** (Qwen-VL-class), not self-hosted — caption cost is money + rate limits, not GPU-hours. No GPU-with-internet workspace needed |
 | D11 | Modulation | **Shared per-layer modulation MLP (`mod=layer`)** — 2.2a resolved 2026-09-05: layer wins eval/loss@end (0.9437 vs 0.9441) with a persistent t040 advantage (5/5 probes from 3K, -0.0002→-0.0010), KID agrees (0.0190 vs 0.0195), +0.6% faster, -8% peak mem; tie-break prior (PixArt/DiT-Air) points the same way. All stage-2+ arms use it |
 | D12 | Optimizer | **Muon (chunked orthogonalization), LR 0.02** — 2.5 resolved 2026-09-06: 16K confirm muon 0.91127 vs AdamW 0.92134 eval/loss (-1.1%), KID 0.00699 vs 0.00922, +10% step time (<15% bar); AdamW leads early, muon overtakes by 8K and pulls away (CMuon-style late gain) |
+| D13 | Base-model capability | **80% joint first-attempt success** for the agreed anatomy, architecture, style, and basic-layout categories; Chinese and English pass independently, without prompt polishing. Full contract: [Stage-4 plan](stage4_plan.md) |
+| D14 | Serving target | **RTX 4060 Ti 16 GB**, batch 1 at 896p: ~10 s preferred, **20 s maximum**, excluding API prompt polishing; quality and latency use the same inference settings |
 
 ## Design dimension ledger (2026-09-04, agreed with user)
 
@@ -51,7 +53,7 @@ experiments. Stage-2 arms below implement column C.
 | VAE | Qwen-Image VAE (16ch f8) | physically locked by stage-1 256p precompute; switching (e.g. DC-AE) = full re-precompute, out of scope |
 | Text encoder | Qwen3-0.6B frozen (exit layer ablated in 2.3) | encoder-size gains saturate early (DeepFloyd IF et al.); params go to the DiT |
 | Optimizer after Stage 2 | **Muon (chunked orthogonalization), LR 0.02; auxiliary AdamW for parameters routed outside Muon** | Stage-2 D12 winner; fixed for Stage 3–5; the Stage-2 comparison is recorded in §2.5 |
-| Inference knobs (solver/steps/CFG/guidance distill) | deferred to stages 5/6 | orthogonal to architecture |
+| Pre-NFT inference knobs (solver/steps/CFG/precision/offload) | **decided and validated in Stage 4** jointly with capability and serving constraints | Stage 5 executes the complete recipe; any required distillation needs explicit scope/budget, not a hidden later stage |
 
 ### B. Considered and excluded
 
@@ -291,8 +293,11 @@ ceilings, and the Stage-4 sizing inputs are in
 ## Stage 3.5 — Long-caption experiments, dataset refresh, and bucket planning
 
 **Goal**: prepare the caption distribution and efficient per-resolution batching
-before the Stage-4 scaling probes. GPU/API/storage costs are TBD from small
-probes, not implicitly covered by the old compute total.
+before the Stage-4 scaling probes. The detailed [Stage-3.5 plan](stage3_5_plan.md)
+sets a separate 75-hour experiment/profiling cap and approximately $100 API budget;
+full-corpus precompute/storage require separate costing. Its
+[execution record](stage3_5_pilot.md) records subsequent design amendments and
+measured outcomes, which supersede older provisional details below.
 
 - 3.5.1 **Long-caption bias experiment**: compare the current curriculum with
   a controlled preference for longer captions *within an already selected row*.
@@ -323,75 +328,88 @@ reopening per-bucket micro-batch-size tuning. A larger model or new resolution
 still requires a memory-safety check and, if necessary, an explicitly recorded
 bucket-plan revision.
 
-## Stage 4 — Scaling-law probes on the stage-3 infra (≤450 4090-h nominal)
+## Stage 4 — Capability forecasts and complete hero recipe (≤450 4090-h)
 
-**Goal (user, 2026-09-06)**: with the budget relaxed (priority-1 idle fill),
-fit the scaling law empirically and produce the COMPLETE training recipe —
-the hero can scale up from the base model. Four axes:
+**Goal (user, 2026-09-11)**: deliver the **entire executable pre-NFT hero-run
+recipe**, from scratch through **256p → 640p → 896p → optional 1024p**. Stage 5
+must be able to proceed directly, **without a planned Stage 4.5**. Full design,
+literature anchors, evaluation contract, experiment budget, and exit checklist:
+[`notes/stage4_plan.md`](stage4_plan.md).
 
-- **Model size**: 等比 scaling of the confirmed architecture (same
-  h/d/stream/mod structure, width/depth up) — e.g. 485M → ~0.7B candidates;
-- **Effective batch size**, tuned via `gradient_accumulation_steps` with the
-  Stage-3.5 bucket plans fixed, and **training steps** (compute axes);
-- **Data size** is an INDEPENDENT axis (not coupled to compute).
+The 450-hour experiment/profiling cap is separate from Stage 3.5's 75 hours and
+the hero working range of **1,600–2,200 RTX 4090 hours**. Empirical diffusion
+scaling informs the recipe, but neither borrowed coefficients nor low flow loss
+establish the required capabilities.
 
-Scaling one axis alone is suboptimal; Stage 4 determines the ratio across
-axes for the actual budget envelope. Small-card probes only.
+- **Capability/evaluation contract:** ordinary full-body figures, everyday
+  hand–object interaction, plausible faces, common architecture, six agreed
+  Chinese/Western painting styles, and basic layout. Require 80% joint
+  first-attempt success per agreed category, Chinese/English independently,
+  ordinary prompts without polishing. Calibrate VLM-first judging and freeze
+  development/confirmation suites and statistical procedures before comparison.
+- **Implemented cost and serving:** refresh end-to-end rates on Stage-3.5 data,
+  caption/loss policy, and bucket plans; validate the selected multi-GPU topology
+  rather than importing old-timer DDP efficiency. Measure finalist inference on
+  the RTX 4060 Ti 16 GB: 896p, batch 1, ~10 s preferred / 20 s maximum. Capability
+  scores must use the same solver/steps/guidance/precision/offload settings.
+- **Size, exposure, and effective batch:** a compact iso-compute ladder around
+  the 485M architecture and compatible sizes within ≤0.7B; tune effective batch
+  via `gradient_accumulation_steps`. Reuse Stage-3.5 bucket planning, with measured
+  safety/performance revisions for changed sizes, distributions, or resolutions.
+- **Independent corpus and mixture axes:** distinguish unique images from repeated
+  actual draws. Compare stratified corpus sizes at matched draws as well as quality
+  at equal GPU-hours. Select explicit per-stage source/quality/capability mixtures,
+  including useful long-caption exposure, under fixed evaluation and diversity
+  guardrails. Dataset ratios are Stage-4 decisions, not a permanently locked table.
+- **Complete resolution/optimization schedule:** test 256p→640p and 640p→896p
+  continuation, with bounded controls and optional 1024p qualification. Decide
+  stage allocations, caption schedules, LR/EMA, actual sample/update budgets,
+  transition checks, and bounded stop/rollback rules from measured quality/cost.
+- **Validated capability forecast:** reserve larger/longer held-out experiments
+  and higher-resolution checks. The conservative lower forecast must clear 80%
+  for every required gate within the hero budget and serving constraints. Report
+  compute-responsive, recipe-limited, or unresolved failures, with extra-budget
+  estimates only where evidence supports them. Do not assume NFT rescues absent
+  base competence.
+- **Executable handoff:** write `notes/hero_recipe.md`, runnable configs and
+  launch/resume commands, pinned data/metadata, precompute and storage plan,
+  evaluation/telemetry, serving configuration, and complete cost/uncertainty
+  ledger. Required implementation and relevant tests/smokes finish inside Stage 4.
 
-- 4.0 **Re-estimate the hero recipe from budget and implemented performance**:
-  establish remaining GPU-hour, API/storage, and practical wall-clock budgets,
-  including queueing/preemption and preparation/evaluation/checkpoint costs.
-  Start from corrected Stage-3 single-GPU throughput and memory; refresh
-  end-to-end measurements on the Stage-3.5 data, caption bias, and bucket plans
-  at each proposed resolution/model size. Measure target-GPU scaling when
-  resources permit; otherwise label conservative assumptions explicitly.
-  High-resolution DiT-only ceilings and old-timer DDP results are not measured
-  end-to-end hero rates. Derive feasible model size, resolution-stage allocation,
-  accumulation, actual samples/step, sample budgets, and step counts; for each
-  stage, training GPU-hours = actual samples / measured global samples/s ×
-  GPU count / 3600, with startup, evaluation, checkpoint, and restart allowances
-  added separately. Replace the preimplementation estimates before selecting
-  the hero recipe; revisit this estimate as the probes finish.
-- 4.1 **Data-scaling probe** @256p: corpus arms 50K / 200K / 500K, fixed steps →
-  KID + eval-loss slope → data-bound vs step-bound verdict → corpus size (D3).
-- 4.2 **Resolution-transfer probe**: 256p→640p continued vs 640p-from-scratch (short arms)
-  → confirm staging saves compute; check 640p→896p continued-training transfer (2.1
-  already showed zero-shot 2.5× sampling transfer fails hard for both RoPE variants —
-  progressive fine-tuning is the only path).
-- 4.3 **Steps/quality curve** at chosen config → place the knee → steps per stage.
-- 4.4 **Size/batch/steps grid** (small iso-compute arms around the 485M winner,
-  e.g. 485M@32K vs 0.6-0.7B@~iso-compute, accumulation settings targeting
-  average effective batches around 128 vs 256) → scaling-law slopes
-  → recommended hero size×batch×steps for the stage-5 envelope.
-- 4.5 Hero recipe card: corpus, mixture, stage steps, LR schedule, exit layer,
-  arch/size, per-resolution bucket plans, `gradient_accumulation_steps`, measured
-  actual samples/step and total samples, throughput/memory, GPU-hour and wall-clock
-  estimates with uncertainty and overhead allowances — written to `notes/hero_recipe.md`.
+**Exit**: an evidence-backed go verdict and complete budget-feasible recipe;
+no material recipe decision or enabling implementation is deferred to Stage 5.
+Every measurement is traceable and every extrapolation labeled. If, for example,
+the core targets credibly need **4,000 rather than ≤2,200 4090-hours**, request an
+explicit redesign/budget/scope decision. That is not authorization to exceed the
+budget, silently weaken the target, or insert a routine Stage 4.5. Insufficient
+evidence likewise blocks a go handoff rather than being declared success.
 
-**Exit**: budget-feasible recipe card committed; every measured number traceable
-to a probe arm, every extrapolation labeled, and the old hero estimates replaced.
+## Stage 5 — Execute the pre-NFT hero recipe (1.6–2.2K 4090-h working range)
 
-## Stage 5 — Hero run (≈1.6–2.2K 4090-h; single 8-GPU 4090 node, ≈8–12 days wall)
+**Goal**: execute and verify the complete Stage-4 recipe, starting directly after
+its go handoff. All resolution allocations, mixtures, optimization, serving
+settings, and evaluation gates come from `notes/hero_recipe.md`, not the earlier
+guessed step percentages. The intended path is 256p → 640p → 896p with an explicit
+Stage-4 decision/rule for optional 1024p. GPU topology and wall time are measured
+and justified by Stage 4; an eight-GPU node is a candidate, not a timing assumption.
 
-**Goal**: the model, using the budget-derived Stage-4 recipe. The following stage
-fractions and headline compute/wall-clock ranges remain provisional:
-640p bulk (~60–70% of steps) → 896p tail (~20–25%) → optional 1024p
-polish with NTK scaling (~10%, only if 896p samples are clean and 1024p is wanted).
+- Run the finalized data-preparation, training, checkpoint, and resume workflows.
+  Full production high-resolution precompute may execute here only with its
+  policy, tested procedure, storage, validation, and cost allocation already settled.
+- Follow the selected chunked-Muon/auxiliary-AdamW recipe and exact per-stage
+  dataset/quality/caption schedules; keep license-restricted entries identifiable.
+- Track actual samples and GPU-hours against the full ledger. Do not reuse the
+  old **60–100M samples in 2K 4090-h** projection or extend beyond 2,200 hours
+  without a new explicit budget decision.
+- Evaluate the fixed bilingual joint capability gates, per-domain KID, long/short
+  prompt adherence, retention, and memorization at predefined checkpoints.
+  Execute only the bounded transition/extension/rollback rules decided in Stage 4.
+- Verify the final pre-NFT checkpoint at the quality-qualified 4060 Ti serving
+  settings. Unexpected failures may require redesign, not automatic NFT rescue.
 
-- Effective batch/accumulation and LR schedule from Stage 4, retaining chunked
-  Muon LR 0.02 plus auxiliary AdamW as the optimizer starting point; logit-normal(0,1) +
-  resolution time shift; caption dropout 0.1; caption-length curriculum; EMA 0.9999.
-- Do not carry forward the old **60–100M samples in 2K 4090-h** projection as
-  established throughput. Stage 4 supplies the actual per-resolution sample/step
-  allocation and cost from measured performance. If its probes find the recipe
-  step-bound rather than data-bound, consider extending hero hours within the
-  agreed scheduling/budget policy.
-- Checkpoints + eval suite every interval; watch: KID per domain, anatomy prompt pass
-  rate, 1024p-collapse check, memorization probes on small domains.
-- Mixture per locked table (dataset_plan.md §mixture; NC entries separate).
-
-**Exit**: hero checkpoint passing the eval suite; if 1024p polish degrades, ship 896p and
-note the latent-upscaler fallback.
+**Exit**: a pre-NFT checkpoint meeting the actual capability and serving contract,
+with final measured costs and limitations. If optional 1024p degrades, retain the
+qualified 896p checkpoint according to the predeclared rollback rule.
 
 ## Stage 6 — NFT post-training (≈300–500 4090-h)
 
@@ -455,14 +473,21 @@ Publication/demo hosting costs are estimated separately before deployment.
 | 1 Data | 30 + API spend | API captioning replaces GPU captioning; cache raw responses |
 | 2 Ablations | 400 | Inspire fair arms only; Andromeda takes smoke/qualitative arms (free, ~¼ speed); cap raised 200→400 on 2026-09-04 to fit stream-schedule + Muon axes |
 | 3 Efficiency | 80 | buys back far more than it costs — gates stage 5 |
-| 3.5 Captions / buckets / 640p | TBD + API/storage spend | pilot, then cost caption enrichment, refreshed precompute/eval, and bucket search |
-| 4 Scaling ladder | 450 nominal | small runs; rebase hero recipe and budget on measured Stage-3/3.5 performance |
+| 3.5 Captions / buckets / 640p | 75 experiments/profiling + separate precompute | approximately $100 API budget; full-corpus precompute/storage costed separately; see detailed plan and execution record |
+| 4 Complete recipe / forecasts | 450 | separate experimental cap; validated capability and serving forecasts plus execution-ready pre-NFT handoff |
 | 5 Hero | 1,600–2,200 provisional | target topology and wall time must be justified by Stage 4 |
 | 6 NFT | 300–500 | sampling-bound |
 | 7 Publication | TBD + hosting spend | model/Space release, documentation and reproducibility checks |
 | **Original subtotal** | **≈2.9–3.7K 4090-h** | excludes new Stages 3.5/7 and API/storage/hosting spend; Stage 4 must update the complete ledger |
 
-**Budget semantics (2026-08-26, user clarification; extended 2026-09-06)**: the
+**Current Stage-4/5 budget boundary (user, 2026-09-11)**: Stage 4 has a separate
+450-hour experiment/profiling cap; the hero working range remains 1,600–2,200 hours.
+The historical off-peak flexibility below is **not standing authorization** to
+exceed these constraints. A forecast requiring roughly 4,000 hero hours triggers
+an explicit redesign/budget decision before launch. Scheduling priority remains
+as documented below.
+
+**Historical budget semantics (2026-08-26, extended 2026-09-06)**: the
 Inspire budget is about **not crowding out other users**, not an absolute hours
 cap — scheduling GPU work into off-peak (late-night) troughs is explicitly
 sanctioned, and exceeding the nominal ledger (e.g. 5K h) is acceptable if it

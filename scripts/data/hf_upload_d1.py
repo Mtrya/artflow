@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Upload D1 (Chinese painting) to HuggingFace as webdataset tar shards.
 
-Run on the Inspire notebook (images live on GPFS; notebook reaches HF directly):
-    HF_TOKEN=... ../venv-harvest/bin/python ../repo/scripts/data/hf_upload_d1.py \
+Run on the machine that holds the shared workspace (the images live there and
+it reaches HuggingFace directly):
+
+    HF_TOKEN=... python $ARTFLOW_ROOT/repo/scripts/data/hf_upload_d1.py \
         [--components npm_tw_c1,npm_tw_c2,...]
 
 Layout in repo:  data/<component>/shard-00000.tar  (each entry: <image_id>.jpg
@@ -10,7 +12,7 @@ Layout in repo:  data/<component>/shard-00000.tar  (each entry: <image_id>.jpg
 
 Idempotent: shard names already in the repo are skipped; staging files are
 deleted after each successful upload. Components whose images are not yet on
-GPFS (no clean/<c>/images dir) are skipped with a note.
+disk (no clean/<c>/images dir) are skipped with a note.
 """
 import argparse
 import io
@@ -60,9 +62,9 @@ def main():
     os.makedirs(STAGING, exist_ok=True)
     for comp in comps:
         comp_rows = by_comp.get(comp, [])
-        img_root = os.path.join(W, "data/clean", comp, "images")
+        img_root = os.path.join(root, "data/clean", comp, "images")
         if not os.path.isdir(img_root):
-            print(f"[{comp}] images not on GPFS yet, skip", flush=True)
+            print(f"[{comp}] images not present under the workspace root yet, skip", flush=True)
             continue
         shard_idx, tar, tar_path, cur = 0, None, None, 0
         n_files = 0

@@ -10,7 +10,8 @@ changes is the per-image record, which is what this script rebuilds and uploads:
 * ``caption_long``, the new long caption added by the enrichment pass, where one
   exists.
 
-Run on the machine that holds the metadata and the caption output:
+Run on the machine that holds the metadata and the caption output ($W is the
+shared workspace root, $ARTFLOW_ROOT):
 
     HF_TOKEN=... python -m scripts.data.publish_hf_d1 \
         --metadata $W/data/meta/d1/d1_metadata.jsonl \

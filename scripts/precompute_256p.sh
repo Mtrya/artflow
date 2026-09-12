@@ -1,5 +1,6 @@
 #!/bin/bash
-# Run 256p precompute over all manifests on the GPU notebook.
+# Run 256p precompute over all manifests on a GPU machine with the shared
+# workspace mounted (ARTFLOW_ROOT).
 # Idempotent per-source: skip if output dir already has dataset_info.json.
 # Usage: bash scripts/precompute_256p.sh [source ...]   (default: all + light_eval)
 set -u

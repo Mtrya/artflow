@@ -39,7 +39,8 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 from src.dataset.caption_prompts import LENGTH_BANDS
 
-# Length bands and their intended share of accepted additions (plan section 3.3).
+# Length bands and their intended share of accepted additions
+# (notes/stage3_5_plan.md section 3.3).
 # A dataset whose captions serve a different purpose can pass its own split on
 # the command line; the shares are normalised, so they need not sum to one.
 BAND_SHARES = (("256-511", 0.55), ("512-895", 0.30), ("896-1280", 0.15))

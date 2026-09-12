@@ -80,3 +80,34 @@ def test_hidden_size_must_divide_by_heads(tmp_path):
 def test_missing_file_is_reported(tmp_path):
     with pytest.raises(ValueError, match="not found"):
         load_config([str(tmp_path / "nope.toml")])
+
+
+def test_caption_loss_weights_are_validated_at_load(tmp_path):
+    """The shipped recipe weights nothing, and an unusable curve fails like
+    any other bad config value instead of being repaired on the way in."""
+    flat = flatten(load_config([BASE]))
+    assert flat["caption_loss_weight_curve"] == "none"
+    assert flat["caption_loss_weight_reference"] == 128
+
+    partial = _write(
+        tmp_path / "partial.toml",
+        '[train]\ncaption_loss_weight_curve = "log2"\n'
+        "caption_loss_weight_reference = 64\n",
+    )
+    train = load_config([partial]).train
+    assert train.caption_loss_weight_curve == "log2"
+    assert train.caption_loss_weight_reference == 64
+
+    typo = _write(
+        tmp_path / "typo.toml",
+        '[train]\ncaption_loss_weight_curve = "linear"\n')
+    with pytest.raises(ValueError, match="must be one of"):
+        load_config([typo])
+
+    small = _write(
+        tmp_path / "small.toml",
+        '[train]\ncaption_loss_weight_curve = "log2"\n'
+        "caption_loss_weight_reference = 1\n",
+    )
+    with pytest.raises(ValueError, match="reference must be >= 2"):
+        load_config([small])

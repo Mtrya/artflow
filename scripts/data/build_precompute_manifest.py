@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Build unified precompute manifests from all Stage-1 data sources on GPFS.
+Build unified precompute manifests from all data sources under the shared
+workspace root (ARTFLOW_ROOT).
 
 Each output row: {image_id, local_path, captions, width, height, bbox, source}
-- local_path: absolute path on GPFS
+- local_path: absolute path under the shared workspace root
 - captions:   list[str] (zh/en/etc., empty strings dropped)
 - width/height: int or null (null -> resolution pre-filter skipped)
 - bbox:       normalized [0,1000]^2 [x1,y1,x2,y2] or null (D1 artifact crops)
@@ -12,7 +13,7 @@ A stable hash carve-out (~eval_frac of every source) goes to light_eval.jsonl
 and is excluded from the train manifests. light_eval is precomputed into its
 own dataset for held-out validation during training.
 
-Runs with stdlib + pyarrow only (venv-harvest on the CPU notebook).
+Runs with stdlib + pyarrow only (no GPU environment needed).
 """
 
 import argparse

@@ -1,0 +1,17 @@
+# Caption selection: exact retained lengths, linear preference ramp.
+#
+# Chooses on the measured token count of each candidate caption rather than on
+# the original heuristic, with a preference that starts out favouring short
+# captions (beta < 0) and ends up favouring long ones (beta = 1 reads as "a
+# caption twice as long is twice as likely").  The short-caption reserve is a
+# share of a row's draws rather than a per-caption probability, so adding long
+# variants to a row does not dilute the short ones.
+[data]
+caption_policy = "beta"
+curriculum_start = 0.0
+curriculum_end = 1.0
+caption_beta_start = -1.0
+caption_beta_end = 1.0
+caption_schedule = "linear"
+caption_short_reserve = 0.20
+caption_short_threshold = 256

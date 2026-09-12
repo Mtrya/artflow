@@ -39,7 +39,8 @@ from ..dataset.sampler import (
     pad_text_to_hi,
 )
 from ..dataset.captions import CaptionPolicy
-from .caption_telemetry import CaptionTelemetry
+from .caption_telemetry import CaptionTelemetry, PolicyState
+from .caption_loss_weights import CaptionLossWeights, StepLossAccumulator, weighted_mean
 from ..dataset.mix import parse_dataset_mix, get_dataset_weights
 from ..utils.encode_text import encode_text
 from ..utils.vae_codec import get_vae_stats
@@ -305,6 +306,23 @@ def main():
     # backend; the cuDNN backend was measured slower for these shapes.
     set_sdpa_backends(["EFFICIENT_ATTENTION", "MATH"])
 
+    # Allocation-history capture for out-of-memory post-mortems, enabled by
+    # setting ARTFLOW_MEM_SNAPSHOT to a file prefix: the recorder runs from
+    # startup and the snapshot (which allocation stacks hold what) is dumped
+    # at interpreter exit, including after an unhandled OOM.  Recording slows
+    # the run slightly, so it stays off unless the variable is set.
+    mem_snapshot_prefix = os.environ.get("ARTFLOW_MEM_SNAPSHOT")
+    if mem_snapshot_prefix and torch.cuda.is_available():
+        import atexit
+
+        torch.cuda.memory._record_memory_history(max_entries=100000)
+        atexit.register(torch.cuda.memory._dump_snapshot,
+                        f"{mem_snapshot_prefix}.pickle")
+
+    # Per-micro-batch shape logging, the cheap half of an OOM post-mortem (see
+    # the [shape] line ahead of the DiT forward).
+    log_shapes = bool(os.environ.get("ARTFLOW_LOG_SHAPES"))
+
     # Micro-batches carry their own (resolution, length bucket) and local
     # sample count, so accumulation is explicit in the training loop: keep
     # Accelerate's factor at one micro-batch and track the optimizer-step
@@ -467,13 +485,20 @@ def main():
         # instead of one 24-layer graph per shape. Same fusion opportunities on
         # the elementwise/norm/modulation ops, ~20x less compile time.
         # Dynamo specializes on shape AND stride, so every (length bucket,
-        # local batch) pair is a separate graph; raise the per-code-object
-        # recompile limit above the bucket count so it never silently falls
-        # back to eager.
+        # Per-block compilation shares one dynamo cache per code object, and
+        # every (resolution, length bucket) pair - hence every (sequence
+        # length, local batch) pair - is a separate graph.  The bucket plan
+        # multiplies length buckets by resolution ids, and dynamo spends more
+        # than one cache entry per shape while it specializes, so a small
+        # limit is exhausted mid-run; a shape compiled after the limit runs
+        # eagerly, and an eager forward keeps roughly twice the activation
+        # memory of its compiled graph (observed: 38 GB vs 20 GB at batch 16
+        # with a ~1250-token text, enough to OOM a 48 GB card by itself).
+        # Keep the floor well above any plausible plan's shape count.
         try:
             import torch._dynamo as _dynamo
 
-            limit = max(int(getattr(_dynamo.config, "recompile_limit", 8)), 64)
+            limit = max(int(getattr(_dynamo.config, "recompile_limit", 8)), 512)
             _dynamo.config.recompile_limit = limit
             if hasattr(_dynamo.config, "cache_size_limit"):
                 _dynamo.config.cache_size_limit = limit
@@ -586,6 +611,13 @@ def main():
     caption_telemetry = CaptionTelemetry(
         short_threshold=caption_policy.short_threshold,
         log_every=args.telemetry_log_interval,
+    )
+    # Per-sample loss weights as a curve over retained caption length. The
+    # "none" curve (the default) leaves the loss and its normalization exactly
+    # as they were, so a run is only reweighted when its config says so.
+    caption_loss_weights = CaptionLossWeights(
+        curve=args.caption_loss_weight_curve,
+        reference=args.caption_loss_weight_reference,
     )
     dataloader = DataLoader(
         row_dataset,
@@ -707,8 +739,29 @@ def main():
     )
 
     stage = args.curriculum_start
-    micro_loss_sum = torch.zeros((), device=accelerator.device, dtype=torch.float32)
-    micro_sample_count = 0
+
+    def current_policy_state() -> PolicyState:
+        # The telemetry records the policy that produced the captions rather
+        # than one recomputed later: the sampler's own stage is what the
+        # within-row selector used, and for the length-preference selector the
+        # strength is beta at that position.
+        return PolicyState(
+            progress=global_step / args.max_steps,
+            curriculum_position=sampler.stage,
+            strength=(
+                caption_policy.beta(sampler.stage)
+                if caption_policy.kind == "beta"
+                else sampler.stage
+            ),
+            short_reserve=caption_policy.short_reserve,
+        )
+
+    policy_state = current_policy_state()
+    # One optimizer step's weighted mean is built up here: the micro-batches
+    # add their weighted losses and their weights, and the boundary below
+    # divides once. See StepLossAccumulator for why the division is not moved
+    # into the micro-batches.
+    step_losses = StepLossAccumulator(accelerator.device)
     micro_count = 0
     step_global_loss = None
     step_global_samples = None
@@ -722,6 +775,7 @@ def main():
     steady_wall_total = 0.0
     steady_samples_total = 0
     peak_mem_gb = 0.0
+    peak_reserved_gb = 0.0
 
     train_iter = iter(dataloader)
 
@@ -909,10 +963,19 @@ def main():
                 bd_mark("text")
             latents, t = prepare_latents(batch)
             selected_captions, dropped_mask = select_captions(batch)
+            # Caption lengths and the loss weights they imply are host values:
+            # a curve evaluation is a host-side computation and the total the
+            # optimizer step normalizes by is a sum of them, so neither needs a
+            # device round-trip.
+            retained_lengths = batch["retained_lengths"].tolist()
+            micro_weights = caption_loss_weights.for_micro_batch(
+                retained_lengths, dropped_mask, accelerator.device)
             caption_telemetry.record(
-                batch["retained_lengths"].tolist(), dropped_mask,
-                int(batch["bucket_hi"]), int(batch["resolution_bucket_ids"][0]),
-                int(batch["len_bucket_idx"]))
+                retained_lengths, dropped_mask,
+                int(batch["bucket_hi"]),
+                row_positions=batch["row_positions"],
+                policy=policy_state,
+                loss_weights=micro_weights.values)
             txt, txt_mask, txt_pooled = encode_micro(batch, selected_captions)
             if args.step_breakdown:
                 bd_mark("text")
@@ -926,6 +989,22 @@ def main():
             z0 = torch.randn_like(z1)
             z_t = algorithm.sample_zt(z0, z1, t)
 
+            # Per-micro-batch shape log for out-of-memory post-mortems: with
+            # ARTFLOW_LOG_SHAPES set, every micro-batch prints the dimensions
+            # that decide its activation memory (resolution, padded text
+            # length, local batch size) together with the memory level the
+            # forward starts from, so a later OOM can be attributed to the
+            # exact bucket that caused it instead of reconstructed by hand.
+            if log_shapes:
+                accelerator.print(
+                    f"[shape] step={global_step} micro={micro_count} "
+                    f"res={int(batch['resolution_bucket_ids'][0])} "
+                    f"txt_hi={int(batch['bucket_hi'])} "
+                    f"txt_len={txt.shape[1]} "
+                    f"B={int(latents.shape[0])} "
+                    f"latent={z_t.shape[-2]}x{z_t.shape[-1]} "
+                    f"mem_gb={torch.cuda.memory_allocated() / 1024**3:.2f}"
+                )
             # Forward
             if args.step_breakdown:
                 bd_mark("fwd")
@@ -939,17 +1018,26 @@ def main():
             )
 
             # Loss
-            loss = algorithm.compute_loss(model_output, z0, z1, t)
+            #
+            # A micro-batch whose samples carry different caption-length
+            # weights is reduced to their weighted mean; one whose weights are
+            # all equal is a plain rescale of the mean the algorithm already
+            # computes, and takes that path instead. Either way the step
+            # accumulates the weighted losses and the weights and divides once,
+            # at the optimizer boundary, which is what makes the step the
+            # weighted mean of its samples however it was split into
+            # micro-batches.
+            loss = algorithm.compute_loss(
+                model_output, z0, z1, t, sample_weights=micro_weights.tensor)
             local_batch_size = int(latents.shape[0])
-            # Micro-batches may hold different local sample counts, so each
-            # micro's loss is weighted by its own sample count before it is
-            # summed for the optimizer step. DDP averages each per-micro
-            # sample-weighted gradient sum across ranks; the optimizer
-            # boundary divides by global samples / num_ranks to recover the
-            # mean over the actual samples.
-            micro_sample_count += local_batch_size
-            micro_loss_sum += loss.detach().float() * local_batch_size
-            loss_for_backward = loss * local_batch_size
+            # ``total`` is the micro-batch's share of the step's normalization:
+            # the sum of its samples' weights, which is exactly the sample
+            # count while the table is all ones. DDP averages each rank's
+            # accumulated weighted-loss gradient across ranks; the optimizer
+            # boundary divides by the global weight per rank to recover the
+            # weighted mean over the actual samples.
+            loss_for_backward = step_losses.add(
+                loss, micro_weights.total, local_batch_size)
             if args.step_breakdown:
                 bd_mark("fwd")
             if args.cpu_wall_profile:
@@ -976,27 +1064,34 @@ def main():
             if should_optimizer_step:
                 if args.cpu_wall_profile:
                     _t_sync0 = time.monotonic()
-                local_sample_count = torch.tensor(
-                    float(micro_sample_count),
+                # Sample count and total loss weight travel in one collective:
+                # the count says how much data the step used, the weight is
+                # what the gradient is normalized by. While the weight table is
+                # all ones the two are the same number.
+                local_step_totals = torch.tensor(
+                    [float(step_losses.sample_count), step_losses.weight_sum],
                     device=accelerator.device,
                     dtype=torch.float32,
                 )
-                global_sample_count = accelerator.reduce(
-                    local_sample_count, reduction="sum"
+                step_totals = accelerator.reduce(
+                    local_step_totals, reduction="sum"
                 )
-                if global_sample_count.item() <= 0:
+                global_sample_count, global_loss_weight = step_totals.tolist()
+                if global_sample_count <= 0:
                     raise RuntimeError("optimizer step has no samples")
-                grad_divisor = global_sample_count.item() / accelerator.num_processes
+                grad_divisor = global_loss_weight / accelerator.num_processes
                 for p in model.parameters():
                     if p.grad is not None:
                         p.grad.div_(grad_divisor)
                 global_loss_sum = accelerator.reduce(
-                    micro_loss_sum, reduction="sum"
+                    step_losses.loss_sum(), reduction="sum"
                 )
-                step_global_loss = (
-                    global_loss_sum / global_sample_count
+                # The step's weighted mean, divided in the dtype the reduction
+                # produced it in.
+                step_global_loss = weighted_mean(
+                    global_loss_sum, step_totals[1]
                 ).item()
-                step_global_samples = int(global_sample_count.item())
+                step_global_samples = int(global_sample_count)
                 if args.step_breakdown:
                     bd_mark("opt")
                 grad_norm = accelerator.clip_grad_norm_(
@@ -1024,14 +1119,14 @@ def main():
 
             step_samples = step_global_samples
             step_loss = step_global_loss
-            micro_sample_count = 0
-            micro_loss_sum.zero_()
+            step_losses.reset()
             progress = global_step / args.max_steps
             stage = args.curriculum_start + (
                 args.curriculum_end - args.curriculum_start
             ) * progress
             if global_step % args.stage_sync_interval == 0:
                 sampler.set_stage(stage)
+            policy_state = current_policy_state()
 
             if ema_model is not None and global_step % args.ema_update_interval == 0:
                 if args.step_breakdown:
@@ -1119,8 +1214,7 @@ def main():
             if accelerator.is_main_process:
                 log_dict = {
                     "train/loss": step_loss,
-                    "train/stage": stage,
-                    "train/lr": optimizers[0].param_groups[0]["lr"],                    "train/global_samples": step_samples,
+                    "train/lr": optimizers[0].param_groups[0]["lr"],
                 }
                 if len(optimizers) > 1:
                     log_dict["train/lr_aux"] = optimizers[-1].param_groups[0]["lr"]
@@ -1133,14 +1227,14 @@ def main():
                     # ckpt saves, eval overlaps) instead of guessing post-OOM.
                     step_peak_gb = torch.cuda.max_memory_allocated() / 1024**3
                     peak_mem_gb = max(peak_mem_gb, step_peak_gb)
-                    log_dict["train/mem_peak_gb"] = step_peak_gb
-                    log_dict["train/mem_alloc_gb"] = (
-                        torch.cuda.memory_allocated() / 1024**3
+                    # Reserved (the allocator's own ceiling) is what decides whether
+                    # a larger batch fits, so a batch-size screen needs it next to
+                    # the allocated figure.
+                    peak_reserved_gb = max(
+                        peak_reserved_gb, torch.cuda.max_memory_reserved() / 1024**3
                     )
+                    log_dict["train/mem_peak_gb"] = step_peak_gb
                     torch.cuda.reset_peak_memory_stats()
-                log_dict["train/txt_seq_len"] = float(txt.shape[1])
-                log_dict["policy/beta"] = caption_policy.beta(stage)
-                log_dict["policy/short_reserve"] = caption_policy.short_reserve
                 if global_step % args.telemetry_log_interval == 0:
                     caption_telemetry.reduce(accelerator.device,
                                              world_size=accelerator.num_processes)
@@ -1154,9 +1248,7 @@ def main():
                     total_samples = sum(synchronized_counts.values())
                     if total_samples > 0:
                         for alias, count in synchronized_counts.items():
-                            ratio = count / total_samples
-                            log_dict[f"data/{alias}_ratio"] = ratio
-                            log_dict[f"data/{alias}_count"] = count
+                            log_dict[f"data/{alias}_ratio"] = count / total_samples
 
                 accelerator.log(log_dict, step=global_step)
 
@@ -1293,7 +1385,8 @@ def main():
             f"samples_per_sec={train_samples_total / train_wall_total:.2f} "
             f"samples_per_step={train_samples_total / max(train_steps_total, 1):.1f} "
             f"{steady}"
-            f"peak_mem_gb={peak_mem_gb:.1f}"
+            f"peak_mem_gb={peak_mem_gb:.1f} "
+            f"peak_mem_reserved_gb={peak_reserved_gb:.1f}"
         )
 
     accelerator.end_training()

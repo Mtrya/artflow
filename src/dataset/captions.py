@@ -113,10 +113,10 @@ def sample_caption_index_from_token_counts(
 # ---------------------------------------------------------------------------
 # Length-preference selector.
 #
-# The legacy curriculum above works on heuristic token counts and a hand-tuned
-# preference strength with per-caption probability clipping.  The replacement
-# below is defined directly on the exact retained lengths the trainer will use,
-# so its behaviour can be read off the formula:
+# The legacy curriculum above takes one retained length per caption and applies
+# a hand-tuned preference strength with per-caption probability clipping.  The
+# replacement below is defined directly on the same retained lengths, so its
+# behaviour can be read off the formula:
 #
 #     q_beta(c | row) = L[c]^beta / sum_j L[j]^beta
 #
@@ -259,11 +259,18 @@ def average_caption_probabilities(
         weights_ = np.exp(log_weights)
         probabilities = weights_ / weights_.sum(axis=1, keepdims=True)
         if policy.short_reserve > 0.0:
-            probabilities = (1.0 - policy.short_reserve) * probabilities
+            # A row with no short caption has nothing for the reserve to cover.
+            # Scaling such a row down would leave its probabilities summing to
+            # less than one, and the sampler's fallback hands the remainder to
+            # whichever caption happens to sit last in the list — so the row's
+            # longest caption would quietly gain the missing share.
+            has_short = short_count > 0
             share = np.divide(policy.short_reserve, short_count,
                               out=np.zeros(short_count.shape, dtype=np.float64),
-                              where=short_count > 0)
-            probabilities = probabilities + short * share
+                              where=has_short)
+            probabilities = np.where(has_short,
+                                     (1.0 - policy.short_reserve) * probabilities + short * share,
+                                     probabilities)
         total += weight * probabilities
     return total
 
