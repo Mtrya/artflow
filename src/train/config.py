@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
 from .caption_loss_weights import CaptionLossWeights
+from .stage_control import stage_endpoint
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,11 @@ class TrainLoopConfig:
     """How long the loop runs, and how it accumulates, weights and averages."""
 
     max_steps: int = 50000
+    # Clean-exit step boundary for a stage that must stop before the schedule
+    # horizon: the loop checkpoints and exits at stop_at_step, while the LR
+    # and caption-length schedules keep max_steps as their horizon so a
+    # follow-up stage resumes mid-schedule. 0 disables it.
+    stop_at_step: int = 0
     seed: int = 42
     gradient_accumulation_steps: int = 16
     num_workers: int = 8
@@ -124,6 +130,7 @@ class EvalConfig:
     ode_steps: int = 50
     # Absolute global steps: stage baseline, +2k transition check, endpoint.
     grid_steps: list[int] = field(default_factory=list)
+    # End of global max_steps, not an intermediate stop_at_step boundary.
     kid_at_end: bool = False
     kid_num_fake: int = 2000
 
@@ -233,9 +240,7 @@ def _validate(config: TrainConfig) -> None:
         raise ValueError("[eval].grid_steps must be a list of nonnegative integer global steps")
     if config.train.gradient_accumulation_steps < 1:
         raise ValueError("[train].gradient_accumulation_steps must be >= 1")
-    if config.train.max_steps < 0:
-        raise ValueError("[train].max_steps must be >= 0 (0 runs no optimizer "
-                         "steps; only the pre-loop baseline eval fires)")
+    stage_endpoint(config.train.max_steps, config.train.stop_at_step)
     # A loss-weight curve that is not usable is a configuration error, not
     # something to repair on the way in.
     CaptionLossWeights(

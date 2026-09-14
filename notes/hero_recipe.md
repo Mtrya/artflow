@@ -148,18 +148,31 @@ Cumulative stopping/checkpoint boundaries are `floor(0.75*T)`,
 | 400k | 300k / 300k | 80k / 380k | 20k / 400k |
 | 420k | 315k / 315k | 84k / 399k | 21k / 420k |
 
-A separate `stop_at_step` must stop and checkpoint the invocation without
-changing its LR/caption schedule horizon. The next stage can be launched
-manually; restore weights, optimizer, scheduler and EMA, validate the predecessor
-endpoint, reset resolution-specific sampler queues, and initialize caption
-progress from the restored global step before drawing data. Caption progress is
+`[train].stop_at_step` stops and checkpoints the invocation without changing
+its LR/caption schedule horizon (`max_steps=T`). Zero disables the separate stop;
+enabled endpoints must be integers within `[1,T]`. The next stage is launched
+manually with `jobs/hero_stage.sh <resolution> <T>`. The launcher validates the
+predecessor endpoint and resumes weights, optimizer, scheduler and EMA directly
+from it, using `--reset_sampler` to start fresh resolution-specific queues without
+copying or modifying the predecessor. Caption progress is
 initialized before data prefetch and uses the same whole-run formula as subsequent
 updates; resolution changes do not restart the short-to-long curriculum. Same-stage
 resume retains the saved sampler queues and replay batches.
 
-This stopping control and boundary validation are **not yet implemented**.
-The current launcher's `max_steps=T` alone does not enforce stage budgets.
-Wall-time termination and a shorter per-stage schedule horizon are not substitutes.
+Resuming exactly at an endpoint performs no additional updates; a checkpoint
+beyond the endpoint is rejected. Every endpoint is saved before image/loss
+evaluation, even between regular checkpoint slots. Intermediate stops skip
+end-of-global-training KID; stage panels still run at their scheduled endpoints.
+
+Each checkpoint publishes `training_state.json` after all ranks finish saving.
+It records the global step, T, scheduler count, EMA policy, rank count and file
+sizes. Staged resume requires this completion record and matching T; missing or
+truncated files are rejected, and scheduler steps must match the checkpoint step.
+Older checkpoints without the record remain available for non-staged resume,
+but cannot silently seed the hero stages. Full resume never silently reinitializes
+a missing scheduler or enabled EMA. File-size checks do not replace actual
+deserialization or the distributed smoke test still required by the infra pass.
+Finalize T before starting the hero; do not change it between stages.
 
 For measured wall-seconds per optimizer step `t256, t640, t896` on eight ranks:
 
@@ -187,7 +200,7 @@ there is no accepted wall-clock estimate yet.
    steady-state speed, and compilation/startup cost.
 2. Finalize total steps and per-stage endpoints from those measurements, with
    overhead and bounded restart allowances inside the hero budget.
-3. Implement and smoke-test stage stopping, endpoint checkpoints, and cross-stage
+3. Run the distributed smoke test of stage stopping, endpoint checkpoints, and cross-stage
    continuation with continuous LR/caption progress.
 4. Generate and verify resolved stage configs against the selected plan paths;
    pin code, data/metadata, configuration and artifact revisions. Do not change

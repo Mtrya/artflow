@@ -263,9 +263,10 @@ needs its own approved allocation, with no omission from total project cost.
 
 1. **Freeze the selected inputs.** Pin code/data/length metadata, configurations,
    bucket plans, caption/loss policy, and the small bilingual monitoring panel.
-2. **Finish continuation controls.** Implement and smoke-test exact stage stopping,
-   endpoint checkpoints, predecessor validation, and full-state resume. Keep the
-   shared LR/caption horizon; initialize caption progress before prefetch.
+2. **Validate continuation controls.** The local implementation supports exact
+   stage stopping, pre-evaluation endpoint checkpoints, predecessor/T validation,
+   and full-state resume. Smoke-test these paths on the distributed stack. Keep
+   the shared LR/caption horizon; initialize caption progress before prefetch.
 3. **Run the bounded infrastructure pass (§7.3).** Measure the selected 533M model
    on eight ranks at all three resolutions, including actual caption mixtures,
    aspect ratios, memory, exposure, and startup/steady-state costs. The corrected

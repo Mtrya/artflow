@@ -70,9 +70,10 @@ The hero launcher derives these steps from the final global total T, not a
 hard-coded 400k total. Same-step retries can overwrite the same deterministic
 panel file. Evaluation preserves the training Torch RNG stream.
 
-**Stage stopping and predecessor endpoint validation still belong to the final
-infrastructure/launch-readiness pass.** Scheduled image evaluation does not
-implement resolution transition or stop a stage. Include the doubled panel size
+Stage stopping and predecessor/T validation are implemented separately from
+image scheduling. The launcher sets `stop_at_step` and endpoints are saved before
+evaluation. Their distributed smoke test still belongs to the final infrastructure
+pass; the next resolution is a separate launch. Include the doubled panel size
 and transition checks in the measured all-in budget; training throughput alone
 does not account for this overhead.
 

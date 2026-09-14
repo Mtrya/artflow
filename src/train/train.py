@@ -49,6 +49,9 @@ from ..evaluation.eval_loss import EvalLossProbe
 from ..evaluation.prompt_grid import grid_due, run_prompt_grid_eval
 from ..evaluation.kid_eval import run_kid_eval
 from .config import load_config, flatten
+from .stage_control import (
+    CHECKPOINT_RECORD, stage_endpoint, validate_checkpoint, write_checkpoint_record,
+)
 from .muon import build_param_groups as build_muon_param_groups
 from .health import (
     ema_rel_distance,
@@ -173,6 +176,11 @@ def parse_args():
         help="With a plain --resume, also restore EMA weights from the "
         "checkpoint (eval-only probes; without it EMA re-initializes from "
         "the resumed model weights)",
+    )
+    parser.add_argument(
+        "--reset_sampler", action="store_true",
+        help="With --resume_full, start fresh resolution-specific sampler queues; "
+             "keep the global step, scheduler, optimizer, EMA and RNG state",
     )
     parser.add_argument(
         "--step_breakdown",
@@ -326,6 +334,7 @@ def main():
         "resume",
         "resume_full",
         "resume_ema",
+        "reset_sampler",
         "step_breakdown",
         "cpu_wall_profile",
         "fast_caption_dropout",
@@ -339,6 +348,17 @@ def main():
         "text_encoder_exit_mode",
     ):
         setattr(args, name, getattr(cli, name))
+
+    if args.reset_sampler and not (args.resume_full and args.resume):
+        raise ValueError("--reset_sampler requires --resume and --resume_full")
+    # Reject invalid stages/checkpoints before allocating the model or GPUs.
+    resume_step = 0
+    if args.resume_full and args.resume and args.resume != "None":
+        resume_step = validate_checkpoint(
+            args.resume, max_steps=args.max_steps, stop_at_step=args.stop_at_step,
+            require_record=args.stop_at_step > 0, use_ema=args.use_ema,
+        )
+    end_step = stage_endpoint(args.max_steps, args.stop_at_step, resume_step)
 
     # The masked (padded-text) attention path uses the memory-efficient SDPA
     # backend; the cuDNN backend was measured slower for these shapes.
@@ -697,17 +717,13 @@ def main():
         if args.resume_full:
             # Crash-resume restores model/optimizer state and step metadata.
             # The batch sampler state is restored from its rank-local sidecar.
-            m = re.search(r"checkpoint_step_(\d+)", args.resume.rstrip("/"))
-            if m is None:
-                raise ValueError(
-                    f"--resume_full needs a checkpoint_step_* path, got {args.resume}"
-                )
-            resumed_step = int(m.group(1))
+            resumed_step = resume_step
             # Each rank walks a stride-sharded row order under its own RNG
             # stream, so a sampler state only fits the world size that wrote
             # it. Restore only when the exact rank set is present; a resume
             # that changes the GPU count starts a fresh sampler instead.
-            sidecars = matching_sampler_sidecars(args.resume, accelerator.num_processes)
+            sidecars = ([] if args.reset_sampler else
+                        matching_sampler_sidecars(args.resume, accelerator.num_processes))
             if sidecars:
                 sampler.load_state_dict(
                     torch.load(
@@ -721,7 +737,7 @@ def main():
                 )
             else:
                 accelerator.print(
-                    "Sampler sidecars do not cover this world size; "
+                    "Sampler reset requested or sidecars do not cover this world size; "
                     "starting a fresh sampler (data order restarts)."
                 )
             accelerator.print(f"Full resume at step {resumed_step}")
@@ -731,10 +747,12 @@ def main():
                 sch_path = os.path.join(
                     args.resume, "scheduler.bin" if i == 0 else f"scheduler_{i}.bin"
                 )
-                if os.path.exists(sch_path):
-                    sch.load_state_dict(
-                        torch.load(sch_path, map_location="cpu", weights_only=False)
-                    )
+                if not os.path.isfile(sch_path):
+                    raise ValueError(f"full resume requires scheduler state: {sch_path}")
+                state = torch.load(sch_path, map_location="cpu", weights_only=False)
+                if state.get("last_epoch") != resumed_step:
+                    raise ValueError(f"scheduler step does not match checkpoint step: {sch_path}")
+                sch.load_state_dict(state)
         else:
             # A plain --resume carries weights+optimizer but restarts the
             # schedule from step 0: the schedulers are fresh (not restored by
@@ -756,6 +774,8 @@ def main():
         ema_model.load_state_dict(model_raw.state_dict())
         if (args.resume_full or args.resume_ema) and args.resume and args.resume != "None":
             ema_path = os.path.join(args.resume, "ema_weights.pt")
+            if args.resume_full and not os.path.isfile(ema_path):
+                raise ValueError(f"full resume requires EMA state: {ema_path}")
             if os.path.exists(ema_path):
                 ema_model.load_state_dict(
                     torch.load(ema_path, map_location="cpu", weights_only=False)
@@ -891,7 +911,7 @@ def main():
     peak_mem_gb = 0.0
     peak_reserved_gb = 0.0
 
-    train_iter = iter(dataloader)
+    train_iter = iter(dataloader) if global_step < end_step else iter(())
 
     model.train()
 
@@ -1046,6 +1066,11 @@ def main():
             f"{args.run_name}/checkpoint_step_{step:06d}",
         )
         os.makedirs(save_path, exist_ok=True)
+        if accelerator.is_main_process:
+            marker = os.path.join(save_path, CHECKPOINT_RECORD)
+            if os.path.exists(marker):
+                os.remove(marker)  # Invalidate an older completion record before overwriting.
+        accelerator.wait_for_everyone()
         accelerator.save_state(save_path)
         accelerator.wait_for_everyone()
         # Scheduler state (schedulers are deliberately not prepared, so
@@ -1080,8 +1105,16 @@ def main():
             os.makedirs(run_dir, exist_ok=True)
             with open(runtime_path, "w") as f:
                 json.dump(runtime, f)
+        accelerator.wait_for_everyone()
+        if accelerator.is_main_process:
+            write_checkpoint_record(
+                save_path, step=step, max_steps=args.max_steps,
+                scheduler_count=len(schedulers), use_ema=ema_model is not None,
+                world_size=accelerator.num_processes,
+            )
+        accelerator.wait_for_everyone()
 
-    while global_step < args.max_steps:
+    while global_step < end_step:
         if cpu_acc is not None:
             _t_next0 = time.monotonic()
         try:
@@ -1479,8 +1512,8 @@ def main():
                 steady_wall_total += measured_step_dt
                 steady_samples_total += step_samples
 
-            # Checkpointing
-            if global_step % args.checkpoint_interval == 0:
+            # Always persist an endpoint before potentially expensive/failing eval.
+            if global_step % args.checkpoint_interval == 0 or global_step == end_step:
                 save_checkpoint(global_step)
 
             # Fixed eval-loss probe (primary cross-run comparison metric)
@@ -1510,15 +1543,14 @@ def main():
                 torch.cuda.synchronize(accelerator.device)
             last_step_time = time.monotonic()
 
-    # Save the run's endpoint even when max_steps falls between interval
-    # slots, so a finished run is always resumable and usable as an eval or
-    # transfer source.  Saved before the end-of-run KID so a crash there can
-    # not take the final weights with it.
-    if global_step % args.checkpoint_interval != 0:
-        save_checkpoint(global_step)
+            if global_step == end_step:
+                accelerator.print(
+                    f"[stop] reached stage endpoint {end_step}; global T={args.max_steps}"
+                )
 
-    # End-of-training KID (fixed fakes vs full held-out real)
-    if args.kid_eval_at_end:
+    # End-of-training KID (fixed fakes vs full held-out real); only for a run
+    # that actually completed its schedule, not an early stop_at_step exit.
+    if args.kid_eval_at_end and global_step >= args.max_steps:
         eval_model = (
             ema_model if ema_model is not None else accelerator.unwrap_model(model)
         )

@@ -204,14 +204,15 @@ def test_launcher_derives_global_eval_steps(total, stage, accum, fractions):
     # Execute only the pure stage-selection block, not a job or training process.
     case = "case $STAGE in" + launcher.split("case $STAGE in", 1)[1].split("esac", 1)[0] + "esac"
     result = subprocess.run(
-        ["bash", "-c", case + '\nprintf "%s\\n%s\\n" "$ACCUM" "$GRID_STEPS"'],
+        ["bash", "-c", case + '\nprintf "%s\\n%s\\n%s\\n" "$ACCUM" "$GRID_STEPS" "$END"'],
         env={**os.environ, "STAGE": stage, "TOTAL_STEPS": str(total)},
         check=True, capture_output=True, text=True,
     )
-    actual_accum, steps = result.stdout.strip().splitlines()
+    actual_accum, steps, endpoint = result.stdout.strip().splitlines()
     start, end = (total * x // 100 for x in fractions)
     expected = [end] if stage == "256p" else [start, start + 2000, end]
     assert int(actual_accum) == accum
+    assert int(endpoint) == end
     assert [int(s) for s in steps.split(",")] == expected
 
 
@@ -227,7 +228,7 @@ def test_training_grid_wiring_preserves_rng_and_has_preloop_baseline():
     startup = next(n for n in ast.walk(tree) if isinstance(n, ast.If)
                    and ast.unparse(n.test) == "global_step in args.grid_steps")
     loop = next(n for n in ast.walk(tree) if isinstance(n, ast.While)
-                and ast.unparse(n.test) == "global_step < args.max_steps")
+                and ast.unparse(n.test) == "global_step < end_step")
     assert startup.lineno < loop.lineno
     assert "evaluate_grid()" in ast.unparse(startup)
     assert "grid_due(global_step, args.eval_interval, args.grid_steps)" in ast.unparse(loop)

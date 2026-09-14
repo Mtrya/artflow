@@ -96,6 +96,8 @@ muon_momentum = 0.95
 
 [train]
 max_steps = 50000
+# Absolute stage endpoint; 0 disables. LR and caption curriculum still use max_steps.
+stop_at_step = 0
 seed = 42
 # Micro-batches per optimizer step. Together with the bucket table this fixes
 # the number of samples per optimizer step.
