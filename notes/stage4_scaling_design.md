@@ -416,19 +416,19 @@ The ~375-hour envelope is not measured spend and cannot establish the remaining
 infra allowance. Use the actual job ledger against the separate 450-hour cap.
 Descoped experiments do not authorize new sweeps or transfers to the hero budget.
 
-## 8. Open items before the first rung launches
+## 8. Inputs for the final infrastructure pass
 
-1. **d3-synth-v2 swap.** The v2 rescue set exists at all three
-   resolutions (10,893 rows at 256p vs v1's 20,000 — 45% was filtered as
-   junk) with length sidecars, but run-256p.toml / run-640p.toml still
-   point at `d3-synth`. Swap the mix entries before the ladder starts
-   (the v1 rows stay on disk for the already-finished arms).
-2. **XL go/no-go** — resolved: XL is h1440×d20 (632M), user decision
-   2026-09-12; probe constants refitted (§6).
-3. **Evaluation-suite freeze** (prompt manifests, rubrics, seeds) is the
-   calibration package's deliverable and gates arm-A reads.
-4. **The 896p precompute is still running** under cron watch; the 640p
-   transfer arm does not depend on it, the 896p retention checks do.
+The selected hero mix uses `d3-synth-v2` at 256p/640p and excludes it at 896p.
+The current 896p pool contains 759,017 eligible rows, as recorded in the
+[hero recipe](hero_recipe.md) and its bucket-plan reports. The 48-image bilingual
+monitoring panel and sampling settings are frozen in
+[stage4_eval_freeze.md](stage4_eval_freeze.md). No new ladder or evaluation-suite
+design is a launch prerequisite.
+
+Use the recipe's infrastructure checklist to pin the actual artifacts and
+resolved configs, validate continuation, optimize execution, and derive the
+costed training length. The experimental descriptions above are not a new set
+of tasks for the incoming infra pass.
 
 ## 9. Hero direction (user decision 2026-09-13, late)
 
@@ -457,5 +457,8 @@ mean effective-batch targets 640/512/400, Muon peak LR 0.02, 5,000-step warmup,
 and whole-run cosine decay to 5% of peak. Caption progress remains continuous
 across resolution changes. The eligible pools and mixtures differ by resolution;
 use the recipe's counts, not a shared 1.5M-row assumption. The bounded infra pass
-validates plans and end-to-end rates, then sets total steps inside 2,200 GPU-hours
-including overhead. It does not assume zero input stalls or exact budget exhaustion.
+measures and optimizes eight-GPU execution, memory, communication and input
+throughput, then validates the improvements and sets total steps inside 2,200
+GPU-hours including overhead. 1024p is definitively dropped; all scientific
+recipe decisions are frozen. The pass does not assume zero input stalls or
+exact budget exhaustion.

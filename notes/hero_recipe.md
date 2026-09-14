@@ -1,10 +1,13 @@
 # Hero run recipe
 
 Last updated: 2026-09-14. Current configuration for the pre-NFT hero run.
-Launch is pending end-to-end validation, final cost measurement, and the
-stage-stop implementation listed below. Model, optimizer, data policy and stage
-split are fixed; remaining optimization concerns infrastructure and the resulting
-training steps/exposure within the budget. There is no numerical capability
+1024p is definitively dropped: the complete pre-NFT path is 256p → 640p → 896p
+with a 75:20:5 optimizer-step split. All scientific recipe decisions are frozen.
+Launch is pending infrastructure optimization, end-to-end validation and the
+resulting costed training length. Stage stopping is implemented; its distributed
+smoke test remains. The incoming pass must actively optimize eight-GPU execution,
+memory, communication and input throughput, not merely measure the current stack.
+There is no numerical capability
 target or inference hardware/latency gate. Image panels monitor regressions and
 document the trained model's strengths and limitations.
 
@@ -15,7 +18,7 @@ document the trained model's strengths and limitations.
 | Model | 1152 hidden / 16 heads, 1 double-stream + 24 single-stream blocks; 532,706,812 parameters; `configs/ladder-ld533.toml` |
 | Hardware | 8× RTX 4090, 48 GB per card |
 | Budget | Target the full ~2,200 RTX 4090 GPU-hours, including training overhead |
-| Resolution stages | 256p → 640p → 896p; no 1024p stage |
+| Resolution stages | 256p → 640p → 896p; 1024p definitively dropped, not a pending optional stage |
 | Stage step split | 75 : 20 : 5 of the finalized total optimizer steps |
 | Mean effective-batch targets | ≥640 / ≥512 / ≥400 samples per update at 256p / 640p / 896p |
 | Gradient accumulation | 1 / 5 / 7 micro-batches per rank |
@@ -193,19 +196,33 @@ provide measured FLOP/MFU and bottleneck evidence for the infrastructure
 decision. Current-plan end-to-end times and final `T` remain unmeasured;
 there is no accepted wall-clock estimate yet.
 
-## Remaining launch checks
+## Remaining infrastructure work and launch checks
 
-1. Validate all three selected plans on eight ranks with accumulation 1/5/7:
-   realized mean batch, caption exposure, long-caption tails, memory peaks,
-   steady-state speed, and compilation/startup cost.
-2. Finalize total steps and per-stage endpoints from those measurements, with
+All remaining work is infrastructure optimization, execution readiness, or a
+quantity derived from that work. No additional resolution, model-size, corpus,
+mixture, optimizer, curriculum, or capability-forecast experiment is required.
+
+1. **Measure, optimize, then remeasure** all three resolutions on eight ranks.
+   Start with the current plans and accumulation 1/5/7. Profile execution,
+   memory/allocator behavior, communication/rank imbalance, and the input/text
+   path; implement and test changes addressing the measured bottlenecks.
+   Report before/after end-to-end rates, realized mean batch, caption exposure,
+   long-caption tails, memory peaks, and compilation/startup cost. Re-screen
+   bucket sizes/bounds and accumulation where justified, preserving the fixed
+   training policies and documenting any change in actual samples per update.
+2. Finalize total steps and per-stage endpoints from the optimized rates, with
    overhead and bounded restart allowances inside the hero budget.
 3. Run the distributed smoke test of stage stopping, endpoint checkpoints, and cross-stage
    continuation with continuous LR/caption progress.
-4. Generate and verify resolved stage configs against the selected plan paths;
-   pin code, data/metadata, configuration and artifact revisions. Do not change
+4. Bring the external `ladder-common.toml` and `ladder-ld533.toml` settings into
+   versioned, reproducible hero configuration; verify fully resolved configs
+   against the fixed recipe and selected plan paths. Pin code/dependencies,
+   data/metadata, encoder/VAE and configuration/artifact revisions. Do not change
    inputs of running jobs; deploy the selected revision for new validations.
-5. Verify the operational checks below and resume behavior before the hero launch.
+5. Implement and test coordinated nonfinite-loss/gradient failure handling before
+   optimizer updates; the stop policy below is agreed but this guard is not yet
+   implemented. Verify the monitoring/review and resume workflows, checkpoint
+   retention, storage capacity and bounded recovery allowances before launch.
 
 Operational checks: use the frozen 48-image bilingual short/long-prompt panel
 in [stage4_eval_freeze.md](stage4_eval_freeze.md), covering full-body figures,
@@ -228,14 +245,17 @@ execution-safety checks, not capability qualification gates.
 The final infrastructure pass remains bounded within Stage 4's remaining
 450 GPU-hour experiment/profiling cap. No further broad sweep is required.
 
-## Optional later adjustments
+## Candidate optimizations for the infra pass
 
-These are not launch requirements and require validation before adoption:
+Choose from measured bottlenecks; these are candidates, not predetermined winners
+or separate mandatory sweeps. Test correctness and end-to-end benefit before
+adoption, and record why a tested candidate was accepted or rejected:
 
 - Compile the frozen text-encoder path or pre-tokenize captions if profiling
   demonstrates meaningful remaining host overhead.
 - Evaluate bf16 gradient communication, checking numerical behavior as well as speed.
 - Consider rank-synchronized bucket order if exposed imbalance warrants changing
   batch composition.
-- Revisit source-mixture weights at resolution boundaries only through an explicit
-  recipe revision; the tables above define the current default.
+
+The pass does not reopen source mixtures or add a 1024p stage. Any unexpected
+need to change the scientific recipe is a separate redesign requiring approval.

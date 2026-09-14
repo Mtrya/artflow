@@ -2,7 +2,10 @@
 
 Status: updated 2026-09-14. Model size, training budget, optimizer, caption policy,
 mixtures, and resolution split are fixed in [hero_recipe.md](hero_recipe.md).
-Remaining work is infrastructure optimization and execution readiness. There is
+1024p is definitively dropped, closing the last non-infrastructure recipe choice.
+Remaining work is active infrastructure optimization and execution readiness:
+measure, improve and remeasure eight-GPU execution, memory, communication and
+input throughput, then finalize the feasible training length. There is
 no numerical capability target, capability forecast gate, or serving-performance gate.
 
 This plan refines [the roadmap](redesign_plan.md). It does not launch experiments,
@@ -140,8 +143,8 @@ not unique images or text tokens, and excludes the frozen text encoder from
 model size. Its architecture/data/optimizer differ from ArtFlow. Different
 generative metrics favor different allocations; its appendix also finds the
 additive parametric loss surface poorly identifiable. Consequently, use its
-findings as priors and check local iso-compute curves rather than inserting our
-parameter count into its rule to declare a hero recipe.
+findings as context for the completed recipe selection, not as a formula that
+certifies final quality. No additional iso-compute ladder is a launch requirement.
 
 Use explicit quantities:
 
@@ -159,39 +162,23 @@ L(N,S \mid U,r,w,\text{recipe})
 =L_\infty+A N^{-\alpha}+B S^{-\beta}
 \]
 
-is conditional, not an independently validated law for all these axes. Fit it
-only when observations identify its parameters and held-out tests support it.
-Otherwise use simpler local curves and iso-compute comparisons with uncertainty.
-Do not fit every mixture, resolution, data-size, and optimization interaction
-from a small grid. Raw losses under different resolution/time-shift definitions
-are not automatically comparable.
+is conditional, not an independently validated law for all these axes. The fixed
+hero recipe does not require fitting this surface or collecting more scaling
+points. Raw losses under different resolution/time-shift definitions are not
+automatically comparable.
 
 [Scaling Laws for Optimal Data Mixtures](https://arxiv.org/html/2507.09404)
 models the dependence on model size, training exposure, and mixture in language,
-native multimodal, and vision settings. Its useful lesson here is to test mixture
-and scale together against fixed target domains, not transfer its coefficients
-to a DiT or optimize thirteen unconstrained source weights at every phase.
+native multimodal, and vision settings. Its coefficients are not the hero's
+mixture rule: the selected row multipliers and normalization are fixed in the
+recipe. No further mixture search is a launch prerequisite.
 
 ### 5.1 Capability uncertainty and monitoring
 
-Measure category-specific success trajectories, not just a loss-to-anatomy
-conversion. Research on [direct downstream-metric scaling](https://arxiv.org/abs/2512.08894)
-supports investigating such fits, while [work on prediction failures](https://arxiv.org/abs/2406.04391)
-shows why predictable loss need not yield equally predictable accuracy. Both
-concern language models, not an established scaling law for painted anatomy.
-
-Do not invert a poorly identified small-run accuracy curve into a claimed budget
-for correct anatomy. Small runs support stability/cost checks and qualitative
-comparison, not a reliable guarantee of the hero's final success rate.
-
-Separate these diagnoses:
-
-- **Compute-responsive:** observed capability improves with longer/larger runs;
-  estimate a budget interval conditional on the tested recipe.
-- **Recipe-limited:** evidence points to data coverage, quality, resolution, or
-  conditioning shortcomings; more hours alone are not the justified remedy.
-- **Unresolved:** experiments cannot distinguish the two; identify a bridging
-  experiment and its cost.
+Small runs support stability/cost checks and qualitative comparison, not a
+reliable guarantee of the hero's final success rate. No category-specific success
+trajectory, capability-budget fit, or bridging experiment is required. Uncertain
+final capability is reported as a limitation, not turned into another launch gate.
 
 Use the fixed panel to check resolution continuation and monitor hero checkpoints:
 256p figures alone do not establish 896p hand/face detail. No dedicated per-atom
@@ -201,9 +188,8 @@ and follow the recipe's pause/review rules if the hero develops clear regression
 
 ## 6. Corpus, exposure, and stage-dependent mixture design
 
-Stage 3.5 selects captions within an already selected row and experiments with
-length-related weighting. Stage 4 additionally decides the row-level mixture
-across phases. Keep these distinct controls explicit:
+Stage 3.5 selected the caption policy and length-related weighting; Stage 4 has
+fixed the row-level mixture across phases. Keep these controls distinct:
 
 `domain/source → quality and capability strata → row → caption → loss weight`
 
@@ -267,9 +253,10 @@ needs its own approved allocation, with no omission from total project cost.
    stage stopping, pre-evaluation endpoint checkpoints, predecessor/T validation,
    and full-state resume. Smoke-test these paths on the distributed stack. Keep
    the shared LR/caption horizon; initialize caption progress before prefetch.
-3. **Run the bounded infrastructure pass (§7.3).** Measure the selected 533M model
-   on eight ranks at all three resolutions, including actual caption mixtures,
-   aspect ratios, memory, exposure, and startup/steady-state costs. The corrected
+3. **Run the bounded infrastructure pass (§7.3).** Measure, actively optimize,
+   then remeasure the selected 533M model on eight ranks at all three resolutions.
+   Cover execution, memory, communication and input throughput, with actual
+   caption mixtures, aspect ratios, exposure and startup/steady-state costs. The corrected
    [Stage-3 gate](stage3_gate.md) closed on one GPU; neither old multi-GPU timing
    nor DiT-only ceilings establish hero throughput.
 4. **Cost and hand off.** Derive final total steps, 75:20:5 stage endpoints, sample
@@ -299,6 +286,11 @@ unbounded sweep hidden inside “complete recipe.”
 This is a final Stage-4 exit task, **not a separate Stage 4.5 or an open-ended
 optimization stage**. Its input is the selected scientific recipe; its output
 is the final executable, costed hero recipe that Stage 5 can launch directly.
+This is an optimization pass, not a profiling-only report. Use measurements to
+select bottlenecks, implement bounded candidate fixes, verify semantics and
+memory safety, and compare end-to-end performance before and after. Record
+rejected candidates and negative results as well as retained improvements;
+no particular kernel, communication change or speedup is presumed to win.
 Before profiling, set a fixed GPU-hour allowance from the remaining profiling
 envelope or reserve **inside the 450-hour cap**, and record it in the ledger.
 Stop at that allowance or when plausible remaining hero-run savings no longer
@@ -328,12 +320,14 @@ The bounded pass must:
   effective batches. If a change materially alters effective batch, optimizer
   cadence, or caption curriculum, treat it as a recipe revision needing bounded
   validation, not as a transparent speed optimization.
-- Recompute the cost of the selected **sample exposure first**, including
-  checkpoint/evaluation, startup, and restart allowances. Derive optimizer-step
-  counts from the final execution plan; fixed step counts do not preserve dose
-  when bucket batches change. Any budget-driven change to training dose or
-  resolution allocation must be explicit in the revised recipe, not a silent
-  shortening of training.
+- Derive final global T from the **optimized all-in cost**, including
+  checkpoint/evaluation, startup and restart allowances, retaining the fixed
+  75:20:5 step split. Report resulting sample exposure: fixed step counts do not
+  preserve exposure when bucket batches change. Document changes to feasible
+  steps or exposure rather than silently treating them as equivalent training.
+- Complete the execution-readiness checklist in the hero recipe: versioned
+  resolved configs, nonfinite-state guards, distributed transition/resume smokes,
+  pinned artifacts, checkpoint retention/storage and bounded recovery accounting.
 
 Pin the final code/config revisions, bucket plans, accumulation, and topology;
 retain before/after measurements and relevant correctness/resume smokes. Refresh
@@ -354,8 +348,8 @@ Sum across 256p, 640p, and 896p, then add startup,
 evaluation, checkpoint, expected restart, and allocated-idle allowances without
 double-counting costs already in measured rates. Queue waiting is wall-clock
 delay, not allocated GPU-hours. Record both and the assumptions about preemption.
-Measure the chosen multi-GPU topology or use a tested smaller topology; unvalidated
-eight-GPU efficiency cannot be the reason the budget appears to fit.
+Measure and optimize the selected eight-GPU topology; unvalidated scaling
+efficiency cannot be the reason the budget appears to fit.
 
 The selected stage split is 75:20:5 of total optimizer steps. Derive the total
 step count from measured end-to-end rates and overhead inside the 2,200-hour cap;
@@ -364,11 +358,11 @@ bounded contingencies with the executable schedule in [hero_recipe.md](hero_reci
 Report how infra changes affect measured training cost and feasible steps/exposure;
 do not translate the extra steps into an unsupported capability prediction.
 
-Predefine transition checks, allowed bounded extensions, and rollback/stop rules
-inside the total ceiling. Automatic adaptation is permitted only with explicit
-metrics, thresholds, maximum spend, and resulting next configuration. “Tune after
-seeing the hero” is not a complete recipe. Unexpected scientific failures during
-Stage 5 may still trigger redesign; completeness does not imply infallibility.
+Validate the recipe's transition checks and stop/review rules, and cost bounded
+recovery inside the total ceiling. There are no automatic training extensions or
+scientific recipe changes; these require explicit approval. Unexpected scientific
+failures during Stage 5 may still trigger redesign; completeness does not imply
+infallibility.
 
 ## 9. Required Stage-4 handoff
 
@@ -382,7 +376,7 @@ This design document is not that result. The handoff must contain:
 | Data recipe | Immutable dataset/metadata manifests, unique eligible counts, quality/capability strata, licenses, dedup/eval separation, exact per-stage mixture and caption/loss-weight schedules |
 | Full resolution schedule | 256p, 640p, 896p with a 75:20:5 optimizer-step split; no 1024p; aspect buckets, measured sample budgets, final update counts, transitions and retention checks |
 | Optimization recipe | Bucket plans, accumulation and actual effective batch, optimizer groups, LR/warmup/decay, EMA, time shifts, dropout, clipping and normalization |
-| Final infrastructure validation | §7.3 profiling allowance and actual spend, representative traces, before/after end-to-end rates per enabled resolution/topology, pinned execution settings, and sampling/loss-normalization validation |
+| Final infrastructure optimization and validation | §7.3 allowance and actual spend, representative traces, accepted/rejected optimizations, before/after end-to-end rates at each resolution on eight GPUs, pinned execution settings, and sampling/loss-normalization validation |
 | Evaluation inference recipe | Reproducible solver/steps/guidance/precision/offload settings and tested prompt/shape envelope; no deployment hardware or latency gate |
 | Operations | Runnable configs and launch/resume commands, tested checkpoint state restoration, storage/data paths, precompute workflow, evaluation/checkpoint cadence, failure handling and spend limits |
 | Cost and decision report | Training and overhead ledger, preparation/API/storage costs, topology and wall-clock assumptions, uncertainty, alternatives rejected, and explicit go/no-go/redesign verdict |
@@ -400,10 +394,13 @@ allocation. Preparation and monitoring are normal execution, not Stage 4.5.
 
 ### Exit checklist
 
-- [ ] Stage-3.5 outputs accepted and exact experiment inputs frozen.
+- [x] Scientific recipe decisions are frozen, including definitive removal of
+      1024p and the 75:20:5 split across 256p/640p/896p.
+- [ ] Accepted Stage-3.5 inputs and final execution artifacts are pinned and verified.
 - [x] The 48-image bilingual monitoring panel, qualitative review rubric, shared
       seeds and operational checks are frozen in `stage4_eval_freeze.md`.
-- [ ] Qualitative observations and limitations are recorded without a capability pass/fail target.
+- [ ] Infra/transition smoke observations and limitations are recorded with the
+      fixed qualitative panel, without a capability pass/fail target.
 - [ ] Evaluation sampling settings are recorded and the sampling path passes correctness checks.
 - [ ] The complete selected pre-NFT schedule fits the agreed ≤2,200-hour hero budget,
       with overhead, bounded contingencies, and separately approved preparation costs.

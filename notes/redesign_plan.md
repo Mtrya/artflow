@@ -23,7 +23,7 @@ plus `notes/dataset_plan.md` (data-source detail).
 | D3 | Corpus size | Fixed eligible pools per resolution; counts and source mixtures in [hero recipe](hero_recipe.md) |
 | D4 | Hero model | **532,706,812 parameters: h1152, 16 heads, 1 double-stream + 24 single-stream blocks**; [hero recipe](hero_recipe.md) |
 | D5 | Text encoder | Qwen3-0.6B, frozen, online; early-exit layer ablated k ∈ {8,16,28} + follow-up {20,24} → **k=20 (user verdict 2026-09-07**, 2.3a-followup) |
-| D6 | Resolution curriculum | **256p → 640p → 896p**, variable aspect at every stage; **75:20:5** of final optimizer steps; no 1024p stage |
+| D6 | Resolution curriculum | **256p → 640p → 896p**, variable aspect at every stage; **75:20:5** of final optimizer steps; **1024p definitively dropped** (final recipe decision, 2026-09-14) |
 | D7 | RoPE | **Centered image grid + text pinned to fixed diagonal** (2.1 resolved 2026-09-05: 256p eval/loss+KID tie, 640p transfer tie — both arms collapse identically at 2.5× — 480p/384p/320p ladder tie → final tie-break on Qwen-Image adoption prior). Zero-shot ≥1.875× transfer fails for both variants → progressive staging mandatory |
 | D8 | Inspire home | Account-selected project (machine-local configuration) |
 | D9 | Compute class | **RTX 4090 48GB on Inspire** (single 8-GPU node max; no NVLink → DDP over PCIe). Small ablations offloaded to **local RTX 4060 Ti workstation** (SSH-reachable, RTX 4060 Ti ≈ ¼ 4090 throughput) |
@@ -346,9 +346,10 @@ establish the required capabilities.
   prompts in Chinese and English without polishing. The recipe's small fixed panel
   supports VLM-first monitoring and escalation of uncertain judgments; there is
   no numerical capability target or formal qualification suite.
-- **Implemented cost and evaluation:** refresh end-to-end rates on Stage-3.5 data,
-  caption/loss policy, and bucket plans; validate the selected multi-GPU topology
-  rather than importing old-timer DDP efficiency. Record fixed evaluation
+- **Infrastructure optimization and evaluation:** measure, optimize and remeasure
+  eight-GPU execution, memory, communication and input throughput on the selected
+  data/caption policy and bucket plans. Implement and validate bottleneck-driven
+  changes; measurement alone is not the deliverable. Record fixed evaluation
   solver/steps/guidance/precision/offload settings; deployment hardware and
   inference latency do not gate the hero launch.
 - **Size, exposure, and effective batch:** the 533M model and per-stage mixtures
@@ -358,8 +359,8 @@ establish the required capabilities.
   no additional model-size, corpus-size, or mixture sweep is a launch requirement.
 - **Complete resolution/optimization schedule:** test 256p→640p and 640p→896p
   continuation with continuous global LR/caption schedules. The stage split is
-  75:20:5; no 1024p stage. Derive final total steps, sample budgets and exact
-  endpoints from infra measurements, with the recipe's operational checks.
+  75:20:5; 1024p is definitively dropped. Derive final total steps, sample budgets
+  and exact endpoints from optimized infra rates, with the recipe's operational checks.
 - **Fixed recipe, observed capability:** model size, GPU budget, optimizer and
   data/training policies are already selected. Remaining work optimizes execution
   efficiency and feasible training exposure. Record the trained model's strengths
@@ -394,9 +395,11 @@ the selected topology alone does not establish the wall-clock budget.
 - Track actual samples and GPU-hours against the full ledger. Do not reuse the
   old **60–100M samples in 2K 4090-h** projection or extend beyond 2,200 hours
   without a new explicit budget decision.
-- Review the fixed bilingual image panels, per-domain KID, long/short
-  prompt adherence, retention, and memorization at predefined checkpoints.
-  Execute only the bounded transition/extension/rollback rules decided in Stage 4.
+- Review the frozen 48-image bilingual short/long-prompt panel at the recipe's
+  cadence, alongside the fixed loss probe and end-of-global-training KID.
+  These are regression diagnostics, not additional per-domain KID, memorization
+  or capability-qualification suites. Follow the recipe's stop/review rules;
+  extensions, rollback or scientific changes require explicit approval.
 - Verify the final pre-NFT checkpoint at the recorded evaluation sampling
   settings. Unexpected failures may require redesign, not automatic NFT rescue.
 
@@ -526,7 +529,9 @@ daytime/evening.
   do not assume eight-GPU efficiency from the old four-GPU result.
 - VLM API dependency: rate limits / cost drift / provider model updates → cache raw
   responses; record exact model version in dataset metadata.
-- 896p→1024p may degrade → polish stage optional; latent upscaler as documented fallback.
+- Resolution-transition regressions: validate 256p→640p→896p with the fixed
+  monitoring panel and preserve verified checkpoints. 1024p and an upscaler
+  fallback are not part of the pre-NFT hero recipe.
 - NC-tagged data → no commercial release; `license` column + separate mix entries keep a
   clean variant feasible.
 - Reward hacking / diversity collapse in NFT → guardrails in 6.4 are load-bearing.
