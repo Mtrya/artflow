@@ -1,0 +1,412 @@
+{
+  "1": [
+    {
+      "batch_size": 16,
+      "max_length": 21
+    },
+    {
+      "batch_size": 16,
+      "max_length": 34
+    },
+    {
+      "batch_size": 16,
+      "max_length": 46
+    },
+    {
+      "batch_size": 15,
+      "max_length": 63
+    },
+    {
+      "batch_size": 15,
+      "max_length": 77
+    },
+    {
+      "batch_size": 15,
+      "max_length": 88
+    },
+    {
+      "batch_size": 15,
+      "max_length": 99
+    },
+    {
+      "batch_size": 15,
+      "max_length": 111
+    },
+    {
+      "batch_size": 15,
+      "max_length": 125
+    },
+    {
+      "batch_size": 14,
+      "max_length": 144
+    },
+    {
+      "batch_size": 14,
+      "max_length": 165
+    },
+    {
+      "batch_size": 14,
+      "max_length": 187
+    },
+    {
+      "batch_size": 14,
+      "max_length": 215
+    },
+    {
+      "batch_size": 13,
+      "max_length": 263
+    },
+    {
+      "batch_size": 12,
+      "max_length": 400
+    },
+    {
+      "batch_size": 11,
+      "max_length": 533
+    },
+    {
+      "batch_size": 10,
+      "max_length": 687
+    },
+    {
+      "batch_size": 9,
+      "max_length": 864
+    },
+    {
+      "batch_size": 7,
+      "max_length": 1165
+    },
+    {
+      "batch_size": 5,
+      "max_length": 2048
+    }
+  ],
+  "2": [
+    {
+      "batch_size": 16,
+      "max_length": 23
+    },
+    {
+      "batch_size": 16,
+      "max_length": 43
+    },
+    {
+      "batch_size": 16,
+      "max_length": 59
+    },
+    {
+      "batch_size": 15,
+      "max_length": 75
+    },
+    {
+      "batch_size": 15,
+      "max_length": 88
+    },
+    {
+      "batch_size": 15,
+      "max_length": 102
+    },
+    {
+      "batch_size": 15,
+      "max_length": 117
+    },
+    {
+      "batch_size": 15,
+      "max_length": 136
+    },
+    {
+      "batch_size": 14,
+      "max_length": 159
+    },
+    {
+      "batch_size": 14,
+      "max_length": 183
+    },
+    {
+      "batch_size": 14,
+      "max_length": 209
+    },
+    {
+      "batch_size": 13,
+      "max_length": 252
+    },
+    {
+      "batch_size": 12,
+      "max_length": 348
+    },
+    {
+      "batch_size": 12,
+      "max_length": 434
+    },
+    {
+      "batch_size": 11,
+      "max_length": 547
+    },
+    {
+      "batch_size": 10,
+      "max_length": 671
+    },
+    {
+      "batch_size": 9,
+      "max_length": 817
+    },
+    {
+      "batch_size": 8,
+      "max_length": 1003
+    },
+    {
+      "batch_size": 7,
+      "max_length": 1289
+    },
+    {
+      "batch_size": 5,
+      "max_length": 2048
+    }
+  ],
+  "3": [
+    {
+      "batch_size": 16,
+      "max_length": 25
+    },
+    {
+      "batch_size": 16,
+      "max_length": 43
+    },
+    {
+      "batch_size": 16,
+      "max_length": 59
+    },
+    {
+      "batch_size": 15,
+      "max_length": 80
+    },
+    {
+      "batch_size": 15,
+      "max_length": 94
+    },
+    {
+      "batch_size": 15,
+      "max_length": 108
+    },
+    {
+      "batch_size": 15,
+      "max_length": 123
+    },
+    {
+      "batch_size": 14,
+      "max_length": 146
+    },
+    {
+      "batch_size": 14,
+      "max_length": 171
+    },
+    {
+      "batch_size": 14,
+      "max_length": 193
+    },
+    {
+      "batch_size": 14,
+      "max_length": 219
+    },
+    {
+      "batch_size": 13,
+      "max_length": 262
+    },
+    {
+      "batch_size": 12,
+      "max_length": 365
+    },
+    {
+      "batch_size": 11,
+      "max_length": 456
+    },
+    {
+      "batch_size": 11,
+      "max_length": 565
+    },
+    {
+      "batch_size": 10,
+      "max_length": 685
+    },
+    {
+      "batch_size": 9,
+      "max_length": 845
+    },
+    {
+      "batch_size": 8,
+      "max_length": 1048
+    },
+    {
+      "batch_size": 7,
+      "max_length": 1323
+    },
+    {
+      "batch_size": 5,
+      "max_length": 2048
+    }
+  ],
+  "4": [
+    {
+      "batch_size": 16,
+      "max_length": 23
+    },
+    {
+      "batch_size": 16,
+      "max_length": 40
+    },
+    {
+      "batch_size": 15,
+      "max_length": 53
+    },
+    {
+      "batch_size": 15,
+      "max_length": 68
+    },
+    {
+      "batch_size": 15,
+      "max_length": 83
+    },
+    {
+      "batch_size": 15,
+      "max_length": 97
+    },
+    {
+      "batch_size": 15,
+      "max_length": 113
+    },
+    {
+      "batch_size": 14,
+      "max_length": 133
+    },
+    {
+      "batch_size": 14,
+      "max_length": 157
+    },
+    {
+      "batch_size": 14,
+      "max_length": 181
+    },
+    {
+      "batch_size": 14,
+      "max_length": 210
+    },
+    {
+      "batch_size": 13,
+      "max_length": 257
+    },
+    {
+      "batch_size": 12,
+      "max_length": 368
+    },
+    {
+      "batch_size": 11,
+      "max_length": 450
+    },
+    {
+      "batch_size": 11,
+      "max_length": 544
+    },
+    {
+      "batch_size": 10,
+      "max_length": 650
+    },
+    {
+      "batch_size": 9,
+      "max_length": 780
+    },
+    {
+      "batch_size": 8,
+      "max_length": 977
+    },
+    {
+      "batch_size": 7,
+      "max_length": 1282
+    },
+    {
+      "batch_size": 5,
+      "max_length": 2048
+    }
+  ],
+  "5": [
+    {
+      "batch_size": 16,
+      "max_length": 23
+    },
+    {
+      "batch_size": 16,
+      "max_length": 34
+    },
+    {
+      "batch_size": 15,
+      "max_length": 45
+    },
+    {
+      "batch_size": 15,
+      "max_length": 60
+    },
+    {
+      "batch_size": 15,
+      "max_length": 76
+    },
+    {
+      "batch_size": 15,
+      "max_length": 88
+    },
+    {
+      "batch_size": 15,
+      "max_length": 99
+    },
+    {
+      "batch_size": 15,
+      "max_length": 110
+    },
+    {
+      "batch_size": 14,
+      "max_length": 124
+    },
+    {
+      "batch_size": 14,
+      "max_length": 145
+    },
+    {
+      "batch_size": 14,
+      "max_length": 177
+    },
+    {
+      "batch_size": 13,
+      "max_length": 219
+    },
+    {
+      "batch_size": 12,
+      "max_length": 327
+    },
+    {
+      "batch_size": 12,
+      "max_length": 390
+    },
+    {
+      "batch_size": 11,
+      "max_length": 466
+    },
+    {
+      "batch_size": 11,
+      "max_length": 553
+    },
+    {
+      "batch_size": 10,
+      "max_length": 656
+    },
+    {
+      "batch_size": 9,
+      "max_length": 814
+    },
+    {
+      "batch_size": 7,
+      "max_length": 1113
+    },
+    {
+      "batch_size": 5,
+      "max_length": 2048
+    }
+  ]
+}

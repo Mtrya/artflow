@@ -1,9 +1,8 @@
 # ArtFlow Reboot — Redesign Plan
 
 Personal side project. Model ≤0.7B params. **Compute-frugal by design**:
-provisional budget ≈ **2.9–3.7K RTX4090-hours** on Inspire (4090 @0.33 pt/h ⇒ ~1.0–1.2K points,
-trivial vs the ~589K-pt budget of project 自动化科研 — wall-clock and queueing, not
-money, are the constraints). Reference point: the old hero run was ~800 RTX4090-h
+provisional budget ≈ **2.9–3.7K RTX4090-hours** on Inspire.
+Wall-clock time and queueing are the practical constraints. Reference point: the old hero run was ~800 RTX4090-h
 (256p only, unoptimized stack, 19.2M samples seen). The former ~60–100M-sample
 projection inside ~2K 4090-h was a **preimplementation estimate, not a measured
 feasibility result**. Stage 4 must derive the hero recipe from the actual available
@@ -21,18 +20,18 @@ plus `notes/dataset_plan.md` (data-source detail).
 |---|---|---|
 | D1 | License | Research-only OK (WikiArt, ArtBench-10, FFHQ unlocked). Per-sample `license` field; NC data in separate mix entries so a clean variant stays one mix-string away |
 | D2 | Anatomy data | Photos + paintings both; ~50/50 face vs full-body |
-| D3 | Corpus size | Set empirically by stage-4 scaling probe |
-| D4 | Params | **485M: h1152×d24** — 2.2b (wide > deep at iso-param, every probe), 2.2c (iso-FLOP: ~400M > ~664M → 664M deferred to stage-4 probe), 2.2d (all-single) — all resolved 2026-09-05/06 |
+| D3 | Corpus size | Fixed eligible pools per resolution; counts and source mixtures in [hero recipe](hero_recipe.md) |
+| D4 | Hero model | **532,706,812 parameters: h1152, 16 heads, 1 double-stream + 24 single-stream blocks**; [hero recipe](hero_recipe.md) |
 | D5 | Text encoder | Qwen3-0.6B, frozen, online; early-exit layer ablated k ∈ {8,16,28} + follow-up {20,24} → **k=20 (user verdict 2026-09-07**, 2.3a-followup) |
-| D6 | Resolution curriculum | 256p → 640p → 896p → optional 1024p polish; variable aspect at every stage |
+| D6 | Resolution curriculum | **256p → 640p → 896p**, variable aspect at every stage; **75:20:5** of final optimizer steps; no 1024p stage |
 | D7 | RoPE | **Centered image grid + text pinned to fixed diagonal** (2.1 resolved 2026-09-05: 256p eval/loss+KID tie, 640p transfer tie — both arms collapse identically at 2.5× — 480p/384p/320p ladder tie → final tie-break on Qwen-Image adoption prior). Zero-shot ≥1.875× transfer fails for both variants → progressive staging mandatory |
-| D8 | Inspire home | Project 自动化科研 |
-| D9 | Compute class | **RTX 4090 48GB on Inspire** (single 8-GPU node max; no NVLink → DDP over PCIe). Small ablations offloaded to **Andromeda** (SSH-reachable, RTX 4060 Ti ≈ ¼ 4090 throughput) |
+| D8 | Inspire home | Account-selected project (machine-local configuration) |
+| D9 | Compute class | **RTX 4090 48GB on Inspire** (single 8-GPU node max; no NVLink → DDP over PCIe). Small ablations offloaded to **local RTX 4060 Ti workstation** (SSH-reachable, RTX 4060 Ti ≈ ¼ 4090 throughput) |
 | D10 | VLM captioning | **Via API** (Qwen-VL-class), not self-hosted — caption cost is money + rate limits, not GPU-hours. No GPU-with-internet workspace needed |
 | D11 | Modulation | **Shared per-layer modulation MLP (`mod=layer`)** — 2.2a resolved 2026-09-05: layer wins eval/loss@end (0.9437 vs 0.9441) with a persistent t040 advantage (5/5 probes from 3K, -0.0002→-0.0010), KID agrees (0.0190 vs 0.0195), +0.6% faster, -8% peak mem; tie-break prior (PixArt/DiT-Air) points the same way. All stage-2+ arms use it |
 | D12 | Optimizer | **Muon (chunked orthogonalization), LR 0.02** — 2.5 resolved 2026-09-06: 16K confirm muon 0.91127 vs AdamW 0.92134 eval/loss (-1.1%), KID 0.00699 vs 0.00922, +10% step time (<15% bar); AdamW leads early, muon overtakes by 8K and pulls away (CMuon-style late gain) |
-| D13 | Base-model capability | **80% joint first-attempt success** for the agreed anatomy, architecture, style, and basic-layout categories; Chinese and English pass independently, without prompt polishing. Full contract: [Stage-4 plan](stage4_plan.md) |
-| D14 | Serving target | **RTX 4060 Ti 16 GB**, batch 1 at 896p: ~10 s preferred, **20 s maximum**, excluding API prompt polishing; quality and latency use the same inference settings |
+| D13 | Quality monitoring | Small bilingual panels inspect anatomy, architecture, style and layout; no numerical capability target or forecast gate. Report observed strengths and limitations; [Stage-4 plan](stage4_plan.md) |
+| D14 | Inference scope | No prescribed inference device, VRAM ceiling, or latency launch gate; use reproducible evaluation settings. Deployment optimization and distillation are optional later work |
 
 ## Design dimension ledger (2026-09-04, agreed with user)
 
@@ -53,7 +52,7 @@ experiments. Stage-2 arms below implement column C.
 | VAE | Qwen-Image VAE (16ch f8) | physically locked by stage-1 256p precompute; switching (e.g. DC-AE) = full re-precompute, out of scope |
 | Text encoder | Qwen3-0.6B frozen (exit layer ablated in 2.3) | encoder-size gains saturate early (DeepFloyd IF et al.); params go to the DiT |
 | Optimizer after Stage 2 | **Muon (chunked orthogonalization), LR 0.02; auxiliary AdamW for parameters routed outside Muon** | Stage-2 D12 winner; fixed for Stage 3–5; the Stage-2 comparison is recorded in §2.5 |
-| Pre-NFT inference knobs (solver/steps/CFG/precision/offload) | **decided and validated in Stage 4** jointly with capability and serving constraints | Stage 5 executes the complete recipe; any required distillation needs explicit scope/budget, not a hidden later stage |
+| Evaluation inference knobs (solver/steps/CFG/precision/offload) | **recorded and correctness-checked in Stage 4** for reproducible comparisons | No deployment-speed gate; distillation is optional later work |
 
 ### B. Considered and excluded
 
@@ -76,7 +75,7 @@ same platform; cross-platform comparisons are qualitative only.
 **Goal**: both compute environments usable end-to-end.
 
 - Inspire: confirm workspace / remote paths / base image with user;
-  `inspire init --scope project`; write `INSPIRE.md` (project 自动化科研).
+  `inspire init --scope project`; write `INSPIRE.md` (machine-local project configuration).
   Bake deps into a project image (torch 2.9, diffusers, transformers, datasets, accelerate).
   Verify HF access from CPU side (mirror if needed); verify shared-disk r/w from both
   `CPU资源空间` and the GPU workspace.
@@ -84,12 +83,12 @@ same platform; cross-platform comparisons are qualitative only.
   `4090-cuda12.8-2`, `4090-cuda13.2-2` — find which workspace hosts them and their quota
   rows via `inspire job quota --workspace <ws>` / `resources availability`; record in
   `INSPIRE.md`.
-- Andromeda: SSH smoke — torch sees the 4060 Ti, repo tests pass, a 256p mini-run trains.
+- local RTX 4060 Ti workstation: SSH smoke — torch sees the 4060 Ti, repo tests pass, a 256p mini-run trains.
   Note VRAM (assume 16GB): ablation arms there must use small micro-batches + grad accum.
 - VLM API: pick provider/model (Qwen-VL-Max-class), store key, verify a test call.
 
 **Exit**: trivial GPU jobs succeed on Inspire (nvidia-smi + disk r/w + HF download) and
-on Andromeda (`pytest` + 100-step 256p run).
+on local RTX 4060 Ti workstation (`pytest` + 100-step 256p run).
 
 ## Stage 1 — Dataset curation (≤30 4090-h + VLM API spend, mostly CPU/network)
 
@@ -113,7 +112,7 @@ schema; eval set built.
   license, aesthetic_score?, pwatermark?`
 - 1.5 Eval set: fixed prompt suite (style / anatomy: faces-hands-figures / zh / variable
   aspect) + held-out image sets per domain for KID.
-- 1.6 Precompute all domains @256p (VAE on GPU — Andromeda is fine; batch encode).
+- 1.6 Precompute all domains @256p (VAE on GPU — local RTX 4060 Ti workstation is fine; batch encode).
 
 **Text-side tradeoff (2026-09-01, decided: keep as-is)** — whether to pre-encode
 prompts (tokenize / Qwen3-0.6B hidden states) during precompute vs. encode online
@@ -150,15 +149,15 @@ stage 1 precomputes **256p only**; Stage 3.5 prepares 640p after caption enrichm
 **Exit**: domain datasets validated; eval suite committed; 256p precomputed sets ready;
 `data/` layout documented in `INSPIRE.md`.
 
-## Stage 2 — Ablations @256p, small scale (≤400 4090-h on Inspire + Andromeda hours free)
+## Stage 2 — Ablations @256p, small scale (≤400 4090-h on Inspire + local RTX 4060 Ti workstation hours free)
 
 **Goal**: pick architecture (depth/width, modulation, stream schedule), text-encoder
 exit layer, optimizer, and validate the RoPE fix — cheaply, fairly. Fixed protocol per
-design-dimension ledger §C. **Only compare arms run on the same platform** (Andromeda ≠
+design-dimension ledger §C. **Only compare arms run on the same platform** (local RTX 4060 Ti workstation ≠
 Inspire hardware; cross-platform comparisons are qualitative only). All per-arm results
 are consolidated into the decision memo below (raw working record archived 2026-09-07).
 
-- Andromeda (4060 Ti; arms ≤15K steps, batch ≤64 via accum — it runs ~¼ 4090 speed):
+- local RTX 4060 Ti workstation (4060 Ti; arms ≤15K steps, batch ≤64 via accum — it runs ~¼ 4090 speed):
   - 2.1 **RoPE fix smoke + A/B** (D7): new centered-grid/fixed-text-diagonal RoPE trains
     stably; then old-vs-new on resolution transfer (train 256p → sample 640p; artifact
     rate). This is the gate for everything below.
@@ -328,10 +327,10 @@ reopening per-bucket micro-batch-size tuning. A larger model or new resolution
 still requires a memory-safety check and, if necessary, an explicitly recorded
 bucket-plan revision.
 
-## Stage 4 — Capability forecasts and complete hero recipe (≤450 4090-h)
+## Stage 4 — Complete hero recipe and infrastructure validation (≤450 4090-h)
 
 **Goal (user, 2026-09-11)**: deliver the **entire executable pre-NFT hero-run
-recipe**, from scratch through **256p → 640p → 896p → optional 1024p**. Stage 5
+recipe**, from scratch through **256p → 640p → 896p**. Stage 5
 must be able to proceed directly, **without a planned Stage 4.5**. Full design,
 literature anchors, evaluation contract, experiment budget, and exit checklist:
 [`notes/stage4_plan.md`](stage4_plan.md).
@@ -341,57 +340,51 @@ the hero working range of **1,600–2,200 RTX 4090 hours**. Empirical diffusion
 scaling informs the recipe, but neither borrowed coefficients nor low flow loss
 establish the required capabilities.
 
-- **Capability/evaluation contract:** ordinary full-body figures, everyday
+- **Qualitative monitoring:** ordinary full-body figures, everyday
   hand–object interaction, plausible faces, common architecture, six agreed
-  Chinese/Western painting styles, and basic layout. Require 80% joint
-  first-attempt success per agreed category, Chinese/English independently,
-  ordinary prompts without polishing. Calibrate VLM-first judging and freeze
-  development/confirmation suites and statistical procedures before comparison.
-- **Implemented cost and serving:** refresh end-to-end rates on Stage-3.5 data,
+  Chinese/Western painting styles, and basic layout. Use ordinary short and long
+  prompts in Chinese and English without polishing. The recipe's small fixed panel
+  supports VLM-first monitoring and escalation of uncertain judgments; there is
+  no numerical capability target or formal qualification suite.
+- **Implemented cost and evaluation:** refresh end-to-end rates on Stage-3.5 data,
   caption/loss policy, and bucket plans; validate the selected multi-GPU topology
-  rather than importing old-timer DDP efficiency. Measure finalist inference on
-  the RTX 4060 Ti 16 GB: 896p, batch 1, ~10 s preferred / 20 s maximum. Capability
-  scores must use the same solver/steps/guidance/precision/offload settings.
-- **Size, exposure, and effective batch:** a compact iso-compute ladder around
-  the 485M architecture and compatible sizes within ≤0.7B; tune effective batch
-  via `gradient_accumulation_steps`. Reuse Stage-3.5 bucket planning, with measured
-  safety/performance revisions for changed sizes, distributions, or resolutions.
-- **Independent corpus and mixture axes:** distinguish unique images from repeated
-  actual draws. Compare stratified corpus sizes at matched draws as well as quality
-  at equal GPU-hours. Select explicit per-stage source/quality/capability mixtures,
-  including useful long-caption exposure, under fixed evaluation and diversity
-  guardrails. Dataset ratios are Stage-4 decisions, not a permanently locked table.
+  rather than importing old-timer DDP efficiency. Record fixed evaluation
+  solver/steps/guidance/precision/offload settings; deployment hardware and
+  inference latency do not gate the hero launch.
+- **Size, exposure, and effective batch:** the 533M model and per-stage mixtures
+  are selected in [hero_recipe.md](hero_recipe.md). Validate its bucket plans and
+  accumulation 1/5/7 against mean effective-batch targets 640/512/400 on eight
+  ranks. Distinguish actual draws from unique rows and measure realized exposure;
+  no additional model-size, corpus-size, or mixture sweep is a launch requirement.
 - **Complete resolution/optimization schedule:** test 256p→640p and 640p→896p
-  continuation, with bounded controls and optional 1024p qualification. Decide
-  stage allocations, caption schedules, LR/EMA, actual sample/update budgets,
-  transition checks, and bounded stop/rollback rules from measured quality/cost.
-- **Validated capability forecast:** reserve larger/longer held-out experiments
-  and higher-resolution checks. The conservative lower forecast must clear 80%
-  for every required gate within the hero budget and serving constraints. Report
-  compute-responsive, recipe-limited, or unresolved failures, with extra-budget
-  estimates only where evidence supports them. Do not assume NFT rescues absent
-  base competence.
+  continuation with continuous global LR/caption schedules. The stage split is
+  75:20:5; no 1024p stage. Derive final total steps, sample budgets and exact
+  endpoints from infra measurements, with the recipe's operational checks.
+- **Fixed recipe, observed capability:** model size, GPU budget, optimizer and
+  data/training policies are already selected. Remaining work optimizes execution
+  efficiency and feasible training exposure. Record the trained model's strengths
+  and limitations; do not claim a capability guarantee from the chosen recipe or
+  require a small-run capability forecast before launch.
 - **Executable handoff:** write `notes/hero_recipe.md`, runnable configs and
   launch/resume commands, pinned data/metadata, precompute and storage plan,
-  evaluation/telemetry, serving configuration, and complete cost/uncertainty
+  evaluation/telemetry, evaluation sampling configuration, and complete cost/uncertainty
   ledger. Required implementation and relevant tests/smokes finish inside Stage 4.
 
 **Exit**: an evidence-backed go verdict and complete budget-feasible recipe;
 no material recipe decision or enabling implementation is deferred to Stage 5.
-Every measurement is traceable and every extrapolation labeled. If, for example,
-the core targets credibly need **4,000 rather than ≤2,200 4090-hours**, request an
-explicit redesign/budget/scope decision. That is not authorization to exceed the
-budget, silently weaken the target, or insert a routine Stage 4.5. Insufficient
-evidence likewise blocks a go handoff rather than being declared success.
+Every measurement is traceable and every extrapolation labeled. Insufficient
+correctness or cost-feasibility evidence blocks launch; resolve execution issues
+or request an explicit redesign without exceeding the 2,200-hour ceiling. There
+is no capability-accuracy threshold to predict or certify before or after training.
 
 ## Stage 5 — Execute the pre-NFT hero recipe (1.6–2.2K 4090-h working range)
 
 **Goal**: execute and verify the complete Stage-4 recipe, starting directly after
-its go handoff. All resolution allocations, mixtures, optimization, serving
-settings, and evaluation gates come from `notes/hero_recipe.md`, not the earlier
-guessed step percentages. The intended path is 256p → 640p → 896p with an explicit
-Stage-4 decision/rule for optional 1024p. GPU topology and wall time are measured
-and justified by Stage 4; an eight-GPU node is a candidate, not a timing assumption.
+its go handoff. All resolution allocations, mixtures, optimization, evaluation sampling
+settings, and operational checks come from `notes/hero_recipe.md`, not the earlier
+guessed step counts. The selected path is 256p → 640p → 896p, with a 75:20:5
+optimizer-step split and no 1024p stage. Eight-GPU throughput must be measured;
+the selected topology alone does not establish the wall-clock budget.
 
 - Run the finalized data-preparation, training, checkpoint, and resume workflows.
   Full production high-resolution precompute may execute here only with its
@@ -401,15 +394,15 @@ and justified by Stage 4; an eight-GPU node is a candidate, not a timing assumpt
 - Track actual samples and GPU-hours against the full ledger. Do not reuse the
   old **60–100M samples in 2K 4090-h** projection or extend beyond 2,200 hours
   without a new explicit budget decision.
-- Evaluate the fixed bilingual joint capability gates, per-domain KID, long/short
+- Review the fixed bilingual image panels, per-domain KID, long/short
   prompt adherence, retention, and memorization at predefined checkpoints.
   Execute only the bounded transition/extension/rollback rules decided in Stage 4.
-- Verify the final pre-NFT checkpoint at the quality-qualified 4060 Ti serving
+- Verify the final pre-NFT checkpoint at the recorded evaluation sampling
   settings. Unexpected failures may require redesign, not automatic NFT rescue.
 
-**Exit**: a pre-NFT checkpoint meeting the actual capability and serving contract,
-with final measured costs and limitations. If optional 1024p degrades, retain the
-qualified 896p checkpoint according to the predeclared rollback rule.
+**Exit**: a pre-NFT checkpoint from the completed budgeted recipe,
+with measured costs, observed abilities and limitations. Preserve verified checkpoints and
+follow the recipe's review/stop rules if a resolution transition degrades.
 
 ## Stage 6 — NFT post-training (≈300–500 4090-h)
 
@@ -439,6 +432,13 @@ before/after grids on the eval suite.
 
 **Goal**: a usable public release whose explanations stand on their own.
 
+- 7.0 **Rename to `inko` (user decision, 2026-09-12)**: rename the repository
+  and model from `artflow` to `inko` before publication. Update comments,
+  documentation, model cards, examples, and repository/model links consistently;
+  reconcile affected package/import names, configuration references, and demo
+  metadata, then verify the renamed quickstart and model-loading path. Preserve
+  historical artifact identifiers where needed for reproducibility, with an
+  explicit old-to-new name mapping. The actual rename is deferred to Stage 7.
 - 7.1 Upload the selected model to **Hugging Face**, with model card, weights,
   inference configuration, provenance/license constraints, evaluation results,
   and limitations; deploy and smoke-test a **Hugging Face Space** demo.
@@ -458,7 +458,8 @@ before/after grids on the eval suite.
   training and sampling procedures, implementation mapping, assumptions,
   limitations, and accessible references—not merely experiment logs.
 
-**Exit**: downloadable model and working Space; README quickstart verified from
+**Exit**: repository and model renamed to `inko`, with comments/docs and affected
+references updated; downloadable model and working Space; README quickstart verified from
 a clean environment; public terminology/reference audit complete; Flow Matching
 and NFT notes readable without access to internal conversations or artifacts.
 Publication/demo hosting costs are estimated separately before deployment.
@@ -471,10 +472,10 @@ Publication/demo hosting costs are estimated separately before deployment.
 |---|---|---|
 | 0 Infra | 10 | mostly CPU; smokes on both platforms |
 | 1 Data | 30 + API spend | API captioning replaces GPU captioning; cache raw responses |
-| 2 Ablations | 400 | Inspire fair arms only; Andromeda takes smoke/qualitative arms (free, ~¼ speed); cap raised 200→400 on 2026-09-04 to fit stream-schedule + Muon axes |
+| 2 Ablations | 400 | Inspire fair arms only; local RTX 4060 Ti workstation takes smoke/qualitative arms (free, ~¼ speed); cap raised 200→400 on 2026-09-04 to fit stream-schedule + Muon axes |
 | 3 Efficiency | 80 | buys back far more than it costs — gates stage 5 |
 | 3.5 Captions / buckets / 640p | 75 experiments/profiling + separate precompute | approximately $100 API budget; full-corpus precompute/storage costed separately; see detailed plan and execution record |
-| 4 Complete recipe / forecasts | 450 | separate experimental cap; validated capability and serving forecasts plus execution-ready pre-NFT handoff |
+| 4 Complete recipe / infra | 450 | separate experimental cap; execution optimization, cost estimates and ready-to-launch pre-NFT handoff; no capability or serving-performance gate |
 | 5 Hero | 1,600–2,200 provisional | target topology and wall time must be justified by Stage 4 |
 | 6 NFT | 300–500 | sampling-bound |
 | 7 Publication | TBD + hosting spend | model/Space release, documentation and reproducibility checks |
@@ -483,8 +484,8 @@ Publication/demo hosting costs are estimated separately before deployment.
 **Current Stage-4/5 budget boundary (user, 2026-09-11)**: Stage 4 has a separate
 450-hour experiment/profiling cap; the hero working range remains 1,600–2,200 hours.
 The historical off-peak flexibility below is **not standing authorization** to
-exceed these constraints. A forecast requiring roughly 4,000 hero hours triggers
-an explicit redesign/budget decision before launch. Scheduling priority remains
+exceed these constraints. An execution plan that cannot fit the hero ceiling needs
+an explicit recipe/budget decision before launch. Scheduling priority remains
 as documented below.
 
 **Historical budget semantics (2026-08-26, extended 2026-09-06)**: the
@@ -497,8 +498,8 @@ runs in troughs. **2026-09-06 priority policy (user)**: stage 2–4 experiments
 (the long multi-day training) sits at **LOW (priority 1, preemptible)** — idle
 cards fill it whenever free and it can be stopped anytime. Preemption/resume
 path proven by the 2.1 restarts and the k20/24 16:12 auto-restart.
-Conversely, **avoid late-night runs on Andromeda** (shared desktop). Practical
-rule: long Inspire jobs (stage 5 hero) run at priority 1; Andromeda arms run
+Conversely, **avoid late-night runs on local RTX 4060 Ti workstation** (shared desktop). Practical
+rule: long Inspire jobs (stage 5 hero) run at priority 1; local RTX 4060 Ti workstation arms run
 daytime/evening.
 
 ## Open risks
@@ -516,7 +517,7 @@ daytime/evening.
   auxiliary AdamW for the remaining parameters, with Muon LR 0.02. An AdamW-only
   run is historical reference data, not a Stage-3/4 baseline. Chunked
   orthogonalization is part of the optimizer definition, not an optional tweak.
-- Cross-platform comparability: Andromeda results inform, never decide — fair arms live on
+- Cross-platform comparability: local RTX 4060 Ti workstation results inform, never decide — fair arms live on
   Inspire 4090.
 - 4090 PCIe-only DDP: earlier experiments identified per-micro-batch
   synchronization as a major cost; boundary-only reduction is retained.

@@ -252,6 +252,33 @@ def test_a_bucket_where_every_candidate_failed_is_not_given_a_size():
     assert "no candidate completed a run" in reason
 
 
+def test_a_candidate_with_a_failed_repeat_is_not_selected():
+    # Batch 16 produced the fastest timing once, but its other repeat OOMed;
+    # batch 8 was clean on both repeats. The partially-failed candidate must
+    # not win automatically.
+    records = (records_for(8, [1.60, 1.62])
+               + records_for(16, [1.20])
+               + records_for(16, [0.0], status="oom"))
+    stats = candidate_stats(records, [8, 16])
+
+    chosen, reason, _, _, _ = choose_batch_size(stats)
+
+    assert chosen == 8
+    partial = next(item for item in stats if item.batch_size == 16)
+    assert partial.status == "partial"
+    assert partial.ok_runs == 1
+
+
+def test_a_bucket_with_only_partial_candidates_asks_for_a_rescreen():
+    records = records_for(8, [1.6]) + records_for(8, [0.0], status="oom")
+    stats = candidate_stats(records, [8])
+
+    chosen, reason, _, _, _ = choose_batch_size(stats)
+
+    assert chosen is None
+    assert "re-screen" in reason
+
+
 def test_a_run_that_emitted_another_bucket_is_not_a_measurement():
     combination = Combination(resolution_id=1, bucket_index=0, max_length=64,
                               lower_bound=0, draw_share=0.5, captions=10)

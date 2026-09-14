@@ -48,4 +48,28 @@ swanlog
 /output/
 /literature/
 /scored_images/
-/bucket_plans/
+/bucket_plans/*
+!/bucket_plans/hero/
+/bucket_plans/hero/*
+!/bucket_plans/hero/batch-targets-0914/
+!/bucket_plans/hero/batch-targets-0914/*.report.md
+
+# Local cluster job wrappers and exploratory analysis are retained on disk,
+# not shipped as supported launch tooling. The hero entry point is versioned.
+/jobs/*
+!/jobs/hero_stage.sh
+/scripts/bench/boundary_waste_analysis.py
+/scripts/bench/check_calib_896p.py
+/scripts/bench/inspect_calib.py
+/scripts/bench/pull_val_metrics.py
+/scripts/data/merge_precompute_parts.py
+
+# Credentials and machine-local operational state must never be published.
+.env
+.env.*
+!.env.example
+*.netrc
+.netrc
+*.pem
+*.key
+/INSPIRE.md

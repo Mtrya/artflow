@@ -149,6 +149,11 @@ batch_size = 8
 loss_interval = 50
 loss_samples = 512
 prompts_file = "assets/eval/prompts_v1.jsonl"
+# Hero configs select hero_monitor_v1.jsonl; older experiments retain this suite.
+ode_steps = 50
+# Extra absolute global steps, in addition to [train].eval_interval. A listed
+# resume/start step is rendered before training (new-resolution baseline).
+grid_steps = []
 kid_at_end = false
 kid_num_fake = 2000
 

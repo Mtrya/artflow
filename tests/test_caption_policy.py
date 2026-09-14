@@ -184,6 +184,26 @@ class TestCaptionTelemetry:
         assert metrics["caption/selected_mean_tokens"] == pytest.approx(150)
         assert metrics["caption/dropout_rate"] == pytest.approx(0.5)
 
+    def test_reduce_replaces_the_window_instead_of_adding_to_it(self):
+        # A one-process gloo group makes all_reduce the identity, so a correct
+        # reduce leaves the window untouched; folding the reduced vector into
+        # the existing counters (the bug this guards) doubles every count.
+        import torch.distributed as dist
+
+        if not dist.is_available():
+            pytest.skip("torch.distributed unavailable")
+        dist.init_process_group("gloo", init_method="tcp://127.0.0.1:29517",
+                                rank=0, world_size=1)
+        try:
+            telemetry = CaptionTelemetry()
+            telemetry.record([100], [False], 128, row_positions=[(0, 3)])
+            telemetry.reduce(device=None, world_size=2)
+            metrics = telemetry.snapshot()
+            assert metrics["repetition/unique_rows_cumulative"] == 1.0
+            assert metrics["caption/selected_mean_tokens"] == pytest.approx(100)
+        finally:
+            dist.destroy_process_group()
+
     def test_cross_rank_merge_weights_by_samples(self):
         rank_a = CaptionTelemetry()
         rank_b = CaptionTelemetry()
@@ -215,23 +235,22 @@ class TestCaptionTelemetry:
     def test_policy_metrics_are_sample_weighted_means(self):
         telemetry = CaptionTelemetry()
         telemetry.record([100] * 8, [False] * 8, 256, policy=PolicyState(
-            progress=0.2, curriculum_position=0.1, strength=-0.6, short_reserve=0.2))
+            progress=0.2, curriculum_position=0.1, length_preference_beta=-0.6))
         telemetry.record([100] * 2, [False] * 2, 256, policy=PolicyState(
-            progress=0.6, curriculum_position=0.5, strength=0.2, short_reserve=0.2))
+            progress=0.6, curriculum_position=0.5, length_preference_beta=0.2))
         first = telemetry.snapshot()
 
         # Weighted by samples, not by micro-batch: (8 * -0.6 + 2 * 0.2) / 10.
-        assert first["policy/strength"] == pytest.approx(-0.6 * 0.8 + 0.2 * 0.2)
-        assert first["policy/short_reserve"] == 0.2
+        assert first["policy/length_preference_beta"] == pytest.approx(-0.6 * 0.8 + 0.2 * 0.2)
         assert set(key for key in first if key.startswith("policy/")) == {
-            "policy/strength", "policy/short_reserve"}
+            "policy/length_preference_beta"}
 
         telemetry.record([100] * 5, [False] * 5, 256, policy=PolicyState(
-            progress=1.0, curriculum_position=1.0, strength=1.0, short_reserve=0.2))
+            progress=1.0, curriculum_position=1.0, length_preference_beta=1.0))
         second = telemetry.snapshot()
         # A window reports only itself, so the first window's mean is gone.
-        assert second["policy/strength"] == pytest.approx(1.0)
-        assert second["policy/short_reserve"] == 0.2
+        assert second["policy/length_preference_beta"] == pytest.approx(1.0)
+        assert "policy/short_reserve" not in second
 
     def test_repetition_counts_first_time_and_repeat_rows(self):
         telemetry = CaptionTelemetry()

@@ -16,13 +16,17 @@ import torch.nn.functional as F
 from abc import ABC, abstractmethod
 
 # SD3-style resolution-dependent time shift.
-# Anchor: 256×256 image → 32×32 latent (patch_size=2) → 16×16 = 256 tokens → shift 1.0
-#         1024×1024 image → 128×128 latent              → 64×64 = 4096 tokens → shift 3.0
-# Log-linear interpolation between anchors, clamped at both ends.
+# SD3 (Esser et al., 2024, Eq. 23) derives the shift from matching the
+# uncertainty about the clean image across resolutions:
+#     alpha = sqrt(m / n),
+# where n and m are the pixel counts of the reference and target resolutions.
+# With a fixed VAE and patch size, token count is proportional to pixel count,
+# so the same ratio applies to token counts. Reference: 256 tokens (256×256
+# image → 32×32 latent, patch_size=2 → 16×16 patches) gets shift 1.0.
+# SD3 empirically found little quality difference among shift values above
+# 1.5 and used 3.0 at 1024×1024, where the formula gives 4.0 — so the formula
+# values used here sit inside the range they found acceptable.
 _SHIFT_BASE_TOKENS = 256      # 256×256 → 32×32 latent → 16×16 patches
-_SHIFT_MAX_TOKENS = 4096      # 1024×1024 → 128×128 latent → 64×64 patches
-_SHIFT_MIN = 1.0
-_SHIFT_MAX = 3.0
 
 
 def resolution_time_shift(z: torch.Tensor, patch_size: int = 2) -> float:
@@ -30,15 +34,22 @@ def resolution_time_shift(z: torch.Tensor, patch_size: int = 2) -> float:
     _, _, h, w = z.shape
     n_tokens = (h * w) / (patch_size ** 2)
     if n_tokens <= _SHIFT_BASE_TOKENS:
-        return _SHIFT_MIN
-    log_range = math.log(_SHIFT_MAX_TOKENS) - math.log(_SHIFT_BASE_TOKENS)
-    ratio = (math.log(n_tokens) - math.log(_SHIFT_BASE_TOKENS)) / log_range
-    return _SHIFT_MIN + (_SHIFT_MAX - _SHIFT_MIN) * min(ratio, 1.0)
+        return 1.0
+    return math.sqrt(n_tokens / _SHIFT_BASE_TOKENS)
 
 
 def apply_time_shift(t: torch.Tensor, shift: float) -> torch.Tensor:
-    """Apply the SD3 shift transform: t' = (s * t) / (1 + (s - 1) * t)."""
-    return (shift * t) / (1 + (shift - 1) * t)
+    """Apply the SD3 shift transform in this repo's timestep convention.
+
+    SD3 (Esser et al., 2024, Eq. 23) uses t=0 for data and t=1 for noise and
+    pushes timesteps toward the noisy end at higher resolutions:
+        u' = (s * u) / (1 + (s - 1) * u).
+    This repo uses the opposite convention (t=0 noise, t=1 data), so the same
+    transform applied to u = 1 - t yields:
+        t' = t / (s - (s - 1) * t),
+    which decreases t (moves toward noise) when shift > 1.
+    """
+    return t / (shift - (shift - 1) * t)
 
 
 def shift_timesteps(

@@ -121,6 +121,9 @@ class EvalConfig:
     loss_interval: int = 50
     loss_samples: int = 512
     prompts_file: str = "assets/eval/prompts_v1.jsonl"
+    ode_steps: int = 50
+    # Absolute global steps: stage baseline, +2k transition check, endpoint.
+    grid_steps: list[int] = field(default_factory=list)
     kid_at_end: bool = False
     kid_num_fake: int = 2000
 
@@ -140,6 +143,9 @@ class TelemetryConfig:
     log_interval: int = 25
     cache_clear_interval: int = 100
     swanlab_project: str = "artflow"
+    # Steps between model-internal health reads (update/weight ratio, QK
+    # gains, EMA distance). 0 disables the probe.
+    health_interval: int = 250
 
 
 @dataclass(frozen=True)
@@ -219,10 +225,17 @@ def load_config(paths: Sequence[str]) -> TrainConfig:
 
 
 def _validate(config: TrainConfig) -> None:
+    if type(config.eval.ode_steps) is not int or config.eval.ode_steps < 1:
+        raise ValueError("[eval].ode_steps must be a positive integer")
+    if not isinstance(config.eval.grid_steps, list) or any(
+        type(step) is not int or step < 0 for step in config.eval.grid_steps
+    ):
+        raise ValueError("[eval].grid_steps must be a list of nonnegative integer global steps")
     if config.train.gradient_accumulation_steps < 1:
         raise ValueError("[train].gradient_accumulation_steps must be >= 1")
-    if config.train.max_steps < 1:
-        raise ValueError("[train].max_steps must be >= 1")
+    if config.train.max_steps < 0:
+        raise ValueError("[train].max_steps must be >= 0 (0 runs no optimizer "
+                         "steps; only the pre-loop baseline eval fires)")
     # A loss-weight curve that is not usable is a configuration error, not
     # something to repair on the way in.
     CaptionLossWeights(

@@ -132,9 +132,10 @@ def sample_ode(
 
     Args:
         time_shift: If provided, the uniform timestep schedule is shifted via
-            t' = (s * t) / (1 + (s - 1) * t). When None, the shift is
-            automatically computed from z0's spatial shape using the same
-            resolution-dependent formula used in training.
+            t' = t / (s - (s - 1) * t) (SD3 Eq. 23 adapted to this repo's
+            t=0-noise convention, see flow.paths.apply_time_shift). When None,
+            the shift is automatically computed from z0's spatial shape using
+            the same resolution-dependent formula used in training.
     """
     from .paths import resolution_time_shift, shift_timesteps
 

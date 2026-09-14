@@ -1,9 +1,9 @@
-# Stage 4 — Capability forecasting and the complete pre-NFT hero recipe
+# Stage 4 — Complete pre-NFT hero recipe and infrastructure validation
 
-Status: design agreed through the user interview on 2026-09-11. The capability,
-budget, and serving requirements below are agreed constraints. Experimental
-allocations and statistical implementation choices marked provisional are design
-proposals to finalize inside Stage 4, not measurements or promises of success.
+Status: updated 2026-09-14. Model size, training budget, optimizer, caption policy,
+mixtures, and resolution split are fixed in [hero_recipe.md](hero_recipe.md).
+Remaining work is infrastructure optimization and execution readiness. There is
+no numerical capability target, capability forecast gate, or serving-performance gate.
 
 This plan refines [the roadmap](redesign_plan.md). It does not launch experiments,
 authorize additional spending, or declare Stage 3.5 complete. Stage 4 execution
@@ -16,7 +16,7 @@ and measured outcomes in [its execution record](stage3_5_pilot.md).
 Stage 5 can proceed directly. There is no planned Stage 4.5.**
 
 The recipe covers training from scratch through **256p → 640p → 896p**, with
-**1024p optional**, including model size, corpus, stage-dependent data mixtures,
+**no 1024p stage**, including model size, corpus, stage-dependent data mixtures,
 caption policy, effective batch, optimization, resolution transitions, training
 duration, evaluation, inference settings, and operational preparation. Stage 5
 executes and verifies this recipe; it is not another recipe-discovery phase.
@@ -24,26 +24,25 @@ Later DiffusionNFT training belongs to Stage 6 and is excluded.
 
 This is a conditional handoff, not a requirement to produce a positive verdict:
 
-- If the evidence supports the targets within the budget and serving constraints,
-  close Stage 4 with the recipe and a go recommendation.
-- If evidence is insufficient, use the remaining Stage-4 budget for the most
-  informative validation. If still unresolved, report that Stage 4 cannot close
-  for hero execution; do not disguise missing work as a routine Stage 4.5.
+- If the selected recipe is executable, stable in relevant checks, and fits the
+  training budget, close Stage 4 with a go recommendation and explicit capability
+  uncertainty. Report the trained model's observed abilities rather than certifying
+  a predetermined success rate.
+- Unresolved correctness or cost feasibility blocks launch. A small run's inability
+  to predict eventual anatomy accuracy does not itself require more proxy runs.
 - If the design is infeasible, present a redesign decision. For example, a
-  credible estimate that the core targets need **4,000 RTX 4090 hours**, exceeding
-  the **2,200-hour** hero ceiling, requires explicit agreement on a changed
-  budget, architecture/data strategy, or capability scope. It does not authorize
-  a 4,000-hour run or a weaker target by default.
+  measured cost that cannot fit the selected execution plan inside the
+  **2,200-hour** hero ceiling requires revising total steps within the recipe or
+  an explicit redesign decision. It does not authorize extra spending.
 
-The same rule applies if required quality cannot fit the serving memory/latency
-envelope. Redesign is an exception prompted by evidence, not unfinished planning.
+Redesign is an exception prompted by evidence, not unfinished planning.
 
-## 2. Agreed base-model capabilities
+## 2. Qualitative interests for monitoring
 
 The project prioritizes ordinary useful painting generation, not an exhaustive
 human-anatomy or spatial-reasoning benchmark.
 
-| Capability | Required before NFT | Outside the core gate |
+| Area | What to inspect | Outside the ordinary-use focus |
 |---|---|---|
 | Full-body figures | Ordinary standing, sitting, and everyday movement; coherent proportions, limb count, joints, and connections | Extreme poses, difficult foreshortening, complex multi-person contact |
 | Hand–object interaction | Everyday interaction with common objects; plausible hands, contact, grip, and object geometry | Intricate finger choreography, unusual tools, highly occluded multi-hand interactions |
@@ -58,7 +57,7 @@ The six styles are:
 - Western painting: **representational oil painting, watercolor, impressionistic
   painting**.
 
-Anatomy and architecture must work in both painting families. Judge detail and
+Inspect anatomy and architecture in both painting families. Judge detail and
 perspective according to the requested style: sparse ink need not show realistic
 skin, and Chinese painting need not adopt photographic single-point perspective.
 Abstraction is not permission for unintended extra limbs or impossible joins.
@@ -68,15 +67,14 @@ performance.
 Layout covers viewer-left/right/center, above/below, beside, in front of/behind,
 and foreground/middle-ground/background. An ordinary example is a person on the
 left, a pavilion on the right, and mountains in the background. The base model
-must already show this basic arrangement ability; NFT can refine its precision.
+is monitored for this basic arrangement ability; later NFT may refine its precision.
 
 ### 2.1 What NFT may improve
 
 NFT may improve reliability within demonstrated capabilities, finer prompt
 adherence, spatial precision, aesthetic preference, and stylistic polish. It is
-not the justification for omitting the base-model gates. In particular, do not
-launch on the assumption that NFT will create anatomy competence that the base
-model almost never exhibits.
+not a reason to hide limitations of the trained base model. Assess its usefulness
+from observed outputs before choosing any later post-training work.
 
 This is a project risk boundary, not a theorem that preference training cannot
 improve anatomy. [BACON](https://openaccess.thecvf.com/content/WACV2026W/WVAQ/html/Kas_We_Still_See_Broken_Limbs_Towards_Anatomical_Realism_in_GenAI_WACVW_2026_paper.html)
@@ -85,119 +83,47 @@ its results do not guarantee rescue for this model or these painting domains.
 [DiffusionNFT](https://arxiv.org/abs/2509.16117) supplies a post-training method,
 not an ArtFlow-specific pretraining capability forecast.
 
-## 3. Evaluation contract
+## 3. Qualitative monitoring
 
-### 3.1 Headline target: 80% first-attempt success
+### 3.1 Fixed comparisons, not capability gates
 
-The target is **80% joint whole-image success in each agreed evaluation category**,
-using ordinary user-written prompts, **without API prompt polishing**. Chinese
-and English must meet the gates **independently**; a pooled bilingual score is
-not sufficient.
+Use the small bilingual short/long-prompt panel in
+[stage4_eval_freeze.md](stage4_eval_freeze.md) and the operational cadence in
+[hero_recipe.md](hero_recipe.md). Freeze prompts, seeds, and sampling settings;
+retain all designated outputs and reviewer notes. Report Chinese and English
+observations separately where useful, without numerical pass/fail thresholds.
 
-A success requires the requested capability, recognizable requested style, and
-the relevant objects, action, and framing to be present together. Score anatomy
-subcategories separately; good faces cannot average away weak hand interaction.
-For capability tests in painting, report category × language × painting-family
-cells with balanced coverage of the three styles in each family. Also publish
-per-style results and a dedicated style-recognition breakdown. Freeze the exact
-gate table before comparative results are inspected, not after seeing weak cells.
+Look for recognizable subjects and styles, coherent full-body/face/hand geometry,
+everyday object contact, and basic spatial layout. Do not hide a required hand or
+crop a requested full body to present an apparent improvement. Interpret natural
+occlusion and abstraction according to the prompt and style.
 
-No retries, best-of-N selection, repair, prompt rewriting, or favorable seed
-selection enter the headline score. Multiple preassigned seeds estimate the
-distribution of independent first attempts; they are not chances to select one
-successful image. Best-of-k can be a separate diagnostic of occasional correct
-generation, never a replacement for pass@1 or a guarantee of NFT gains.
+### 3.2 VLM-first review
 
-Cropping a requested full-body figure, hiding a required hand, or omitting the
-interaction object is a failure, not a way to avoid anatomy judgment. Natural
-occlusion is allowed where compatible with the prompt. An unassessable required
-feature does not count as a pass. Record missing-content, structural, style,
-layout, and reviewer-uncertainty labels separately for diagnosis.
+The execution agent reviews full images and relevant crops and surfaces uncertain
+or systematic failures to the user. Record reasons and uncertainty, and do not
+equate VLM confidence with correctness. No large human-labeling or judge-calibration
+quota is required for this monitoring workflow.
 
-### 3.2 Freeze development and confirmation suites
+Flow loss, KID, and image panels diagnose learning and implementation regressions.
+None is a forecast or a certification of final capability. Compare losses within
+a resolution. Pause/review and nonfinite/corruption stops follow the hero recipe;
+they are safety checks, not a disguised quality threshold. API-billed review
+requires its own approved allocation.
 
-Stage 4 must deliver versioned prompt manifests, explicit rubrics, fixed seed
-lists, and image-level result records. Include:
+## 4. Reproducible inference for evaluation
 
-- Matched Chinese/English situations, checked for natural wording and equivalent
-  difficulty; do not treat translations as independent scenario diversity.
-- Ordinary short/medium prompts for the core user task, plus a separate
-  long-prompt adherence panel and difficult stress cases. Freeze length bands
-  and aggregation rules; do not replace ordinary prompts with elaborate
-  benchmark-specific instructions to raise the headline score.
-- Diverse common people, poses, objects, building types, and compositions,
-  with suitable framing and feature visibility. Include variable aspect ratios.
-- A development suite for recipe selection and a held-out confirmation suite.
-  Evaluation images must be separated from training rows and near-duplicates.
-  Once confirmation is used for tuning, it is no longer an untouched test.
+Stage 4 records solver, sampling steps and actual model evaluations, guidance,
+EMA checkpoint policy, precision, attention/compile settings, and any CPU offload
+used for its evaluation panels. Keep those settings fixed within a comparison;
+a quality result does not qualify a different inference configuration without
+re-evaluation. Sampling correctness and consistency between training, evaluation,
+and inference remain readiness checks.
 
-The exact prompt counts, seeds per prompt, uncertainty coverage level, and
-multiple-gate reporting procedure were **not numerically settled in the
-interview**. Finalize them during evaluator calibration, within the evaluation
-budget, and before recipe comparisons. Plan sample counts around the precision
-needed to distinguish a near-threshold result; a few attractive grids cannot
-establish 80%. These choices must not remain open at Stage-4 exit.
-
-### 3.3 VLM-first review with calibrated uncertainty
-
-The execution agent acts as the VLM reviewer. Calibrate on clear positive and
-negative examples, borderline cases, and style-specific abstractions. Review the
-full image and relevant crops; crops must not hide scene-level failures. Blind
-the reviewer to recipe identity where practical, pin its rubric and model/version,
-and retain decisions with reasons and uncertainty flags.
-
-Escalate consequential ambiguity and systematic disagreements to the user,
-including a sample of apparently confident passes. Do not plan a large manual
-labeling project by default, but do not treat reviewer confidence as accuracy.
-Record inter-review consistency and calibration errors by category/style.
-Pose/mesh detectors and image-text scores are auxiliary diagnostics, not ground
-truth for painted anatomy. An editing benchmark, [MPIE-Bench](https://arxiv.org/abs/2607.27616),
-reports optimistic VLM checklist scores despite structural failures; its task
-differs from ours, but motivates explicitly testing judge reliability.
-
-KID, fixed-distribution flow loss, and caption adherence components support
-diagnosis. None alone establishes anatomical competence or substitutes for the
-joint success target. API-billed review needs a separate cost estimate and
-approval; Stage 3.5's caption API allocation is not an unclaimed Stage-4 budget.
-
-## 4. Serving contract and training–inference tradeoff
-
-Agreed target: **RTX 4060 Ti 16 GB, one 896p image, batch size 1; approximately
-10 seconds preferred and 20 seconds maximum**, excluding optional API prompt
-polishing. Base quality and latency must be assessed under the **same inference
-settings**. An 80% result at 50 sampling steps cannot qualify a different,
-faster configuration without evaluating that configuration's quality.
-
-Stage 4 selects and records solver, steps and actual model evaluations, guidance,
-EMA checkpoint policy, precision, attention/compile settings, and residency or
-CPU offload. The current local pipeline supports component-wise offload of the
-text encoder, DiT, and VAE, but this is not measured proof of meeting the target.
-
-Measure finalists on the actual 4060 Ti, including text encoding, denoising,
-decoding, and per-request transfers. Record CPU/RAM, software versions, peak
-allocated/reserved VRAM, host memory, and memory headroom. Test representative
-and longest supported prompts and all declared service aspect ratios; distinguish
-caption-generation target lengths from the actual retained-token context cap.
-
-Proposed timing protocol: report a resident service's request latency separately
-from initial model loading/compilation, and disclose both cold and warm results.
-Freeze the timing boundary and supported shape/prompt envelope before declaring
-compliance. Report individual runs and median/tail/maximum, not just a favorable
-average; a mean below 20 seconds does not establish the maximum requirement.
-If a supported case exceeds the limit, it needs a remedy or an explicitly agreed
-service-contract change, not omission from the benchmark.
-
-Do not estimate 4060 Ti serving latency by scaling 4090 training throughput.
-Sampling correctness and consistency between evaluation and serving paths are
-Stage-4 readiness checks. Necessary in-scope fixes and regression tests belong
-inside Stage 4; discovering them must not silently defer validation to Stage 5.
-
-Prefer measured candidates that satisfy both quality and serving cost. A smaller
-model trained longer is a candidate, not a guaranteed winner. If quantization or
-distillation is essential, explicitly scope, budget, implement, and validate it
-within the recipe decision, or request redesign; do not leave a hidden pre-NFT
-optimization stage. Optional 1024p has its own quality/memory/latency qualification
-and cannot invalidate the required 896p deliverable.
+There is no prescribed inference device, VRAM ceiling, or latency gate for the
+hero run. Training quality and the training budget determine the recipe.
+Deployment optimization, quantization, and distillation are optional later work,
+not prerequisites for Stage-4 closure or the hero launch.
 
 ## 5. What scaling literature can and cannot decide
 
@@ -246,7 +172,7 @@ native multimodal, and vision settings. Its useful lesson here is to test mixtur
 and scale together against fixed target domains, not transfer its coefficients
 to a DiT or optimize thirteen unconstrained source weights at every phase.
 
-### 5.1 Forecast capability directly
+### 5.1 Capability uncertainty and monitoring
 
 Measure category-specific success trajectories, not just a loss-to-anatomy
 conversion. Research on [direct downstream-metric scaling](https://arxiv.org/abs/2512.08894)
@@ -254,25 +180,9 @@ supports investigating such fits, while [work on prediction failures](https://ar
 shows why predictable loss need not yield equally predictable accuracy. Both
 concern language models, not an established scaling law for painted anatomy.
 
-For a fixed recipe family, an illustrative candidate is failure rate
-
-\[
-e_c(H)=e_{\infty,c}+a_c H^{-b_c},\qquad p_c(H)=1-e_c(H).
-\]
-
-If the fit is credible and `0.20 > e_inf,c`, its implied target budget is
-
-\[
-H_{80,c}=\left(\frac{a_c}{0.20-e_{\infty,c}}\right)^{1/b_c}.
-\]
-
-This is a proposed local model, not a promised anatomy law. A weakly identified
-floor, flat/near-zero success, or a target far outside validated scale makes
-inversion unreliable. Report an unresolved requirement rather than a fabricated
-finite budget. Compare simple alternative fits and sensitivity to dropping runs;
-retain bounded probabilities and uncertainty rather than selecting a convenient
-curve. A multi-resolution schedule needs its own validation, not an `H`-only
-fit pooling unrelated recipes.
+Do not invert a poorly identified small-run accuracy curve into a claimed budget
+for correct anatomy. Small runs support stability/cost checks and qualitative
+comparison, not a reliable guarantee of the hero's final success rate.
 
 Separate these diagnoses:
 
@@ -283,19 +193,11 @@ Separate these diagnoses:
 - **Unresolved:** experiments cannot distinguish the two; identify a bridging
   experiment and its cost.
 
-Hold out a larger and/or longer run from initial fitting and predict it before
-observing its capability scores. Include resolution-continuation checks: 256p
-figures cannot establish 896p hand/face detail. Account for prompt clustering,
-training-seed variability, reviewer error, and extrapolation/model uncertainty;
-an interval on observed sample accuracy alone is not a hero prediction interval.
-
-**Launch gate:** the conservative lower end of the validated forecast must clear
-80% for every required gate, including Chinese and English independently, at the
-chosen serving settings. Freeze the uncertainty method and coverage level before
-comparison. Forecast validation must include checking interval calibration and
-systematic prediction error, not merely fitting the held-out point afterwards.
-The 450-hour cap does not guarantee that such a forecast will be possible.
-Stage 4 forecasts; Stage 5 must still verify actual achievement.
+Use the fixed panel to check resolution continuation and monitor hero checkpoints:
+256p figures alone do not establish 896p hand/face detail. No dedicated per-atom
+scaling fit or larger/longer capability-confirmation run is required for Stage-4
+closure. There is no final numerical capability target. Report observed limitations
+and follow the recipe's pause/review rules if the hero develops clear regressions.
 
 ## 6. Corpus, exposure, and stage-dependent mixture design
 
@@ -329,22 +231,11 @@ draws during candidate ramps and about 12–13% for several endpoint policies.
 These are conditional simulated exposures, not training gains or fixed hero
 targets. Refresh them from the accepted corpus and final Stage-3.5 policy.
 
-Use a low-dimensional search:
-
-1. Audit unique eligible rows, quality/capability coverage, caption distributions,
-   and expected repeats at each resolution. Large source size does not establish
-   either quality or usefulness; prioritize visible full bodies and actual
-   hand–object contact, not just more portraits.
-2. Screen baseline, long-caption-capable-row boost, quality/capability boost, and
-   their combination at matched GPU budgets. Bound source/domain drift and
-   repetition; keep the accepted within-row and loss-weight policy fixed initially.
-3. Compare the best stationary mixture with a restrained staged alternative,
-   such as broad coverage earlier and more high-quality/detailed examples later.
-   Match cumulative exposures where possible to isolate ordering from total dose.
-   Poor-quality data early is a hypothesis, not a required curriculum.
-4. Check the promising mixture at another model size and through higher-resolution
-   continuation. Resolutions change which rows are eligible, so audit the realized
-   rather than nominal mixture again after each transition.
+The per-stage row multipliers, normalized mixtures, and eligible pools are fixed
+in [hero_recipe.md](hero_recipe.md). Verify actual exposure and per-source
+repetition with the final plans; do not reopen corpus-size or mixture sweeps as
+routine launch prerequisites. A source's size alone does not establish its quality
+or usefulness. A material mixture change requires an explicit recipe revision.
 
 Compare on a fixed evaluation distribution. Do not select a mixture because its
 own training loss is lower or because dropping costly long text raises samples/s.
@@ -359,64 +250,31 @@ Stage 3.5's 75-hour cap and the hero working range of **1,600–2,200 hours**.
 Do not borrow between these budgets or use older off-peak flexibility as standing
 authorization to exceed the current range.
 
-Provisional allocation, to refine before jobs launch:
-
-| Work package | RTX 4090 GPU-hours |
-|---|---:|
-| Evaluator calibration, end-to-end profiling, accumulation and topology checks | 35 |
-| Model-size × training-exposure ladder | 120 |
-| Independent corpus-size and mixture/curriculum contrasts | 80 |
-| Resolution continuation, high-resolution detail and retention checks | 90 |
-| Held-out larger/longer validation and finalist confirmation | 85 |
-| Failure, restart, and uncertainty reserve | 40 |
-| Total | 450 |
-
-These are planning envelopes, not known runtimes or a promise that all possible
-contrasts fit. Charge generation/evaluation, compilation, checkpointing, allocated
-idle time, and failed jobs to their package. Keep CPU/API/storage and actual
+Set the infra-pass allowance from the **unspent** portion of the 450-hour cap;
+the remaining amount requires the actual job ledger, not subtraction of estimated
+package runtimes. Do not refill descoped experiment packages with new sweeps.
+Charge generation/evaluation, compilation, checkpointing, allocated idle time,
+and failed jobs to the ledger. Keep CPU/API/storage and actual
 4060 Ti device-hours in a separate explicit ledger; they are not assumed free
 or converted by an informal speed ratio. Full-corpus high-resolution precompute
 needs its own approved allocation, with no omission from total project cost.
 
 ### 7.1 Sequence and comparison controls
 
-1. **Freeze inputs and the evaluation contract.** Accept Stage-3.5 results, pin
-   code/data/length metadata and caption/loss policy, calibrate the reviewer, and
-   define confirmation holdouts, confidence procedure, and stopping rules.
-2. **Measure real cost.** Refresh Stage-3 end-to-end measurements for candidate
-   sizes, actual caption mixtures, aspect ratios, and resolutions. The corrected
-   [Stage-3 gate](stage3_gate.md) closed on one GPU; old multi-GPU timing and
-   high-resolution DiT-only ceilings do not establish hero throughput.
-3. **Run a compact size/exposure ladder.** Include the 485M baseline and a small
-   number of structurally compatible sizes within the ≤0.7B scope, with overlapping
-   GPU budgets and multiple saved evaluation points. A smaller proxy is allowed
-   for Stage-4 scaling, but must demonstrate relevance to larger candidates.
-   Initialize independent size/corpus runs from scratch; do not assume an existing
-   “real” checkpoint. Compare effective batches through accumulation, not a full
-   resweep of per-bucket micro-batches.
-4. **Separate data amount from training amount.** Use nested, stratified unique
-   corpus subsets at matched actual draws `S` to measure the effect of `U`.
-   Fixed optimizer steps alone do not match exposure when bucket batches differ.
-   Also report quality at matched GPU-hours, the primary resource comparison.
-5. **Test the small mixture/curriculum set in §6.** Reuse a common prefix checkpoint
-   for controlled continuation branches when useful; record shared ancestry and
-   charge shared-prefix compute once. Branches are not independent training seeds.
-   Do not import Stage 3.5's all-from-scratch restriction into a resolution-transfer
-   experiment that specifically requires continuation.
-6. **Validate the resolution path.** Compare 256p→640p continuation with a limited
-   640p-from-scratch control, then test 640p→896p continuation. Measure anatomy
-   detail, style/layout retention, cost, and source availability. Test 1024p only
-   if a bounded candidate allocation leaves the required 896p result credible.
-7. **Confirm and forecast.** Protect held-out larger/longer tests and at least a
-   finalist training-seed check where affordable; if seed variance cannot be
-   estimated adequately, state the limitation in the launch forecast. Measure
-   the selected inference settings on the 4060 Ti, fit conditional capability
-   curves, and estimate the complete hero cost with uncertainty.
-
-Prune clearly dominated candidates rather than building a full Cartesian grid.
-Do not spend the confirmation reserve on more speculative screens. If early
-anatomy results are too weak to extrapolate, favor a genuinely informative longer
-or higher-resolution bridge over additional tiny runs.
+1. **Freeze the selected inputs.** Pin code/data/length metadata, configurations,
+   bucket plans, caption/loss policy, and the small bilingual monitoring panel.
+2. **Finish continuation controls.** Implement and smoke-test exact stage stopping,
+   endpoint checkpoints, predecessor validation, and full-state resume. Keep the
+   shared LR/caption horizon; initialize caption progress before prefetch.
+3. **Run the bounded infrastructure pass (§7.3).** Measure the selected 533M model
+   on eight ranks at all three resolutions, including actual caption mixtures,
+   aspect ratios, memory, exposure, and startup/steady-state costs. The corrected
+   [Stage-3 gate](stage3_gate.md) closed on one GPU; neither old multi-GPU timing
+   nor DiT-only ceilings establish hero throughput.
+4. **Cost and hand off.** Derive final total steps, 75:20:5 stage endpoints, sample
+   budgets, and bounded overhead/recovery allowances. Verify cross-resolution
+   continuation and the monitoring workflow. No new architecture, corpus, mixture,
+   or per-atom capability-forecast sweep is required.
 
 ### 7.2 Bucket and optimizer boundaries
 
@@ -430,11 +288,57 @@ that the plans preserve the intended sampling/loss semantics.
 Tune effective batch with `gradient_accumulation_steps`; record actual samples per
 update and actual exposures because variable micro-batches make nominal products
 misleading. Retain the established optimizer family: chunked Muon plus auxiliary
-AdamW, with Muon LR 0.02 as the starting point. Finalize LR/warmup/decay, stage
-restart or continuation behavior, EMA timescale, clipping, caption dropout,
-resolution time shift, and loss normalization. Reopening architecture/objective
+AdamW, with the fixed LR/warmup/decay, continuous stage schedules, EMA, clipping,
+caption dropout, time shift, and loss normalization in the hero recipe. Reopening architecture/objective
 or optimizer-family choices requires a stated reason and scope decision, not an
 unbounded sweep hidden inside “complete recipe.”
+
+### 7.3 Final hero infrastructure pass (agreed 2026-09-13)
+
+This is a final Stage-4 exit task, **not a separate Stage 4.5 or an open-ended
+optimization stage**. Its input is the selected scientific recipe; its output
+is the final executable, costed hero recipe that Stage 5 can launch directly.
+Before profiling, set a fixed GPU-hour allowance from the remaining profiling
+envelope or reserve **inside the 450-hour cap**, and record it in the ledger.
+Stop at that allowance or when plausible remaining hero-run savings no longer
+justify further profiling. It does not authorize additional spending or a new
+architecture/optimizer search.
+
+The user reports roughly 3.1× four-GPU speedup and about 60% “GPU Time Spent
+Accessing Memory” in SwanLab. Treat these as diagnostic leads, not established
+bottlenecks: 3.1× implies 77.5% scaling efficiency only for comparable workloads
+and steady-state measurement boundaries, and memory-access time alone does not
+establish bandwidth saturation. Confirm the metric definition and use traces
+to distinguish exposed communication, rank imbalance, synchronization, input
+stalls, and memory-heavy compute.
+
+The bounded pass must:
+
+- Benchmark the chosen model at every enabled hero resolution, on the intended
+  GPU count/topology, with representative caption lengths, mixtures, and aspect
+  ratios. Separate compilation/startup from steady state and report global
+  samples/second, samples/update, GPU-hours, and wall-clock time.
+- Profile a small number of representative steady-state steps, target the
+  measured bottlenecks with low-risk changes, and verify gains end to end.
+  Re-screen micro-batch sizes and, where justified, refresh bucket boundaries
+  using the existing Stage-3.5 pipeline; no new bucket-planning research is needed.
+- Preserve training semantics: check sampling/exposure and loss normalization
+  after bucket changes, adjust accumulation where needed, and verify actual
+  effective batches. If a change materially alters effective batch, optimizer
+  cadence, or caption curriculum, treat it as a recipe revision needing bounded
+  validation, not as a transparent speed optimization.
+- Recompute the cost of the selected **sample exposure first**, including
+  checkpoint/evaluation, startup, and restart allowances. Derive optimizer-step
+  counts from the final execution plan; fixed step counts do not preserve dose
+  when bucket batches change. Any budget-driven change to training dose or
+  resolution allocation must be explicit in the revised recipe, not a silent
+  shortening of training.
+
+Pin the final code/config revisions, bucket plans, accumulation, and topology;
+retain before/after measurements and relevant correctness/resume smokes. Refresh
+the cost scenarios in §8 from these measurements, distinguishing measured rates
+from extrapolation. There is no required 3.5× or 4× scaling gate: the goal is a
+reliable, affordable hero run, not an idealized speedup number.
 
 ## 8. Derive the whole hero allocation
 
@@ -445,20 +349,19 @@ For stage `r`, with measured global throughput `v_r` in actual samples/second,
 H_{\rm train,r}=\frac{S_r}{v_r}\frac{G_r}{3600}.
 \]
 
-Sum across 256p, 640p, 896p, and any enabled 1024p stage, then add startup,
+Sum across 256p, 640p, and 896p, then add startup,
 evaluation, checkpoint, expected restart, and allocated-idle allowances without
 double-counting costs already in measured rates. Queue waiting is wall-clock
 delay, not allocated GPU-hours. Record both and the assumptions about preemption.
 Measure the chosen multi-GPU topology or use a tested smaller topology; unvalidated
 eight-GPU efficiency cannot be the reason the budget appears to fit.
 
-Decide stage allocations from capability gain per cost, high-resolution detail,
-retention, and uncertainty, not the roadmap's earlier guessed step percentages.
-Compute minimum, recommended, and conservative-cost scenarios within the working
-range, with a single selected executable schedule and bounded contingencies.
-Report which capability controls the required budget and what extra budget would
-buy, when the evidence supports an estimate. If not, give the cost of resolving
-uncertainty rather than pretending to know the final required hours.
+The selected stage split is 75:20:5 of total optimizer steps. Derive the total
+step count from measured end-to-end rates and overhead inside the 2,200-hour cap;
+400k is a benchmark target, not a ceiling. Record realized sample exposure and
+bounded contingencies with the executable schedule in [hero_recipe.md](hero_recipe.md).
+Report how infra changes affect measured training cost and feasible steps/exposure;
+do not translate the extra steps into an unsupported capability prediction.
 
 Predefine transition checks, allowed bounded extensions, and rollback/stop rules
 inside the total ceiling. Automatic adaptation is permitted only with explicit
@@ -473,18 +376,19 @@ This design document is not that result. The handoff must contain:
 
 | Deliverable | Required content |
 |---|---|
-| Capability contract and evidence | Frozen bilingual prompt/seed manifests, rubrics, gate table, reviewer calibration, raw scores/images, uncertainty and held-out forecast validation |
+| Qualitative monitoring | Fixed bilingual prompts/seeds and sampling settings, review notes/images, regression rules and uncertainty; no numerical capability gate |
 | Selected model | Exact config/parameter count, text encoder and exit layer, VAE, initialization, code/dependency revisions; no unresolved size choice |
 | Data recipe | Immutable dataset/metadata manifests, unique eligible counts, quality/capability strata, licenses, dedup/eval separation, exact per-stage mixture and caption/loss-weight schedules |
-| Full resolution schedule | 256p, 640p, 896p and an explicit enable/disable decision or bounded trigger for 1024p; aspect buckets, sample budgets, update counts, transitions and retention checks |
+| Full resolution schedule | 256p, 640p, 896p with a 75:20:5 optimizer-step split; no 1024p; aspect buckets, measured sample budgets, final update counts, transitions and retention checks |
 | Optimization recipe | Bucket plans, accumulation and actual effective batch, optimizer groups, LR/warmup/decay, EMA, time shifts, dropout, clipping and normalization |
-| Serving recipe | Same configuration used for capability qualification; measured 4060 Ti memory/latency, solver/steps/guidance/precision/offload, tested prompt and shape envelope |
+| Final infrastructure validation | §7.3 profiling allowance and actual spend, representative traces, before/after end-to-end rates per enabled resolution/topology, pinned execution settings, and sampling/loss-normalization validation |
+| Evaluation inference recipe | Reproducible solver/steps/guidance/precision/offload settings and tested prompt/shape envelope; no deployment hardware or latency gate |
 | Operations | Runnable configs and launch/resume commands, tested checkpoint state restoration, storage/data paths, precompute workflow, evaluation/checkpoint cadence, failure handling and spend limits |
 | Cost and decision report | Training and overhead ledger, preparation/API/storage costs, topology and wall-clock assumptions, uncertainty, alternatives rejected, and explicit go/no-go/redesign verdict |
 
 Before a go handoff, required implementation and relevant tests/smokes must be
 complete, including mixture schedules, telemetry, evaluation, and all enabled
-resolution transitions. Production 896p/optional 1024p precompute may execute
+resolution transitions. Any remaining production 896p preparation may execute
 as a specified Stage-5 preparation task, but its data policy, commands, tested
 small-scale path, storage, cost allocation, and validation must already be settled.
 It cannot conceal another design or feasibility study.
@@ -496,11 +400,15 @@ allocation. Preparation and monitoring are normal execution, not Stage 4.5.
 ### Exit checklist
 
 - [ ] Stage-3.5 outputs accepted and exact experiment inputs frozen.
-- [ ] All required bilingual capability gates and statistical procedures frozen.
-- [ ] Held-out validation supports conservative ≥80% hero forecasts for every gate.
-- [ ] The same quality-qualified serving settings fit 16 GB and the 20-second ceiling.
+- [x] The 48-image bilingual monitoring panel, qualitative review rubric, shared
+      seeds and operational checks are frozen in `stage4_eval_freeze.md`.
+- [ ] Qualitative observations and limitations are recorded without a capability pass/fail target.
+- [ ] Evaluation sampling settings are recorded and the sampling path passes correctness checks.
 - [ ] The complete selected pre-NFT schedule fits the agreed ≤2,200-hour hero budget,
       with overhead, bounded contingencies, and separately approved preparation costs.
+- [ ] The bounded final infrastructure pass is complete; its measured rates,
+      final bucket/accumulation settings, and explicit exposure/update-count
+      revisions are incorporated into the hero recipe and wall-clock estimates.
 - [ ] All recipe decisions, executable configs, operational paths, and relevant
       validation are complete; measured and extrapolated numbers are distinguished.
 - [ ] `notes/hero_recipe.md` and supporting artifacts are versioned and reviewed.

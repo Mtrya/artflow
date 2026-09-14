@@ -191,8 +191,9 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
         txt_pooled: (N, D_txt) - Required if conditioning_scheme="fused"
         txt_mask: (N, L_txt)
         fast_attn: hoist the per-layer RoPE frequencies and the padded-text
-            attention bias out of the block loop. Same math, one table lookup
-            and one mask build per forward instead of one per layer.
+            attention bias out of the single-stream block loop. Same math, one
+            table lookup and one mask build per forward instead of one per
+            single-stream layer.
         """
         _, _, H, W = x.shape
         x = self.x_embedder(x)  # (N, D, H/p, W/p)
@@ -215,14 +216,19 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
 
         rope_freqs = None
         attn_bias = None
-        if fast_attn and self.blocks:
-            first = self.blocks[0]
-            if not isinstance(first, SingleStreamDiTBlock):
-                raise ValueError("fast_attn is only implemented for single-stream blocks")
-            rope_freqs = first.attn.rope.prepare_freqs(
-                img_hw, txt_seq_len, x.device
+        if fast_attn:
+            # Hoist the per-layer RoPE table and padded-text bias for the
+            # single-stream blocks. Double-stream blocks (if any) build their
+            # own per-layer equivalents internally.
+            first_single = next(
+                (b for b in self.blocks if isinstance(b, SingleStreamDiTBlock)),
+                None,
             )
-            if txt_mask is not None:
+            if first_single is not None:
+                rope_freqs = first_single.attn.rope.prepare_freqs(
+                    img_hw, txt_seq_len, x.device
+                )
+            if first_single is not None and txt_mask is not None:
                 keep = torch.cat(
                     [
                         torch.ones(

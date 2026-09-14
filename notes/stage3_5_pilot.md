@@ -1582,3 +1582,40 @@ time-alignment), and the data work (enriched captions, rescued synthetic
 set, screening, sidecars merged into precompute).  Bucket plans themselves
 are Stage 4's job, per "The stage delivers the planning pipeline, not a
 plan".
+
+## Appendix: 896p hero-input closeout (2026-09-14)
+
+The selected 896p hero pool contains ten logical sources in fourteen dataset
+directories (relaion is split into five parts), using the 896p bucket family
+([(896,896),(1184,672),(672,1184),(1024,768),(768,1024)], ~0.8M pixels each).
+Counts below are the retained rows read from each `length_metadata.npz` sidecar
+by the [current 896p plan report](../bucket_plans/hero/batch-targets-0914/hero-896p-k20.report.md),
+not source-manifest counts before resolution filtering. This is the training
+pool selected in [hero_recipe.md](hero_recipe.md); zero-weight sources, including
+`d3-synth-v2`, and evaluation rows are not included in its total.
+
+| dataset | rows |
+|---|---|
+| d1 | 90,695 |
+| d2-museum | 3,643 |
+| d2-wikiart | 79,763 |
+| d3-human | 109,740 |
+| d3-people | 105,450 |
+| d3-pexels | 37,417 |
+| d4-megalith | 1,152 |
+| d4-pd12m | 145,832 |
+| d4-relaion (5 parts) | 168,909 |
+| d4-vintage | 16,416 |
+| **total** | **759,017** |
+
+Plus the fixed eval probe `light-eval@896p` (2,437 rows; companions
+`light-eval@640p` also built for the Stage-4 resolution-transfer run).
+
+Notes: d4-pd12m was too large for one GPU inside the job time limit
+(~26 h single-card vs the 16 h limit), so its manifest was split into 8
+slices, precomputed in parallel on 8 GPUs (`precompute_896p_pd12m_parts.sh`,
+~3.5 h wall), and merged with `scripts/data/merge_precompute_parts.py`
+(concatenated slices, sidecar recomputed over the merged rows; verified
+145,832 rows load with aligned sidecar). Its `dataset_info.json` lacks the
+`splits` key (a save-format quirk of the merge path); `load_from_disk`
+works, which is what the trainer uses.

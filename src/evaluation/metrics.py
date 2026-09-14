@@ -120,7 +120,12 @@ def calculate_kid(
     if subset_size > n_samples:
         subset_size = n_samples
 
-    kid = KernelInceptionDistance(feature=feature, subset_size=subset_size).to(device)
+    # sync_on_compute=False: the caller hands us already-gathered global
+    # tensors on the main rank only, so the metric must not try to sync
+    # state across the process group (that would hang the other ranks).
+    kid = KernelInceptionDistance(
+        feature=feature, subset_size=subset_size, sync_on_compute=False
+    ).to(device)
 
     def update_metric(images, is_real):
         nonlocal kid

@@ -2,12 +2,31 @@ import torch
 
 
 def test_apply_time_shift_monotonic_and_bounded():
+    from src.flow.paths import apply_time_shift
+
     t = torch.linspace(0.0, 1.0, 100)
-    shifted = (2.5 * t) / (1 + (2.5 - 1) * t)
+    shifted = apply_time_shift(t, 2.5)
 
     assert torch.all(shifted >= 0)
     assert torch.all(shifted <= 1)
     assert torch.all(shifted[1:] >= shifted[:-1])
+
+
+def test_apply_time_shift_moves_toward_noise():
+    """In this repo t=0 is noise and t=1 is data; higher resolutions need
+    noisier timesteps (SD3 Eq. 23), so shift > 1 must decrease t."""
+    from src.flow.paths import apply_time_shift
+
+    t = torch.linspace(0.0, 1.0, 100)
+    shifted = apply_time_shift(t, 3.0)
+    assert torch.all(shifted[1:-1] < t[1:-1])
+
+    # endpoints are fixed points
+    assert apply_time_shift(torch.tensor(0.0), 3.0).item() == 0.0
+    assert apply_time_shift(torch.tensor(1.0), 3.0).item() == 1.0
+
+    # shift=1 is the identity
+    assert torch.allclose(apply_time_shift(t, 1.0), t)
 
 
 def test_resolution_time_shift_anchors():
@@ -17,9 +36,9 @@ def test_resolution_time_shift_anchors():
     z_256 = torch.zeros(1, 16, 32, 32)
     assert resolution_time_shift(z_256) == 1.0
 
-    # 4096 tokens anchor: H=W=128 latent with patch_size=2 => 64x64 patches => 4096
+    # SD3 Eq. 23: shift = sqrt(m/n) in token counts; 4096 tokens => sqrt(16) = 4
     z_4096 = torch.zeros(1, 16, 128, 128)
-    assert resolution_time_shift(z_4096) == 3.0
+    assert resolution_time_shift(z_4096) == 4.0
 
 
 def test_training_and_inference_shift_convention_matches():

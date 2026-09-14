@@ -5,7 +5,7 @@
   "resolution": "256p",
   "source_base_commit": "c496da063b29da61b2548e364cda379d62439542",
   "source_archive_sha256": "76f6fa311d66bcde031b330cfa399d91b6bae9b421c3dcd8aa305812cb25921d",
-  "artifact_directory": "/inspire/qb-ilm/project/cq-scientific-cooperation-zone/ky26021/artflow/runs/stage3/s3-review-ab-1g-0909",
+  "artifact_directory": "${ARTFLOW_ROOT}/runs/stage3/s3-review-ab-1g-0909",
   "timer": "Completed training work including optimizer, EMA, telemetry/logging; excludes eval/checkpoint intervals. Steady state excludes first 50 steps.",
   "summaries": {
     "baseline": {

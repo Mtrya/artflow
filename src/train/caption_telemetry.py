@@ -76,8 +76,7 @@ MAX_TRACKED_LENGTH = 2048
 
 # Counter fields that are summed across ranks (and into the run totals).  The
 # two tuples together define the flat vector's layout: names, then the length
-# histogram.  ``short_reserve`` is deliberately absent — it is one value shared
-# by every rank, so summing it would multiply it by the world size.
+# histogram.
 _COUNT_FIELDS: Tuple[str, ...] = (
     "selected", "dropped", "retained_sum", "padded_sum",
     "micro_batches", "samples",
@@ -85,7 +84,7 @@ _COUNT_FIELDS: Tuple[str, ...] = (
     "policy_samples",
 )
 _SUM_FIELDS: Tuple[str, ...] = (
-    "progress_sum", "position_sum", "strength_sum", "conditioned_weight_sum",
+    "progress_sum", "position_sum", "length_preference_beta_sum", "conditioned_weight_sum",
     "conditioned_weighted_length_sum",
 )
 
@@ -97,7 +96,7 @@ class PolicyState:
     ``progress`` is the training progress clock, 0 at the first step and 1 at
     the scheduled last one.  ``curriculum_position`` is the position the
     within-row caption selector itself used, which the trainer advances on its
-    own schedule and which can therefore lag ``progress``.  ``strength`` is
+    own schedule and which can therefore lag ``progress``.  ``length_preference_beta`` is
     whatever scalar places the selector between short and long captions: beta
     for the length-preference selector, the curriculum position for the legacy
     token-count curriculum.
@@ -105,8 +104,7 @@ class PolicyState:
 
     progress: float
     curriculum_position: float
-    strength: float
-    short_reserve: float
+    length_preference_beta: float
 
 
 @dataclass
@@ -124,12 +122,11 @@ class _Accumulator:
     policy_samples: int = 0
     progress_sum: float = 0.0
     position_sum: float = 0.0
-    strength_sum: float = 0.0
+    length_preference_beta_sum: float = 0.0
     conditioned_weight_sum: float = 0.0
     """Sum of the loss weights over the samples the model was conditioned on."""
     conditioned_weighted_length_sum: float = 0.0
     """Sum of weight x retained length over those samples."""
-    short_reserve: Optional[float] = None
     histogram: List[int] = field(default_factory=lambda: [0] * (MAX_TRACKED_LENGTH + 1))
 
 
@@ -200,8 +197,7 @@ class CaptionTelemetry:
             acc.policy_samples += batch_size
             acc.progress_sum += float(policy.progress) * batch_size
             acc.position_sum += float(policy.curriculum_position) * batch_size
-            acc.strength_sum += float(policy.strength) * batch_size
-            acc.short_reserve = float(policy.short_reserve)
+            acc.length_preference_beta_sum += float(policy.length_preference_beta) * batch_size
 
     def window_counts(self) -> List[float]:
         """The window's counters as one flat vector.
@@ -260,6 +256,9 @@ class CaptionTelemetry:
         flat = torch.tensor(self.window_counts(), dtype=torch.float64,
                             device=device or "cpu")
         torch.distributed.all_reduce(flat, op=torch.distributed.ReduceOp.SUM)
+        # The reduced vector already contains this rank's own counters, so it
+        # replaces the window rather than being added to it.
+        self._accumulator = _Accumulator()
         self.merge_window_counts(flat.tolist())
 
     def _close_window(self) -> None:
@@ -267,12 +266,9 @@ class CaptionTelemetry:
 
         The window is closed exactly here, and the fold happens after the
         window was summed across ranks, so the run totals are global without a
-        second collective.  The window's own reserve survives as a value rather
-        than a sum, because every rank reports the same one.
+        second collective.
         """
         _absorb(self._cumulative, _flatten(self._accumulator))
-        if self._accumulator.short_reserve is not None:
-            self._cumulative.short_reserve = self._accumulator.short_reserve
         self._accumulator = _Accumulator()
 
     def _mark_row(self, dataset_id: int, row_idx: int) -> bool:
@@ -362,9 +358,7 @@ def _summary_metrics(acc: _Accumulator) -> Dict[str, float]:
         metrics["repetition/repeat_rate"] = acc.repeat_rows / acc.rows
 
     if acc.policy_samples:
-        metrics["policy/strength"] = acc.strength_sum / acc.policy_samples
-        if acc.short_reserve is not None:
-            metrics["policy/short_reserve"] = float(acc.short_reserve)
+        metrics["policy/length_preference_beta"] = acc.length_preference_beta_sum / acc.policy_samples
     return metrics
 
 

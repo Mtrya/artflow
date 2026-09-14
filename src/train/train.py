@@ -46,10 +46,16 @@ from ..utils.encode_text import encode_text
 from ..utils.vae_codec import get_vae_stats
 from ..flow.paths import FlowMatchingOT, shift_timesteps
 from ..evaluation.eval_loss import EvalLossProbe
-from ..evaluation.prompt_grid import run_prompt_grid_eval
+from ..evaluation.prompt_grid import grid_due, run_prompt_grid_eval
 from ..evaluation.kid_eval import run_kid_eval
 from .config import load_config, flatten
 from .muon import build_param_groups as build_muon_param_groups
+from .health import (
+    ema_rel_distance,
+    qk_gain_stats,
+    snapshot_weights,
+    update_weight_ratios,
+)
 
 # Suppress specific warning about RMSNorm dtype mismatch in mixed precision
 warnings.filterwarnings("ignore", message="Mismatch dtype between input and weight")
@@ -63,6 +69,30 @@ def update_ema_model(
         ema_param.data.mul_(decay).add_(param.data, alpha=1.0 - decay)
     for ema_buffer, buffer in zip(ema_model.buffers(), current_model.buffers()):
         ema_buffer.copy_(buffer)
+
+
+def set_caption_curriculum(
+    sampler: RowLengthQueueBatchSampler,
+    *,
+    global_step: int,
+    max_steps: int,
+    curriculum_start: float,
+    curriculum_end: float,
+) -> None:
+    """Use whole-run progress for new draws without changing queued captions."""
+    progress = global_step / max(1, max_steps)
+    sampler.set_stage(
+        curriculum_start + (curriculum_end - curriculum_start) * progress
+    )
+
+
+def matching_sampler_sidecars(checkpoint: str, world_size: int) -> list[str]:
+    """Only a complete, exact rank set can restore stride-sharded row order."""
+    expected = [f"sampler_state_rank_{rank:05d}.pt" for rank in range(world_size)]
+    present = {name for name in os.listdir(checkpoint)
+               if re.fullmatch(r"sampler_state_rank_\d+\.pt", name)
+               and os.path.isfile(os.path.join(checkpoint, name))}
+    return [os.path.join(checkpoint, name) for name in expected] if present == set(expected) else []
 
 
 def build_linear_cosine_scheduler(
@@ -136,6 +166,13 @@ def parse_args():
         action="store_true",
         help="Crash-resume: also restore global_step, scheduler, EMA, batch "
         "sampler and RNG state from the checkpoint",
+    )
+    parser.add_argument(
+        "--resume_ema",
+        action="store_true",
+        help="With a plain --resume, also restore EMA weights from the "
+        "checkpoint (eval-only probes; without it EMA re-initializes from "
+        "the resumed model weights)",
     )
     parser.add_argument(
         "--step_breakdown",
@@ -288,6 +325,7 @@ def main():
         "run_name",
         "resume",
         "resume_full",
+        "resume_ema",
         "step_breakdown",
         "cpu_wall_profile",
         "fast_caption_dropout",
@@ -581,7 +619,8 @@ def main():
             f"{metadata.num_captions} caption lengths"
         )
     row_dataset = RowDescriptorDataset(entry_datasets, entry_metadata)
-    caption_policy = CaptionPolicy(        kind=args.caption_policy,
+    caption_policy = CaptionPolicy(
+        kind=args.caption_policy,
         beta_start=args.caption_beta_start,
         beta_end=args.caption_beta_end,
         schedule=args.caption_schedule,
@@ -637,10 +676,17 @@ def main():
     # The sampler already assigns complete (resolution, length) micro-batches
     # to ranks; letting Accelerate shard its DataLoader a second time would
     # drop whole batches, so the dataloader stays outside prepare().
-    prepared = accelerator.prepare(model, *optimizers, *schedulers)
+    #
+    # Schedulers also stay outside prepare(): AcceleratedScheduler.step()
+    # steps the inner scheduler num_processes times per call when
+    # split_batches=False, which would compress the LR schedule by the GPU
+    # count (warmup 500 ending at step 125 on 4 ranks, cosine hitting its
+    # floor at max_steps/4). Stepping the bare schedulers below is exactly
+    # one schedule step per optimizer step. Their state_dicts are saved and
+    # restored by hand next to accelerator.save_state/load_state.
+    prepared = accelerator.prepare(model, *optimizers)
     model = prepared[0]
-    optimizers = list(prepared[1 : 1 + len(optimizers)])
-    schedulers = list(prepared[1 + len(optimizers) :])
+    optimizers = list(prepared[1:])
 
     # Resume Logic
     resumed_step = 0
@@ -657,23 +703,43 @@ def main():
                     f"--resume_full needs a checkpoint_step_* path, got {args.resume}"
                 )
             resumed_step = int(m.group(1))
-            resume_sampler_path = os.path.join(args.resume, sampler_state_name)
-            if not os.path.exists(resume_sampler_path):
-                raise ValueError(
-                    "full resume requires the rank-local sampler state: "
-                    f"{resume_sampler_path}"
+            # Each rank walks a stride-sharded row order under its own RNG
+            # stream, so a sampler state only fits the world size that wrote
+            # it. Restore only when the exact rank set is present; a resume
+            # that changes the GPU count starts a fresh sampler instead.
+            sidecars = matching_sampler_sidecars(args.resume, accelerator.num_processes)
+            if sidecars:
+                sampler.load_state_dict(
+                    torch.load(
+                        sidecars[accelerator.process_index],
+                        map_location="cpu",
+                        weights_only=False,
+                    )
                 )
-            sampler.load_state_dict(
-                torch.load(resume_sampler_path, map_location="cpu", weights_only=False)
-            )
-            accelerator.print(f"Restored sampler state from {resume_sampler_path}")
+                accelerator.print(
+                    f"Restored sampler state from {sidecars[accelerator.process_index]}"
+                )
+            else:
+                accelerator.print(
+                    "Sampler sidecars do not cover this world size; "
+                    "starting a fresh sampler (data order restarts)."
+                )
             accelerator.print(f"Full resume at step {resumed_step}")
+            # Schedulers are not prepared (see above), so load_state does not
+            # restore them; load their state_dicts explicitly.
+            for i, sch in enumerate(schedulers):
+                sch_path = os.path.join(
+                    args.resume, "scheduler.bin" if i == 0 else f"scheduler_{i}.bin"
+                )
+                if os.path.exists(sch_path):
+                    sch.load_state_dict(
+                        torch.load(sch_path, map_location="cpu", weights_only=False)
+                    )
         else:
             # A plain --resume carries weights+optimizer but restarts the
-            # schedule from step 0.
-            for sch in schedulers:
-                if hasattr(sch, "last_epoch"):
-                    sch.last_epoch = -1
+            # schedule from step 0: the schedulers are fresh (not restored by
+            # load_state), so only the optimizer LRs restored from the
+            # checkpoint need resetting until the first scheduler step.
             for optimizer, base_lrs in zip(optimizers, optimizer_base_lrs):
                 for param_group, base_lr in zip(optimizer.param_groups, base_lrs):
                     param_group["lr"] = args.start_learning_rate * (
@@ -688,7 +754,7 @@ def main():
         ema_model.to(accelerator.device, dtype=dtype)
         ema_model.eval()
         ema_model.load_state_dict(model_raw.state_dict())
-        if args.resume_full and args.resume and args.resume != "None":
+        if (args.resume_full or args.resume_ema) and args.resume and args.resume != "None":
             ema_path = os.path.join(args.resume, "ema_weights.pt")
             if os.path.exists(ema_path):
                 ema_model.load_state_dict(
@@ -710,9 +776,9 @@ def main():
         alias: torch.zeros(1, dtype=torch.long, device=accelerator.device)
         for alias in dataset_aliases
     }
-    telemetry_counts = torch.zeros(
-        len(dataset_aliases), dtype=torch.long, device=accelerator.device
-    )
+    # Counted on the host: the micro-batch metadata never leaves the CPU, and
+    # the counter only touches the device for the periodic cross-rank reduce.
+    telemetry_counts = torch.zeros(len(dataset_aliases), dtype=torch.long)
 
     # Fixed eval-loss probe (built identically on every rank; main process logs)
     eval_probe = None
@@ -732,28 +798,76 @@ def main():
 
     # Training Loop
     global_step = resumed_step
+
+    def evaluate_grid():
+        eval_model = ema_model if ema_model is not None else accelerator.unwrap_model(model)
+        # Evaluation must not perturb the training timestep/noise RNG stream.
+        devices = [accelerator.device] if accelerator.device.type == "cuda" else []
+        with torch.random.fork_rng(devices=devices):
+            run_prompt_grid_eval(
+                accelerator=accelerator, model=eval_model, vae_path=args.vae_path,
+                save_path=f"{args.output_dir}/{args.run_name}", current_step=global_step,
+                text_encoder=text_encoder, tokenizer=tokenizer,
+                pooling=(args.conditioning_scheme == "fused"),
+                exit_layer=args.text_encoder_exit_layer, prompts_path=args.prompts_file,
+                eval_dataset_path=args.eval_dataset_path, batch_size=args.eval_batch_size,
+                ode_steps=args.ode_steps,
+                weights="ema" if ema_model is not None else "live",
+            )
+
+    # Only explicit points run before training: this captures the incoming
+    # checkpoint at the new resolution without adding grids to every resume.
+    if global_step in args.grid_steps:
+        evaluate_grid()
+
+    # Baseline probe read before the first optimizer step. For a resumed run
+    # this measures the incoming checkpoint on this run's probe; for a fresh
+    # run it records the random-init loss.
+    if eval_probe is not None:
+        eval_model = (
+            ema_model if ema_model is not None else accelerator.unwrap_model(model)
+        )
+        probe_metrics = eval_probe.evaluate(eval_model)
+        if accelerator.is_main_process:
+            accelerator.print(
+                f"[eval-loss@{global_step}] "
+                + " ".join(
+                    f"{key}={value:.5f}" for key, value in probe_metrics.items()
+                )
+            )
+            accelerator.log(probe_metrics, step=global_step)
+
     progress_bar = tqdm(
         total=args.max_steps,
         initial=resumed_step,
         disable=not accelerator.is_local_main_process,
     )
 
-    stage = args.curriculum_start
+    # Full resume may intentionally have no sampler sidecar when changing
+    # resolution. Set whole-run progress before iter(dataloader) can prefetch
+    # any captions, and before initializing policy telemetry. For same-stage
+    # resume, set_stage leaves restored queues, replay batches and RNG intact.
+    set_caption_curriculum(
+        sampler,
+        global_step=global_step,
+        max_steps=args.max_steps,
+        curriculum_start=args.curriculum_start,
+        curriculum_end=args.curriculum_end,
+    )
 
     def current_policy_state() -> PolicyState:
         # The telemetry records the policy that produced the captions rather
         # than one recomputed later: the sampler's own stage is what the
         # within-row selector used, and for the length-preference selector the
-        # strength is beta at that position.
+        # length_preference_beta is beta at that position.
         return PolicyState(
-            progress=global_step / args.max_steps,
+            progress=global_step / max(1, args.max_steps),
             curriculum_position=sampler.stage,
-            strength=(
+            length_preference_beta=(
                 caption_policy.beta(sampler.stage)
                 if caption_policy.kind == "beta"
                 else sampler.stage
             ),
-            short_reserve=caption_policy.short_reserve,
         )
 
     policy_state = current_policy_state()
@@ -806,6 +920,23 @@ def main():
     # stream was tried and rejected on measurement.)
     latents_device_for_dropout = accelerator.device
 
+    # Micro-batch fields that are only ever read on the host: telemetry ids,
+    # caption lengths, the bucket upper bound, the batch id used for the
+    # replay acknowledgement. Moving them to the device with the rest of the
+    # batch and reading them back (``.tolist()``/``int()``) enqueues a
+    # device-to-host copy behind all queued compute, so the CPU stalls until
+    # the GPU drains and CPU and GPU work serialize every micro-batch
+    # instead of overlapping. They are popped before the device transfer and
+    # stay on the host.
+    host_batch_keys = (
+        "dataset_ids",
+        "retained_lengths",
+        "row_positions",
+        "bucket_hi",
+        "batch_id",
+        "resolution_bucket_ids",
+    )
+
     def select_captions(batch):
         captions_list = batch["captions"]
         # Length-bucketed batches carry one pre-selected caption per item, so
@@ -854,7 +985,7 @@ def main():
             t = torch.rand(latents.shape[0], device=latents.device)
         return latents, shift_timesteps(t, latents)
 
-    def encode_micro(batch, selected_captions):
+    def encode_micro(batch, selected_captions, bucket_hi):
         # The frozen encoder stops after text_encoder_exit_layer: stopping the
         # forward at that layer was verified feature-identical to slicing a
         # full forward's hidden states, and it skips the remaining layers.
@@ -867,7 +998,7 @@ def main():
             exit_mode=args.text_encoder_exit_mode,
             fast_slice=args.fast_text_slice,
         )
-        txt, txt_mask = pad_text_to_hi(txt, txt_mask, batch["bucket_hi"])
+        txt, txt_mask = pad_text_to_hi(txt, txt_mask, bucket_hi)
         return txt, txt_mask, txt_pooled
 
     # Per-optimizer-step breakdown (--step_breakdown): record CUDA-event
@@ -909,6 +1040,47 @@ def main():
         "syncopt_ms": 0.0, "n_sync": 0, "post_ms": 0.0, "n_post": 0,
     } if args.cpu_wall_profile else None
 
+    def save_checkpoint(step: int) -> None:
+        save_path = os.path.join(
+            args.output_dir,
+            f"{args.run_name}/checkpoint_step_{step:06d}",
+        )
+        os.makedirs(save_path, exist_ok=True)
+        accelerator.save_state(save_path)
+        accelerator.wait_for_everyone()
+        # Scheduler state (schedulers are deliberately not prepared, so
+        # save_state does not cover them; see the prepare call site).
+        if accelerator.is_main_process:
+            for i, sch in enumerate(schedulers):
+                torch.save(
+                    sch.state_dict(),
+                    os.path.join(
+                        save_path, "scheduler.bin" if i == 0 else f"scheduler_{i}.bin"
+                    ),
+                )
+        sampler_path = os.path.join(save_path, sampler_state_name)
+        sampler_tmp = sampler_path + ".tmp"
+        torch.save(sampler.state_dict(), sampler_tmp)
+        os.replace(sampler_tmp, sampler_path)
+        accelerator.wait_for_everyone()
+        if accelerator.is_main_process:
+            if ema_model is not None:
+                torch.save(
+                    ema_model.state_dict(),
+                    os.path.join(save_path, "ema_weights.pt"),
+                )
+            # Persist runtime state for crash-resume (step + swanlab run id)
+            runtime = {"global_step": step}
+            try:
+                import swanlab
+
+                runtime["swanlab_run_id"] = getattr(swanlab.get_run(), "id", None)
+            except Exception:
+                pass
+            os.makedirs(run_dir, exist_ok=True)
+            with open(runtime_path, "w") as f:
+                json.dump(runtime, f)
+
     while global_step < args.max_steps:
         if cpu_acc is not None:
             _t_next0 = time.monotonic()
@@ -935,6 +1107,9 @@ def main():
         else:
             accumulation_context = contextlib.nullcontext()
         with accumulation_context:
+            host_meta = {
+                key: batch.pop(key) for key in host_batch_keys if key in batch
+            }
             batch = {
                 key: value.to(accelerator.device, non_blocking=True)
                 if torch.is_tensor(value) else value
@@ -942,13 +1117,13 @@ def main():
             }
 
             # Track per-dataset samples (multi-dataset mode)
-            if "dataset_ids" in batch:
+            if "dataset_ids" in host_meta:
                 if args.fast_telemetry:
                     telemetry_counts += torch.bincount(
-                        batch["dataset_ids"], minlength=len(dataset_aliases)
+                        host_meta["dataset_ids"], minlength=len(dataset_aliases)
                     )
                 else:
-                    for ds_id in batch["dataset_ids"].tolist():
+                    for ds_id in host_meta["dataset_ids"].tolist():
                         alias = dataset_aliases[ds_id]
                         telemetry_tensors[alias] += 1
 
@@ -967,16 +1142,17 @@ def main():
             # a curve evaluation is a host-side computation and the total the
             # optimizer step normalizes by is a sum of them, so neither needs a
             # device round-trip.
-            retained_lengths = batch["retained_lengths"].tolist()
+            retained_lengths = host_meta["retained_lengths"].tolist()
             micro_weights = caption_loss_weights.for_micro_batch(
                 retained_lengths, dropped_mask, accelerator.device)
             caption_telemetry.record(
                 retained_lengths, dropped_mask,
-                int(batch["bucket_hi"]),
-                row_positions=batch["row_positions"],
+                int(host_meta["bucket_hi"]),
+                row_positions=host_meta["row_positions"],
                 policy=policy_state,
                 loss_weights=micro_weights.values)
-            txt, txt_mask, txt_pooled = encode_micro(batch, selected_captions)
+            txt, txt_mask, txt_pooled = encode_micro(
+                batch, selected_captions, int(host_meta["bucket_hi"]))
             if args.step_breakdown:
                 bd_mark("text")
             if args.cpu_wall_profile:
@@ -998,8 +1174,8 @@ def main():
             if log_shapes:
                 accelerator.print(
                     f"[shape] step={global_step} micro={micro_count} "
-                    f"res={int(batch['resolution_bucket_ids'][0])} "
-                    f"txt_hi={int(batch['bucket_hi'])} "
+                    f"res={int(host_meta['resolution_bucket_ids'][0])} "
+                    f"txt_hi={int(host_meta['bucket_hi'])} "
                     f"txt_len={txt.shape[1]} "
                     f"B={int(latents.shape[0])} "
                     f"latent={z_t.shape[-2]}x{z_t.shape[-1]} "
@@ -1052,7 +1228,7 @@ def main():
             # Keep an in-flight batch replayable until backward succeeds. If
             # the process dies before this acknowledgement, the next run
             # replays the batch instead of silently losing it.
-            sampler.ack_batch(batch["batch_id"])
+            sampler.ack_batch(host_meta["batch_id"])
             micro_count += 1
             if cpu_acc is not None:
                 cpu_acc["bwd_ms"] += (time.monotonic() - _t_bwd0) * 1e3
@@ -1098,9 +1274,25 @@ def main():
                     model.parameters(), args.max_grad_norm
                 )
 
+                health_snapshot = None
+                if (
+                    args.health_interval
+                    and (global_step + 1) % args.health_interval == 0
+                ):
+                    health_snapshot = snapshot_weights(optimizers)
+
                 for opt in optimizers:
                     opt.step()
                     opt.zero_grad()
+
+                health_metrics = None
+                if health_snapshot is not None:
+                    ratios = update_weight_ratios(health_snapshot)
+                    health_metrics = {
+                        "health/update_weight_ratio_muon": ratios[0],
+                    }
+                    if len(ratios) > 1:
+                        health_metrics["health/update_weight_ratio_aux"] = ratios[-1]
                 if args.step_breakdown:
                     bd_mark("opt")
                 if args.cpu_wall_profile:
@@ -1120,12 +1312,14 @@ def main():
             step_samples = step_global_samples
             step_loss = step_global_loss
             step_losses.reset()
-            progress = global_step / args.max_steps
-            stage = args.curriculum_start + (
-                args.curriculum_end - args.curriculum_start
-            ) * progress
             if global_step % args.stage_sync_interval == 0:
-                sampler.set_stage(stage)
+                set_caption_curriculum(
+                    sampler,
+                    global_step=global_step,
+                    max_steps=args.max_steps,
+                    curriculum_start=args.curriculum_start,
+                    curriculum_end=args.curriculum_end,
+                )
             policy_state = current_policy_state()
 
             if ema_model is not None and global_step % args.ema_update_interval == 0:
@@ -1136,6 +1330,16 @@ def main():
                 )
                 if args.step_breakdown:
                     bd_mark("ema")
+
+            if health_metrics is not None:
+                gains = qk_gain_stats(model_raw)
+                if gains is not None:
+                    health_metrics["health/attn_qk_gain_max"] = gains[0]
+                    health_metrics["health/attn_qk_gain_mean"] = gains[1]
+                if ema_model is not None:
+                    health_metrics["health/ema_rel_distance"] = ema_rel_distance(
+                        ema_model, model_raw
+                    )
 
             progress_bar.update(1)
 
@@ -1175,7 +1379,7 @@ def main():
 
                 if args.fast_telemetry:
                     synced = accelerator.reduce(
-                        telemetry_counts, reduction="sum"
+                        telemetry_counts.to(accelerator.device), reduction="sum"
                     ).tolist()
                     for alias, count in zip(dataset_aliases, synced):
                         synchronized_counts[alias] = count
@@ -1194,6 +1398,14 @@ def main():
                     # Reset telemetry counters on every rank for the next interval
                     for alias in dataset_aliases:
                         telemetry_tensors[alias].zero_()
+
+            # Caption telemetry: every rank joins the window reduction and
+            # closes its own window; only the main process logs below.
+            caption_window = None
+            if global_step % args.telemetry_log_interval == 0:
+                caption_telemetry.reduce(accelerator.device,
+                                         world_size=accelerator.num_processes)
+                caption_window = caption_telemetry.snapshot(reset=True)
 
             # CUDA cache clearing (independent of telemetry)
             if global_step % args.cache_clear_interval == 0:
@@ -1235,10 +1447,8 @@ def main():
                     )
                     log_dict["train/mem_peak_gb"] = step_peak_gb
                     torch.cuda.reset_peak_memory_stats()
-                if global_step % args.telemetry_log_interval == 0:
-                    caption_telemetry.reduce(accelerator.device,
-                                             world_size=accelerator.num_processes)
-                    log_dict.update(caption_telemetry.snapshot(reset=True))
+                if caption_window:
+                    log_dict.update(caption_window)
 
                 if bd_cur is not None:
                     for seg, ms in bd_cur.items():
@@ -1249,6 +1459,9 @@ def main():
                     if total_samples > 0:
                         for alias, count in synchronized_counts.items():
                             log_dict[f"data/{alias}_ratio"] = count / total_samples
+
+                if health_metrics is not None:
+                    log_dict.update(health_metrics)
 
                 accelerator.log(log_dict, step=global_step)
 
@@ -1268,35 +1481,7 @@ def main():
 
             # Checkpointing
             if global_step % args.checkpoint_interval == 0:
-                save_path = os.path.join(
-                    args.output_dir,
-                    f"{args.run_name}/checkpoint_step_{global_step:06d}",
-                )
-                os.makedirs(save_path, exist_ok=True)
-                accelerator.save_state(save_path)
-                accelerator.wait_for_everyone()
-                sampler_path = os.path.join(save_path, sampler_state_name)
-                sampler_tmp = sampler_path + ".tmp"
-                torch.save(sampler.state_dict(), sampler_tmp)
-                os.replace(sampler_tmp, sampler_path)
-                accelerator.wait_for_everyone()
-                if accelerator.is_main_process:
-                    if ema_model is not None:
-                        torch.save(
-                            ema_model.state_dict(),
-                            os.path.join(save_path, "ema_weights.pt"),
-                        )
-                    # Persist runtime state for crash-resume (step + swanlab run id)
-                    runtime = {"global_step": global_step}
-                    try:
-                        import swanlab
-
-                        runtime["swanlab_run_id"] = getattr(swanlab.get_run(), "id", None)
-                    except Exception:
-                        pass
-                    os.makedirs(run_dir, exist_ok=True)
-                    with open(runtime_path, "w") as f:
-                        json.dump(runtime, f)
+                save_checkpoint(global_step)
 
             # Fixed eval-loss probe (primary cross-run comparison metric)
             if eval_probe is not None and global_step % args.eval_loss_interval == 0:
@@ -1317,32 +1502,20 @@ def main():
                     accelerator.log(probe_metrics, step=global_step)
 
             # Fixed-prompt sample grids
-            if global_step % args.eval_interval == 0:
-                eval_model = (
-                    ema_model
-                    if ema_model is not None
-                    else accelerator.unwrap_model(model)
-                )
-                run_prompt_grid_eval(
-                    accelerator=accelerator,
-                    model=eval_model,
-                    vae_path=args.vae_path,
-                    save_path=f"{args.output_dir}/{args.run_name}",
-                    current_step=global_step,
-                    text_encoder=text_encoder,
-                    tokenizer=tokenizer,
-                    pooling=(args.conditioning_scheme == "fused"),
-                    exit_layer=args.text_encoder_exit_layer,
-                    prompts_path=args.prompts_file,
-                    eval_dataset_path=args.eval_dataset_path,
-                    batch_size=args.eval_batch_size,
-                )
-                model.train()
+            if grid_due(global_step, args.eval_interval, args.grid_steps):
+                evaluate_grid()
 
             # Exclude only evaluation/checkpoint work from the next interval.
             if torch.cuda.is_available():
                 torch.cuda.synchronize(accelerator.device)
             last_step_time = time.monotonic()
+
+    # Save the run's endpoint even when max_steps falls between interval
+    # slots, so a finished run is always resumable and usable as an eval or
+    # transfer source.  Saved before the end-of-run KID so a crash there can
+    # not take the final weights with it.
+    if global_step % args.checkpoint_interval != 0:
+        save_checkpoint(global_step)
 
     # End-of-training KID (fixed fakes vs full held-out real)
     if args.kid_eval_at_end:

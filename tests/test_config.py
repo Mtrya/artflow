@@ -82,6 +82,21 @@ def test_missing_file_is_reported(tmp_path):
         load_config([str(tmp_path / "nope.toml")])
 
 
+@pytest.mark.parametrize("setting", ["ode_steps = 0", "ode_steps = true", "grid_steps = [-1]",
+                                   "grid_steps = [true]", "grid_steps = 42"])
+def test_invalid_grid_config(tmp_path, setting):
+    path = _write(tmp_path / "grid.toml", "[eval]\n" + setting + "\n")
+    with pytest.raises(ValueError):
+        load_config([path])
+
+
+def test_grid_config_flattened(tmp_path):
+    path = _write(tmp_path / "grid.toml", "[eval]\node_steps = 32\ngrid_steps = [300000, 302000, 380000]\n")
+    flat = flatten(load_config([BASE, path]))
+    assert flat["ode_steps"] == 32
+    assert flat["grid_steps"] == [300000, 302000, 380000]
+
+
 def test_caption_loss_weights_are_validated_at_load(tmp_path):
     """The shipped recipe weights nothing, and an unusable curve fails like
     any other bad config value instead of being repaired on the way in."""

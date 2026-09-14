@@ -823,7 +823,6 @@ def screen_config_text(*, mix: str, plan: Mapping[int, Sequence[Bucket]],
         "[eval]\n"
         "loss_interval = 0\n"
         "kid_at_end = false\n"
-        "compute_metrics = false\n"
     )
 
 
@@ -1031,8 +1030,11 @@ def candidate_stats(records: Sequence[RunRecord],
         statuses = [record.status for record in runs]
         stats = CandidateStats(
             batch_size=int(candidate), runs=len(runs), ok_runs=len(usable),
-            status=("ok" if usable and all(s == "ok" for s in statuses)
-                    else (statuses[0] if statuses else "not run")),
+            # "ok" only when every repeat succeeded; a candidate with a mix of
+            # successes and failures is "partial", never silently "ok".
+            status=("ok" if runs and all(s == "ok" for s in statuses)
+                    else ("partial" if usable
+                          else (statuses[0] if statuses else "not run"))),
         )
         if usable:
             times = [float(record.ms_per_sample) for record in usable]
@@ -1097,9 +1099,20 @@ def choose_batch_size(stats: Sequence[CandidateStats]
     the edge of the candidate list is reported as such, because the true
     optimum may lie outside the range that was screened.
     """
+    # A candidate is feasible only when every repeat succeeded: one clean
+    # timing does not clear a repeat that OOMed, so a partially-failed
+    # candidate is never selected automatically.  It needs an explicit
+    # re-screen, not a lucky first run.
     feasible = [item for item in stats
-                if item.ok_runs > 0 and item.ms_per_sample is not None]
+                if item.runs > 0 and item.ok_runs == item.runs
+                and item.ms_per_sample is not None]
     if not feasible:
+        partial = [item for item in stats if item.ok_runs > 0]
+        if partial:
+            sizes = ", ".join(str(item.batch_size) for item in partial)
+            return None, (f"no candidate had every repeat succeed; the "
+                          f"partially-failed candidates ({sizes}) need a "
+                          f"re-screen before they can be selected"), None, None, False
         return None, "no candidate completed a run", None, None, False
     best = min(feasible, key=lambda item: (item.ms_per_sample, item.batch_size))
     noise = max(item.spread_ms or 0.0 for item in feasible)
