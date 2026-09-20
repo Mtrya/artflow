@@ -47,6 +47,9 @@ swanlog
 /precomputed_dataset/
 /output/
 /literature/
+# Cloned reference implementations (DMD2, DMDR, DiffusionNFT, ...), read-only
+# study material; licenses differ from this repository, so never vendored.
+/refs/
 /scored_images/
 /bucket_plans/*
 !/bucket_plans/hero/
