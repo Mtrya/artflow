@@ -1,11 +1,15 @@
 # Stage 4 — Complete pre-NFT hero recipe and infrastructure validation
 
-Status: updated 2026-09-14. Model size, training budget, optimizer, caption policy,
+Status: updated 2026-09-15. Model size, training budget, optimizer, caption policy,
 mixtures, and resolution split are fixed in [hero_recipe.md](hero_recipe.md).
 1024p is definitively dropped, closing the last non-infrastructure recipe choice.
-Remaining work is active infrastructure optimization and execution readiness:
-measure, improve and remeasure eight-GPU execution, memory, communication and
-input throughput, then finalize the feasible training length. There is
+The infrastructure candidate is frozen after completing the three remaining
+optimization comparisons. Remaining work is actual eight-GPU execution, memory,
+communication, input-throughput and recovery/evaluation validation, followed by
+feasible training-length/cost scenarios. Reopen optimization only for material
+validation failures or falsified assumptions. Per the
+September 15 closeout decision, the user selects final global T after the infra
+report; this pass must not freeze it. There is
 no numerical capability target, capability forecast gate, or serving-performance gate.
 
 This plan refines [the roadmap](redesign_plan.md). It does not launch experiments,
@@ -35,7 +39,7 @@ This is a conditional handoff, not a requirement to produce a positive verdict:
   to predict eventual anatomy accuracy does not itself require more proxy runs.
 - If the design is infeasible, present a redesign decision. For example, a
   measured cost that cannot fit the selected execution plan inside the
-  **2,200-hour** hero ceiling requires revising total steps within the recipe or
+  **800 H100/H200 GPU-hour** hero ceiling requires revising total steps within the recipe or
   an explicit redesign decision. It does not authorize extra spending.
 
 Redesign is an exception prompted by evidence, not unfinished planning.
@@ -153,7 +157,8 @@ Use explicit quantities:
 - `S`: actual image–caption draws consumed, including repeats.
 - `T_img`: consumed image tokens, summed over actual shapes/resolutions.
 - `w(r, t)`: data-mixture weights at resolution `r` and training progress `t`.
-- `H`: RTX 4090 GPU-hours, with training-only and allocated-time totals separated.
+- `H`: GPU-hours on the selected H100/H200 hero device, with training-only and
+  allocated-time totals separated; older RTX 4090 experiments retain their own units.
 
 A candidate loss model such as
 
@@ -232,13 +237,17 @@ be executable rather than prose such as “favor high quality later.”
 ## 7. Experimental program and budget
 
 **Stage-4 experiment/profiling cap: 450 RTX 4090 GPU-hours**, separate from
-Stage 3.5's 75-hour cap and the hero working range of **1,600–2,200 hours**.
+Stage 3.5's 75-hour cap and the hero ceiling of **800 H100/H200 GPU-hours**
+(hardware/budget amendment approved September 17).
 Do not borrow between these budgets or use older off-peak flexibility as standing
 authorization to exceed the current range.
 
-Set the infra-pass allowance from the **unspent** portion of the 450-hour cap;
-the remaining amount requires the actual job ledger, not subtraction of estimated
-package runtimes. Do not refill descoped experiment packages with new sweeps.
+The 2026-09-14 ledger audit found the original cap exhausted. The user approved
+**120 additional RTX 4090 GPU-hours for the final infrastructure pass**
+(96 initially plus 24 approved September 16), separate
+from the hero budget; see [infra_pass.md](infra_pass.md). Track the actual new
+allocations against this amendment, not estimated package runtimes. Do not refill
+descoped experiment packages with new scientific sweeps.
 Charge generation/evaluation, compilation, checkpointing, allocated idle time,
 and failed jobs to the ledger. Keep CPU/API/storage and actual
 4060 Ti device-hours in a separate explicit ledger; they are not assumed free
@@ -259,8 +268,10 @@ needs its own approved allocation, with no omission from total project cost.
    caption mixtures, aspect ratios, exposure and startup/steady-state costs. The corrected
    [Stage-3 gate](stage3_gate.md) closed on one GPU; neither old multi-GPU timing
    nor DiT-only ceilings establish hero throughput.
-4. **Cost and hand off.** Derive final total steps, 75:20:5 stage endpoints, sample
-   budgets, and bounded overhead/recovery allowances. Verify cross-resolution
+4. **Cost and hand off.** Report measured steps/hour and GPU-hours/step, feasible
+   total-step scenarios, parameterized 75:20:5 stage endpoints, sample budgets,
+   and bounded overhead/recovery allowances. Leave production T for the user's
+   decision. Verify cross-resolution
    continuation and the monitoring workflow. No new architecture, corpus, mixture,
    or per-atom capability-forecast sweep is required.
 
@@ -291,11 +302,13 @@ select bottlenecks, implement bounded candidate fixes, verify semantics and
 memory safety, and compare end-to-end performance before and after. Record
 rejected candidates and negative results as well as retained improvements;
 no particular kernel, communication change or speedup is presumed to win.
-Before profiling, set a fixed GPU-hour allowance from the remaining profiling
-envelope or reserve **inside the 450-hour cap**, and record it in the ledger.
-Stop at that allowance or when plausible remaining hero-run savings no longer
-justify further profiling. It does not authorize additional spending or a new
-architecture/optimizer search.
+The final pass has an explicitly approved additional 96 GPU-hour allowance
+(2026-09-14), recorded in the ledger. Apply the exit rules in `GOAL.md`: six
+working hours, throughput supporting 400k steps in the hero budget, or practical
+hardware saturation; visible optimization levers override the first two.
+The 96-hour spending ceiling still applies. This does not authorize a new
+architecture/optimizer search. Use lower ranks when no full node is available
+for rank-independent work; watchdog/sleep for mandatory eight-rank validation.
 
 The user reports roughly 3.1× four-GPU speedup and about 60% “GPU Time Spent
 Accessing Memory” in SwanLab. Treat these as diagnostic leads, not established
@@ -320,9 +333,9 @@ The bounded pass must:
   effective batches. If a change materially alters effective batch, optimizer
   cadence, or caption curriculum, treat it as a recipe revision needing bounded
   validation, not as a transparent speed optimization.
-- Derive final global T from the **optimized all-in cost**, including
+- Estimate feasible global-T scenarios from the **optimized all-in cost**, including
   checkpoint/evaluation, startup and restart allowances, retaining the fixed
-  75:20:5 step split. Report resulting sample exposure: fixed step counts do not
+  75:20:5 step split; do not select production T during this pass. Report resulting sample exposure: fixed step counts do not
   preserve exposure when bucket batches change. Document changes to feasible
   steps or exposure rather than silently treating them as equivalent training.
 - Complete the execution-readiness checklist in the hero recipe: versioned
@@ -351,8 +364,9 @@ delay, not allocated GPU-hours. Record both and the assumptions about preemption
 Measure and optimize the selected eight-GPU topology; unvalidated scaling
 efficiency cannot be the reason the budget appears to fit.
 
-The selected stage split is 75:20:5 of total optimizer steps. Derive the total
-step count from measured end-to-end rates and overhead inside the 2,200-hour cap;
+The selected stage split is 75:20:5 of total optimizer steps. Derive the
+budget-supported step range from measured end-to-end rates and overhead inside
+the 800 H100/H200-hour cap, leaving production T for the user's selection after the pass;
 400k is a benchmark target, not a ceiling. Record realized sample exposure and
 bounded contingencies with the executable schedule in [hero_recipe.md](hero_recipe.md).
 Report how infra changes affect measured training cost and feasible steps/exposure;
@@ -402,7 +416,7 @@ allocation. Preparation and monitoring are normal execution, not Stage 4.5.
 - [ ] Infra/transition smoke observations and limitations are recorded with the
       fixed qualitative panel, without a capability pass/fail target.
 - [ ] Evaluation sampling settings are recorded and the sampling path passes correctness checks.
-- [ ] The complete selected pre-NFT schedule fits the agreed ≤2,200-hour hero budget,
+- [ ] The complete selected pre-NFT schedule fits the agreed ≤800 H100/H200 GPU-hour hero budget,
       with overhead, bounded contingencies, and separately approved preparation costs.
 - [ ] The bounded final infrastructure pass is complete; its measured rates,
       final bucket/accumulation settings, and explicit exposure/update-count

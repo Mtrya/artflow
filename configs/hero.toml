@@ -1,0 +1,44 @@
+# Fixed pre-NFT hero policy. Layer after base.toml and the generated stage
+# data/paths config. The launcher supplies only T, stage stop, accumulation
+# and resolution-specific image-monitoring steps.
+
+[model]
+hidden_size = 1152
+num_heads = 16
+double_stream_depth = 1
+single_stream_depth = 24
+
+[data]
+caption_policy = "beta"
+curriculum_start = 0.0
+curriculum_end = 1.0
+caption_beta_start = -1.0
+caption_beta_end = 1.0
+caption_schedule = "linear"
+caption_short_reserve = 0.20
+caption_short_threshold = 256
+
+[train]
+caption_loss_weight_curve = "log2"
+caption_loss_weight_reference = 128
+checkpoint_interval = 2000
+eval_interval = 2500
+use_ema = true
+ema_decay = 0.9999
+ema_update_interval = 1
+
+[optim]
+learning_rate = 3e-4
+muon_lr = 0.02
+lr_warmup_steps = 5000
+min_learning_rate = 1.5e-5
+
+[eval]
+prompts_file = "assets/eval/hero_monitor_v1.jsonl"
+ode_steps = 50
+loss_interval = 500
+kid_at_end = true
+
+[telemetry]
+# Keep allocator reuse across updates; evaluation's explicit cleanup is separate.
+cache_clear_interval = 0

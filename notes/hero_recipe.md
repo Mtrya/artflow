@@ -1,12 +1,13 @@
 # Hero run recipe
 
-Last updated: 2026-09-14. Current configuration for the pre-NFT hero run.
+Last updated: 2026-09-18. Current configuration for the pre-NFT hero run.
 1024p is definitively dropped: the complete pre-NFT path is 256p → 640p → 896p
 with a 75:20:5 optimizer-step split. All scientific recipe decisions are frozen.
-Launch is pending infrastructure optimization, end-to-end validation and the
-resulting costed training length. Stage stopping is implemented; its distributed
-smoke test remains. The incoming pass must actively optimize eight-GPU execution,
-memory, communication and input throughput, not merely measure the current stack.
+The hero run is **launched and fixed on 4× RTX 4090** (user, 2026-09-18):
+T = 480,000 optimizer steps at priority 1 (preemptible, auto-restart), no
+GPU-hour budget; the H100/H200 variant and its 800-hour budget frame are
+dropped. Stage launches chain with `jobs/hero_stage_4090.sh <stage> 480000 4`
+(endpoints 360,000 / 456,000 / 480,000).
 There is no numerical capability
 target or inference hardware/latency gate. Image panels monitor regressions and
 document the trained model's strengths and limitations.
@@ -15,13 +16,13 @@ document the trained model's strengths and limitations.
 
 | item | value |
 |---|---|
-| Model | 1152 hidden / 16 heads, 1 double-stream + 24 single-stream blocks; 532,706,812 parameters; `configs/ladder-ld533.toml` |
-| Hardware | 8× RTX 4090, 48 GB per card |
-| Budget | Target the full ~2,200 RTX 4090 GPU-hours, including training overhead |
+| Model | 1152 hidden / 16 heads, 1 double-stream + 24 single-stream blocks; 532,706,812 parameters; `configs/hero.toml` layered after `configs/base.toml` |
+| Hardware | **Fixed: 4× RTX 4090** (user decision 2026-09-18, after the 4-rank job scheduled and passed validation). H100/H200 variant dropped along with its 800-GPU-hour budget frame; 896p accumulation-2 H200 plan preserved on GPFS if ever revisited |
+| Budget | No GPU-hour budget on the 4090 path — fixed **480,000 optimizer steps** at priority 1 (preemptible idle-fill) until done |
 | Resolution stages | 256p → 640p → 896p; 1024p definitively dropped, not a pending optional stage |
 | Stage step split | 75 : 20 : 5 of the finalized total optimizer steps |
 | Mean effective-batch targets | ≥640 / ≥512 / ≥400 samples per update at 256p / 640p / 896p |
-| Gradient accumulation | 1 / 5 / 7 micro-batches per rank |
+| Gradient accumulation | 4×4090 final: **256p = 3 with the v93 four-rank plan** (`fallback4r-proposal-v93/256p-acc3`, the 8-rank 256p plan OOMs 48-GB cards at four ranks), **640p = 10, 896p = 14** on the standard `batch-targets-0914` plans — all preserving the frozen mean effective-batch targets |
 | Optimizer | Chunked Muon for eligible 2-D hidden weights; auxiliary AdamW for embeddings, conditioning/output layers, norms, biases and other parameters |
 | Peak LR | Muon 0.02; auxiliary AdamW 3e-4 |
 | LR schedule | 5,000-step warmup, then cosine to 5% of peak over the whole run; `min_learning_rate=1.5e-5` for auxiliary AdamW, proportional Muon floor 0.001 |
@@ -33,6 +34,17 @@ document the trained model's strengths and limitations.
 | DDP | Accumulation-boundary gradient synchronization; no per-micro allreduce |
 | Activation checkpointing | Disabled; validate full-stream memory with the selected plans |
 | Data | Fixed eligible pools and per-stage mixtures below |
+
+The existing 4090 execution candidate in `jobs/hero_stage.sh` uses dynamic block
+compilation with matmul autotuning at every resolution, disables DDP compiler
+splitting, hoists double-stream RoPE, uses native varlen flash attention and real
+RoPE, and compiles the square Newton–Schulz portion of Muon. Health snapshots
+stay on GPU and periodic allocator cleanup is disabled in `configs/hero.toml`.
+Compiler workers are capped at two per rank; optional CPU-wall/breakdown and
+per-micro shape logging are off. FP32 parameter/gradient/EMA and communication
+policies are unchanged. These settings are selected from lower-rank comparisons;
+their H100/H200 acceptance and all-in costs are still pending. Do not use this
+launcher as a finalized H100/H200 recipe until that work is complete.
 
 ### Dataset mix (user spec 2026-09-14)
 
@@ -127,8 +139,14 @@ Generation entry points:
 - `scripts/bench/gen_hero_bucket_plans.py`: shared stage targets, accumulation,
   policy intervals, mixtures, and memory budgets.
 - `scripts/bench/gen_hero_configs.py`: generates configs pointing to this same
-  plan directory; `HERO_PLAN_OUTDIR` can override it for an explicit new revision.
-- `jobs/hero_stage.sh`: accumulation 1/5/7 and the selected optimizer settings.
+  plan directory for an explicit candidate revision; it recalculates shard
+  weights from row counts and is not the frozen launch path.
+- `configs/hero/{256p,640p,896p}.toml.in` preserves the exact measured shard
+  weights and artifact paths. `scripts/bench/render_hero_stage.py` substitutes
+  only an explicit absolute artifact root, without reading or reweighting data.
+- `jobs/hero_stage.sh`: renders those versioned inputs into a private temporary
+  config, then applies the fixed policy and accumulation 1/5/7. It no longer
+  depends on mutable external `$W/configs/hero-*.toml` files.
 
 Plans were generated on Inspire's existing CPU preparation notebook; no GPU
 job was launched. Full commands, calibration fits and warnings are in the
@@ -140,7 +158,10 @@ Calibration: `$W/bucket_plans/calib-533m/merged.json`.
 
 Let `T` be the finalized total optimizer-step count. **400k is the
 infrastructure benchmark target, not the final length or a ceiling.**
-If validated throughput permits 420k within the budget, use 420k.
+If validated throughput permits 420k within the budget, report it as an option.
+The infra pass supplies a measured cost curve and uncertainty; the user selects
+the final production `T` afterward. Do not freeze the hero step count during
+infra closeout.
 
 Each stage is a separate launch with a shared schedule horizon `T`.
 Cumulative stopping/checkpoint boundaries are `floor(0.75*T)`,
@@ -177,6 +198,30 @@ a missing scheduler or enabled EMA. File-size checks do not replace actual
 deserialization or the distributed smoke test still required by the infra pass.
 Finalize T before starting the hero; do not change it between stages.
 
+Retention is **keep all hero checkpoints** through training and post-run
+verification; the trainer does not automatically prune them. Preserve all
+three resolution endpoints and the last successfully loaded recovery point.
+At a 2,000-step cadence, 400k steps produces about 200 checkpoints; the measured
+single-rank checkpoint size of about 6.46 GB implies roughly 1.29 TB before rank
+sidecars, incomplete writes and other run artifacts. The infra pass must replace
+this estimate with eight-rank size measurements, count exact endpoints at final
+T, and verify writable capacity with headroom. Shared-pool free space is not a
+reserved project allowance. Incomplete checkpoints remain for inspection and
+must not silently become resume inputs; cleanup requires explicit target review.
+
+`jobs/hero_stage.sh` holds a non-blocking writer lock in the stage run directory
+before selecting a checkpoint, preventing concurrent writers from duplicate
+submissions. A leftover `.writer.lock` file is normal after exit; never delete it
+to bypass a live holder. If the newest checkpoint is incomplete or inconsistent,
+the launcher stops. Rollback is pre-authorized by the user (2026-09-19): after
+confirming all writers are terminal, preserve the failed directory under a
+`quarantine/` subdirectory (outside the launcher's top-level checkpoint glob),
+explicitly validate the preceding checkpoint, relaunch from it without waiting
+for approval, and report the rollback to the user afterwards. Do not change
+the shared global T or advance the step to conceal lost work. Replayed updates,
+startup and repeated evaluation must fit the recovery allowance. Target shared-
+filesystem lock contention/release remains a final launch check.
+
 For measured wall-seconds per optimizer step `t256, t640, t896` on eight ranks:
 
 ```text
@@ -185,16 +230,30 @@ training_GPU_hours = T * weighted_step_seconds * 8 / 3600
 ```
 
 Add compilation/startup, evaluation, checkpointing, allocated idle time and
-restart allowances not already included in those rates. Derive `T` from the
-remaining training budget, account for integer stage boundaries, and check
-the complete rounded schedule against 2,200 GPU-hours. Record sample budgets
+restart allowances not already included in those rates. Estimate feasible `T`
+ranges from the remaining training budget, account for integer stage boundaries, and check
+the complete rounded schedule against 800 H100/H200 GPU-hours. Record sample budgets
 from actual emitted batches rather than assuming identical samples per step.
 
-The 400k benchmark permits 19.8 GPU-seconds per step **including overhead**,
-equivalent to 2.475 wall-seconds on eight ranks. If that target is missed,
+The 400k benchmark permits 7.2 GPU-seconds per step **including overhead**,
+equivalent to 0.900 wall-seconds on eight ranks. If that target is missed,
 provide measured FLOP/MFU and bottleneck evidence for the infrastructure
-decision. Current-plan end-to-end times and final `T` remain unmeasured;
-there is no accepted wall-clock estimate yet.
+decision. Final-path eight-rank end-to-end times remain unmeasured;
+there is no accepted wall-clock estimate yet. Production `T` remains unselected.
+
+Use `python -m scripts.bench.cost_hero_run <measurements.json> --budget-gpu-hours 800` to cost the
+final measured eight-rank path and estimate the largest integer `T` within the
+budget under each stated cost scenario, without selecting production `T`.
+The input schema is documented in that module: supply representative,
+conservative per-stage update times, startup/compilation excess, whole-allocation
+checkpoint/grid/loss-probe durations, final KID, allocated idle and bounded
+recovery costs. These must be non-overlapping accounting categories. At 400k,
+the frozen schedule has 200 checkpoints, 44 image-panel evaluations and 803
+loss evaluations (800 periodic plus three stage-entry baselines), before any
+recovery repeats. The calculator accounts for overlaps and exact integer
+boundaries; its output is conditional accounting, not measured throughput or a
+Stage 5 readiness certificate. No measured input file or final `T` is established
+yet.
 
 ## Remaining infrastructure work and launch checks
 
@@ -210,18 +269,19 @@ mixture, optimizer, curriculum, or capability-forecast experiment is required.
    long-caption tails, memory peaks, and compilation/startup cost. Re-screen
    bucket sizes/bounds and accumulation where justified, preserving the fixed
    training policies and documenting any change in actual samples per update.
-2. Finalize total steps and per-stage endpoints from the optimized rates, with
-   overhead and bounded restart allowances inside the hero budget.
+2. Deliver the measured cost curve and budget-supported step range, including
+   overhead and bounded restart allowances. Leave production T to the user;
+   its cumulative stage endpoints are `floor(0.75*T)`, `floor(0.95*T)`, and `T`.
 3. Run the distributed smoke test of stage stopping, endpoint checkpoints, and cross-stage
    continuation with continuous LR/caption progress.
-4. Bring the external `ladder-common.toml` and `ladder-ld533.toml` settings into
-   versioned, reproducible hero configuration; verify fully resolved configs
+4. The selected model/caption policy is now versioned in `configs/hero.toml`;
+   the launcher no longer depends on external ladder configs. Verify fully resolved configs
    against the fixed recipe and selected plan paths. Pin code/dependencies,
    data/metadata, encoder/VAE and configuration/artifact revisions. Do not change
    inputs of running jobs; deploy the selected revision for new validations.
-5. Implement and test coordinated nonfinite-loss/gradient failure handling before
-   optimizer updates; the stop policy below is agreed but this guard is not yet
-   implemented. Verify the monitoring/review and resume workflows, checkpoint
+5. The coordinated nonfinite-loss/gradient guard is implemented before optimizer
+   updates and tested with two CPU ranks; validate it on the final eight-GPU stack.
+   Verify the monitoring/review and resume workflows, checkpoint
    retention, storage capacity and bounded recovery allowances before launch.
 
 Operational checks: use the frozen 48-image bilingual short/long-prompt panel
@@ -239,11 +299,34 @@ panels show worsening artifacts or loss of previously demonstrated abilities.
 Compare loss trends within a resolution, not raw losses across resolutions.
 Preserve the last verified checkpoint; do not automatically extend training,
 change the recipe, or roll back and restart without review. Charge these checks
-and any approved recovery to the 2,200 GPU-hour ceiling. These are regression and
+and any approved recovery to the 800 H100/H200 GPU-hour ceiling. These are regression and
 execution-safety checks, not capability qualification gates.
 
-The final infrastructure pass remains bounded within Stage 4's remaining
-450 GPU-hour experiment/profiling cap. No further broad sweep is required.
+The original Stage-4 450 GPU-hour cap is exhausted according to the job ledger.
+The user approved **120 additional RTX 4090 GPU-hours** for this final pass
+(96 on September 14 plus 24 on September 16), separate from the hero budget.
+The user separately approved **16 H100/H200 GPU-hours for the migration pilot**
+on September 17. Do not count H100/H200 hours as RTX 4090 hours or spend the
+800-hour hero budget on validation.
+See [infra_pass.md](infra_pass.md).
+No further broad scientific sweep is required.
+
+## Final-model evaluation policy (decided 2026-09-19)
+
+Mid-training probe and grids intentionally stay on the EMA copy with
+ema_decay=0.9999. Under the constant muon learning rate the EMA runs a
+steady-state tracking lag of roughly the model's state from 7-10k steps
+earlier, so mid-run EMA readings describe the live model, not its own quality;
+they are trend references only (measured live-probe check at step 10k confirms
+the training itself is healthy). No training change is made for this.
+
+After the full run completes, evaluate final quality on **live weights
+first**, then decide whether to reconstruct an EMA **post-hoc** (EDM2-style,
+arXiv 2312.02696): the per-2000-step checkpoints allow reconstructing any
+decay profile offline and comparing live vs post-hoc-EMA head to head on
+probe loss, grids and KID before selecting the released weights. The cosine
+tail is expected to close most of the EMA gap on its own, making the stored
+run-EMA a strong candidate as well.
 
 ## Candidate optimizations for the infra pass
 

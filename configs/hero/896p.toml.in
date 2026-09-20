@@ -1,0 +1,12 @@
+# Frozen hero inputs; render with scripts.bench.render_hero_stage.
+# Layer after base.toml and before hero.toml and global-T launch overrides.
+[data]
+mix = "${ARTFLOW_ROOT}/precomputed_dataset/d1@896p:17.360000 ${ARTFLOW_ROOT}/precomputed_dataset/d2-wikiart@896p:11.450000 ${ARTFLOW_ROOT}/precomputed_dataset/d2-museum@896p:0.520000 ${ARTFLOW_ROOT}/precomputed_dataset/d3-human@896p:15.750000 ${ARTFLOW_ROOT}/precomputed_dataset/d3-people@896p:15.140000 ${ARTFLOW_ROOT}/precomputed_dataset/d3-pexels@896p:10.740000 ${ARTFLOW_ROOT}/precomputed_dataset/d4-megalith@896p:0.130000 ${ARTFLOW_ROOT}/precomputed_dataset/d4-pd12m@896p:11.170000 ${ARTFLOW_ROOT}/precomputed_dataset/d4-vintage@896p:1.570000 ${ARTFLOW_ROOT}/precomputed_dataset/d4-relaion-p0@896p:3.239290 ${ARTFLOW_ROOT}/precomputed_dataset/d4-relaion-p1@896p:3.226566 ${ARTFLOW_ROOT}/precomputed_dataset/d4-relaion-p2@896p:3.225705 ${ARTFLOW_ROOT}/precomputed_dataset/d4-relaion-p3@896p:3.239195 ${ARTFLOW_ROOT}/precomputed_dataset/d4-relaion-p4@896p:3.229245"
+bucket_plan = "${ARTFLOW_ROOT}/bucket_plans/hero/batch-targets-0914/hero-896p-k20.json"
+[text_encoder]
+path = "${ARTFLOW_ROOT}/models/Qwen3-0.6B"
+[eval]
+dataset_path = "${ARTFLOW_ROOT}/precomputed_dataset/light-eval@896p"
+[paths]
+vae = "${ARTFLOW_ROOT}/models/e2e-qwenimage-vae"
+output_dir = "${ARTFLOW_ROOT}/runs"

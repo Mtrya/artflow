@@ -43,14 +43,32 @@ export ARTFLOW_ROOT=$W
 export PYTHONUNBUFFERED=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TORCHINDUCTOR_CACHE_DIR=$W/torchinductor-cache
-# Per-micro shape log: lets a late OOM be attributed to the exact bucket.
-export ARTFLOW_LOG_SHAPES=1
+export TORCHINDUCTOR_COMPILE_THREADS=2
+export TORCHINDUCTOR_MAX_AUTOTUNE_GEMM_BACKENDS=ATEN,TRITON
+export OMP_NUM_THREADS=1
+export TOKENIZERS_PARALLELISM=false
+export TORCH_HOME=$W/models/torch_home
+# Match the measured execution path; optional per-micro logging and profilers
+# belong to diagnostic launches, not the costed hero command.
+unset ARTFLOW_LOG_SHAPES ARTFLOW_INFRA_METRICS ARTFLOW_TRACE_START ARTFLOW_TRACE_STEPS
 source "$W/jobs/swanlab_login.sh"
 cd "$W/repo"
 
 RUN=hero-$STAGE
 RUN_DIR=$W/runs/$RUN
-mkdir -p "$W/data/logs"
+mkdir -p "$W/data/logs" "$RUN_DIR"
+# Hold this descriptor through torchrun so two submissions cannot select the
+# same resume point and overwrite the same checkpoint directory concurrently.
+# Kernel locks disappear when the holder exits; a leftover file is not a lock.
+if ! command -v flock >/dev/null; then
+  echo "flock is required for single-writer protection of $RUN_DIR" >&2
+  exit 1
+fi
+exec 9>>"$RUN_DIR/.writer.lock"
+if ! flock -n 9; then
+  echo "another hero launcher holds the writer lock for $RUN_DIR; not starting" >&2
+  exit 1
+fi
 
 latest_ckpt () {
   ls -d "$1"/checkpoint_step_[0-9]* 2>/dev/null | sort -V | tail -1
@@ -73,37 +91,30 @@ elif [ -n "$PREV" ]; then
   RESUME_ARGS=(--resume "$PREV_CKPT" --resume_full --reset_sampler)
 fi
 
-# A private temp file avoids concurrent invocations overwriting each other's config.
-OVERRIDE=$(mktemp /tmp/artflow-hero-override.XXXXXX.toml)
-trap 'rm -f "$OVERRIDE"' EXIT
+# Render the exact versioned shard weights, never regenerate them from live row counts.
+# A private directory avoids mutating shared configs or other invocations' inputs.
+CONFIG_DIR=$(mktemp -d /tmp/artflow-hero-config.XXXXXX)
+INPUT_CONFIG="$CONFIG_DIR/inputs.toml"
+OVERRIDE="$CONFIG_DIR/override.toml"
+trap 'rm -f "$INPUT_CONFIG" "$OVERRIDE"; rmdir "$CONFIG_DIR"' EXIT
+python3 -m scripts.bench.render_hero_stage "$STAGE" --root "$W" --out "$INPUT_CONFIG"
 cat > "$OVERRIDE" <<EOF
 [train]
 max_steps = $TOTAL_STEPS
 stop_at_step = $END
 gradient_accumulation_steps = $ACCUM
-checkpoint_interval = 2000
-eval_interval = 10000
-ema_decay = 0.9999
-ema_update_interval = 1
-[optim]
-lr_warmup_steps = 5000
-muon_lr = 0.02
-min_learning_rate = 1.5e-5
 [eval]
-prompts_file = "assets/eval/hero_monitor_v1.jsonl"
-ode_steps = 50
 grid_steps = [$GRID_STEPS]
-loss_interval = 500
-kid_at_end = true
 EOF
 
 python3 -m torch.distributed.run --nproc_per_node=8 -m src.train.train \
   --config configs/base.toml \
-  --config "$W/configs/hero-$STAGE.toml" \
-  --config "$W/configs/ladder-common.toml" \
-  --config "$W/configs/ladder-ld533.toml" \
+  --config "$INPUT_CONFIG" \
+  --config configs/hero.toml \
   --config "$OVERRIDE" \
-  --step_breakdown \
+  --compile_dynamic --compile_autotune --disable_ddp_compile_split \
+  --hoist_double_rope --native_flash_varlen --real_rope \
+  --muon_compile_square_ns --gpu_health_snapshot --local_cache_clear \
   --run_name "$RUN" \
   ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"} \
   >> "$W/data/logs/$RUN.log" 2>&1

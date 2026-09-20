@@ -165,7 +165,7 @@ output_dir = "output"
 
 [telemetry]
 log_interval = 25
-# Periodically return cached blocks to the allocator. Long runs with variable
-# shapes fragment without this.
+# Periodic garbage collection and CUDA cache release; 0 disables it.
+# Validate memory behavior for the chosen allocator and bucket plan before disabling.
 cache_clear_interval = 100
 swanlab_project = "artflow"
