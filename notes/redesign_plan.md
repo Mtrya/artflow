@@ -470,8 +470,12 @@ while RL breaks the teacher ceiling. Z-Image-Turbo is the industrial 8-step prec
   hacking/collapse signals.
 
 **Ablation axes** (100 4090-h): RL algorithm (ReFL vs DiffusionNFT), λ_rl, reward
-composition and multi-domain weighting. Everything else is decided by rule or literature
-default, not swept.
+composition and multi-domain weighting, rollout group size G (16 vs 24; NFT
+default 24, initial value 16 to save VLM scoring cost), and prompts per
+iteration (initial value 48 like NFT → effective RL batch ~768 at G=16;
+precedents: NFT 48×24=1152, ReFL 128×1=128). G and prompts/iter are
+cost-dominated by the reward scorer (bills, not GPU), so probe both alongside
+the VLM judge probe. Everything else starts from literature defaults.
 
 **Fixed before any run**: 8-step timestep grid (sweep Euler grids on the hero checkpoint,
 lock before distillation); backward-simulation
