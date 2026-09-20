@@ -329,7 +329,7 @@ bucket-plan revision.
 
 ## Stage 4 — Complete hero recipe and infrastructure validation (≤450 4090-h)
 
-**Goal (user, 2026-09-11)**: deliver the **entire executable pre-NFT hero-run
+**Goal (user, 2026-09-11)**: deliver the **entire executable hero-run
 recipe**, from scratch through **256p → 640p → 896p**. Stage 5
 must be able to proceed directly, **without a planned Stage 4.5**. Full design,
 literature anchors, evaluation contract, experiment budget, and exit checklist:
@@ -378,7 +378,7 @@ correctness or cost-feasibility evidence blocks launch; resolve execution issues
 or request an explicit redesign without exceeding the 2,200-hour ceiling. There
 is no capability-accuracy threshold to predict or certify before or after training.
 
-## Stage 5 — Execute the pre-NFT hero recipe (1.6–2.2K 4090-h working range)
+## Stage 5 — Execute the hero recipe (1.6–2.2K 4090-h working range)
 
 **Goal**: execute and verify the complete Stage-4 recipe, starting directly after
 its go handoff. All resolution allocations, mixtures, optimization, evaluation sampling
@@ -400,36 +400,101 @@ the selected topology alone does not establish the wall-clock budget.
   These are regression diagnostics, not additional per-domain KID, memorization
   or capability-qualification suites. Follow the recipe's stop/review rules;
   extensions, rollback or scientific changes require explicit approval.
-- Verify the final pre-NFT checkpoint at the recorded evaluation sampling
-  settings. Unexpected failures may require redesign, not automatic NFT rescue.
+- Verify the final hero checkpoint at the recorded evaluation sampling
+  settings. Unexpected failures may require redesign, not automatic post-training rescue.
 
-**Exit**: a pre-NFT checkpoint from the completed budgeted recipe,
+**Exit**: a hero checkpoint from the completed budgeted recipe,
 with measured costs, observed abilities and limitations. Preserve verified checkpoints and
 follow the recipe's review/stop rules if a resolution transition degrades.
 
-## Stage 6 — NFT post-training (≈300–500 4090-h)
+## Stage 6 — Last-mile post-training: optional SFT → DMD2 cold start → joint DMD+RL
 
-**Goal**: preference alignment on top of the hero checkpoint — the quality polish that
-small base models can't get from data alone. Method: **DiffusionNFT** (Negative-aware
-Fine-Tuning, [arXiv:2509.16117](https://arxiv.org/abs/2509.16117)) — online RL on the
-*forward* process: per prompt, sample K candidate trajectories from the old policy, score
-with a reward ensemble, normalize rewards to advantages, optimize the flow-matching
-velocity predictor with a positive/negative contrast. No likelihood estimation, no SDE
-reverse process — fits this codebase directly.
+**Goal**: turn the hero checkpoint into the final deliverable — an **8-step distilled
+model** with preference alignment. Only the 8-step student is released; the hero
+(multi-step) model is an intermediate artifact. Method follows the **DMDR** route
+([arXiv:2511.13649](https://arxiv.org/abs/2511.13649)): DMD2-style distribution-matching
+distillation ([arXiv:2405.14867](https://arxiv.org/abs/2405.14867)) with RL folded in as
+a joint objective rather than a separate stage. Budget: ≈300–500 4090-h main line under
+PRIORITY 1 (wall-clock, not GPU-hour constrained) + 100 4090-h reserved for ablations.
+Context: hero budget is 2,200 nominal, realistically 2,500–3,000 4090-h, so this stage
+sits at ~15–25% of pretraining — already an order of magnitude above the 1–5% typical in
+the diffusion literature (DiffusionNFT: GenEval 0.24→0.98 in 1K steps; DMDR: 1.5K+1.5K
+steps). The risk here is correctness and system structure, not throughput: **no separate
+infra stage**; one embedded measurement pass, then a 640p pilot, then the 896p main line.
 
-- 6.1 Reward ensemble (keep simple, watch hacking): LAION aesthetic scorer (cheap, local)
-  + VLM-as-judge rubric for anatomy (hands/faces/body) and prompt adherence — the API VLM
-  from stage 1 doubles as judge — + optional style classifier for 国画/impressionism
-  authenticity.
-- 6.2 Quick arm first: LoRA-NFT vs full-parameter NFT at 640p, short; pick on reward gain
-  vs diversity loss. (LoRA is also the 4060 Ti-friendly variant.)
-- 6.3 Main NFT run at 640p (sampling-bound: each policy step = K full denoises + VAE
-  decode + reward scoring; 896p only if budget allows).
-- 6.4 Guardrails: KL budget vs hero reference, diversity metric + canary prompts every
-  interval, small LR, early stop on reward plateau or KID regression.
+**Why joint, not sequential** (DMDR §2.3, Fig. 3): RL on an already-distilled model
+anchors on a mode-impoverished distribution → reward hacking and collapse; RL before
+distillation loses gains to the "distillation gap" and pays multi-step rollout costs.
+Joint `L = L_dmd + λ_rl · L_rl` lets DMD regularize RL (reward ascent is projected back
+onto the teacher manifold — the primary defense against the "greasy" over-optimized look)
+while RL breaks the teacher ceiling. Z-Image-Turbo is the industrial 8-step precedent
+(decoupled-DMD + DMDR).
 
-**Exit**: reward gain over hero baseline with no KID/diversity regression; final model +
-before/after grids on the eval suite.
+- 6.0 **CFG study (after hero completes, before locking Stage-6 configs)**: old-run
+  evidence says CFG=1 was already optimal. Probe the final hero checkpoint: unconditional
+  branch health (empty-caption samples, cond/uncond eval-loss gap), CFG ∈ {1, 1.5, 2, 3}
+  sweep with KID + reward + eyeball grids, and whether the old observation was an EMA-lag
+  artifact. DiffusionNFT is CFG-free by design and interprets CFG as offline reinforcement
+  guidance, so "CFG=1 is genuinely best" is a feature, not a bug. **Do not cut the CFG
+  code path until this study concludes.**
+- 6.1 **Optional targeted SFT**: after the hero checkpoint, probe capability gaps
+  (bilingual panel + blind review); if a gap is best fixed by SFT rather than RL
+  (e.g. a compositional or texture deficit), generate a targeted synthetic batch with the
+  existing caption/generation infra and SFT briefly. Skip if no such gap. Z-Image-Turbo
+  synthetic data was high quality; the failed East-Asian synth set was Qwen-Image/Ernie —
+  teacher choice matters.
+- 6.2 **DMD2 cold start at 896p** (896p is the native resolution; no reliance on
+  640p→896p transfer of the student). Fake score = online copy trained on student outputs;
+  GAN = classification head on the fake-score backbone bottleneck, operating on
+  noise-injected latents (no pixel-space decode in the loop), non-saturating objective,
+  real side from our precomputed latents. Two time-scale fake/generator updates starting
+  at 5:1. **DynaDG dropped** (teacher = student architecture/init, manifold gap is small);
+  revisit only if cold start stalls. If a 1024p rope-scaling stage ever happens, rope-scale
+  the teacher first, then distill.
+- 6.3 **Joint DMD+RL**: RL term is an ablation axis, **ReFL vs DiffusionNFT** (NFT is
+  SFT-form, shares the velocity-MSE units with the DMD loss, and is natively off-policy →
+  rollouts/rewards can be fully asynchronous; it needs only terminal images, so 8-step
+  student rollouts are valid). λ_rl sweep starts near 1.0 (same-unit losses) and is
+  adjusted by rule, not schedule: test-reward plateau + KID regression → lower λ.
+- 6.4 **Rewards**: LAION aesthetic + HPSv2 (local, cheap) + VLM-as-judge rubric
+  (anatomy, prompt adherence, and **explicit negative criteria for the greasy/over-smoothed
+  look** so artifact-y high-reward samples land in NFT's negative branch). Heterogeneous
+  rewards dilute single-scorer biases. Probe the judge first: thinking on/off, model tier
+  (non-flagship preferred), async throughput; cap total judge spend before the main run.
+  A **held-out reward** (never optimized) is monitored to detect hacking of the trained
+  rewards.
+- 6.5 **Multi-domain guardrails**: rollout prompt pool mirrors the hero data mix (no
+  re-sweep; heuristic merge only). Per-domain canary prompt grids (国画 / oil-impressionism /
+  people / world) at fixed seeds, eyeballed on a schedule — the user is the final arbiter
+  of "greasy". Watch test-vs-train reward divergence and precision/recall drift as early
+  hacking/collapse signals.
+
+**Ablation axes** (100 4090-h): RL algorithm (ReFL vs DiffusionNFT), λ_rl, reward
+composition and multi-domain weighting. Everything else is decided by rule or literature
+default, not swept.
+
+**Fixed before any run**: 8-step timestep grid (sweep Euler grids on the hero checkpoint,
+lock before distillation); cold-start → joint promotion rule (promote when 8-step rollouts
+are coherent enough for rewards to rank meaningfully — **not** at distillation convergence,
+which would collapse into the rejected sequential pipeline); backward-simulation
+micro-batch from a one-off memory measurement (embed in the framework bring-up).
+
+**Dependencies — what can start now vs what waits for the hero checkpoint:**
+
+- *Now (no hero checkpoint needed)*: DMDR training loop (fake score, GAN head, backward
+  simulation) with unit tests on small random models; async reward pipeline; local reward
+  scorer integration; VLM judge probes on existing grids; rollout prompt pool from the hero
+  mix; per-domain canary grids (adapt the eval panel); reward budget calculation; KID
+  reference sets; backward-simulation memory measurement on the 533M architecture.
+- *Methodology now, rerun on the final checkpoint*: 8-step timestep grid sweep (build the
+  harness on the current checkpoint, re-run at the end).
+- *Waits for the hero checkpoint*: CFG study (6.0), capability probe → SFT decision (6.1),
+  λ_rl / RL-algorithm ablations, and all main runs. The 640p pipeline pilot may use the
+  640p-stage endpoint checkpoint (~step 360K) when it appears, without waiting for 480K.
+
+**Exit**: an 8-step student that beats the hero teacher on reward and panel review without
+KID/diversity regression; documented λ_rl and reward configuration; before/after grids per
+domain.
 
 ## Stage 7 — Publication readiness
 
@@ -456,10 +521,10 @@ before/after grids on the eval suite.
   for explaining a method, decision, configuration, or result. Preserve useful
   evidence in accessible, reproducible form and keep private operational details
   out of the public-facing documentation.
-- 7.4 Add substantive explanatory notes on **Flow Matching** and
-  **Negative-aware Fine-Tuning (NFT)**: motivation, equations/notation,
-  training and sampling procedures, implementation mapping, assumptions,
-  limitations, and accessible references—not merely experiment logs.
+- 7.4 Add substantive explanatory notes on **Flow Matching** and the Stage-6
+  **post-training stack (DMD2/DMDR distillation, negative-aware RL)**: motivation,
+  equations/notation, training and sampling procedures, implementation mapping,
+  assumptions, limitations, and accessible references—not merely experiment logs.
 
 **Exit**: repository and model renamed to `inko`, with comments/docs and affected
 references updated; downloadable model and working Space; README quickstart verified from
@@ -478,9 +543,9 @@ Publication/demo hosting costs are estimated separately before deployment.
 | 2 Ablations | 400 | Inspire fair arms only; local RTX 4060 Ti workstation takes smoke/qualitative arms (free, ~¼ speed); cap raised 200→400 on 2026-09-04 to fit stream-schedule + Muon axes |
 | 3 Efficiency | 80 | buys back far more than it costs — gates stage 5 |
 | 3.5 Captions / buckets / 640p | 75 experiments/profiling + separate precompute | approximately $100 API budget; full-corpus precompute/storage costed separately; see detailed plan and execution record |
-| 4 Complete recipe / infra | 450 | separate experimental cap; execution optimization, cost estimates and ready-to-launch pre-NFT handoff; no capability or serving-performance gate |
+| 4 Complete recipe / infra | 450 | separate experimental cap; execution optimization, cost estimates and ready-to-launch hero handoff; no capability or serving-performance gate |
 | 5 Hero | 1,600–2,200 provisional | target topology and wall time must be justified by Stage 4 |
-| 6 NFT | 300–500 | sampling-bound |
+| 6 Last-mile post-training (SFT/DMD2/joint RL) | 300–500 + 100 ablation | sampling-bound |
 | 7 Publication | TBD + hosting spend | model/Space release, documentation and reproducibility checks |
 | **Original subtotal** | **≈2.9–3.7K 4090-h** | excludes new Stages 3.5/7 and API/storage/hosting spend; Stage 4 must update the complete ledger |
 
@@ -531,7 +596,7 @@ daytime/evening.
   responses; record exact model version in dataset metadata.
 - Resolution-transition regressions: validate 256p→640p→896p with the fixed
   monitoring panel and preserve verified checkpoints. 1024p and an upscaler
-  fallback are not part of the pre-NFT hero recipe.
+  fallback are not part of the hero recipe.
 - NC-tagged data → no commercial release; `license` column + separate mix entries keep a
   clean variant feasible.
-- Reward hacking / diversity collapse in NFT → guardrails in 6.4 are load-bearing.
+- Reward hacking / diversity collapse in RL post-training → guardrails in 6.5 are load-bearing.
