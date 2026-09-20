@@ -14,8 +14,8 @@ from scripts.bench.gen_hero_bucket_plans import MIX, OUTDIR, W, dataset_dirs
 
 TEMPLATE = """# Hero {stage} stage: dataset mix (user-fixed weights, normalized per shard)
 # and the 20-bucket compute-optimal plan solved from the 533M calibration.
-# Layer after configs/base.toml; model shape and schedule come from the rung
-# config layered on top.
+# Layer after configs/base.toml, then configs/hero.toml for the fixed model
+# and policy, then the launcher's global-horizon/stage-stop overrides.
 
 [data]
 mix = "{mix}"

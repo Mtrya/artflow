@@ -22,7 +22,8 @@ caption costs what its sequence length costs.
 If fvcore is installed, forward FLOPs/sample at the anchor shape are measured
 once and anchor an MFU estimate: other points extrapolate by token count (image
 tokens + text tokens), backward is counted as ~2x forward, and the 4090 bf16
-dense peak is ~330 TFLOPS — approximate, and marked as such in the output.
+dense BF16/FP32-accumulation peak is 165.2 TFLOPS at the reference boost clock
+— approximate, and marked as such in the output. The 330.4 figure is sparse.
 
 Usage:
     python scripts/bench/transformer_ceiling.py --out ceiling256.json \
@@ -43,7 +44,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from src.models.artflow import ArtFlow
 
-PEAK_BF16_TFLOPS = 330.0  # RTX 4090 dense tensor-core, bf16
+# NVIDIA Ada whitepaper v2.1, Appendix A, pp. 30–31: BF16 with FP32
+# accumulation is 165.2 dense / 330.4 sparse TFLOPS, at 2520 MHz boost.
+# https://images.nvidia.com/aem-dam/Solutions/Data-Center/l4/nvidia-ada-gpu-architecture-whitepaper-v2.1.pdf
+PEAK_BF16_TFLOPS = 165.2
 
 # Defaults are the training DiT: 1152 wide, one double-stream block followed by
 # 24 single-stream blocks, ~533M parameters.
@@ -357,6 +361,7 @@ def main():
         "steps": args.steps,
         "warmup": args.warmup,
         "mfu_anchor": mfu_anchor,
+        "reference_peak_bf16_tflops": PEAK_BF16_TFLOPS,
         "note": "results is nested latent -> txt_seq -> micro_batch and every "
         "leaf carries its own latency/txt_seq/micro_batch/img_tokens, so a "
         "consumer can read the sweep without knowing the nesting. peak_mem_gb "
@@ -365,7 +370,9 @@ def main():
         "optimizer, no EMA, no text encoder, so this is the DiT floor of a "
         "training step's memory and time. est_mfu_pct extrapolates fwd FLOPs "
         "by token ratio from the fvcore anchor; bwd assumed 2x fwd; 4090 bf16 "
-        "peak 330 TFLOPS.",
+        "dense BF16/FP32-accumulation reference peak 165.2 TFLOPS at 2520 MHz. "
+        "This is not a measured ceiling of the allocated card; clock/power "
+        "limits and FLOP-estimation coverage must be checked before saturation claims.",
         "results": results,
     }
     with open(args.out, "w") as f:
