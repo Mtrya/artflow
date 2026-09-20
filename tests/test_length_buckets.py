@@ -20,7 +20,7 @@ from src.dataset.length_buckets import (
     plan_json,
     uniform_boundaries,
 )
-from src.train.train import load_bucket_plan
+from src.pretrain.train import load_bucket_plan
 
 
 def brute_force_optimum(probabilities, num_buckets, costs):

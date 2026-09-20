@@ -4,7 +4,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 import torch
 
-from src.train.update_ops import divide_gradients, update_ema, clear_local_cuda_cache
+from src.pretrain.update_ops import divide_gradients, update_ema, clear_local_cuda_cache
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64, torch.bfloat16])
@@ -48,7 +48,7 @@ def test_cache_clear_only_visits_requested_rank_device():
 
 def test_muon_and_adamw_preserve_updates_with_retained_gradient_views():
     from src.models.artflow import ArtFlow
-    from src.train.muon import build_param_groups
+    from src.pretrain.muon import build_param_groups
 
     torch.manual_seed(31)
     reference = ArtFlow(hidden_size=32, num_heads=4, double_stream_depth=1,

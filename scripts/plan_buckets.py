@@ -81,7 +81,7 @@ from src.dataset.length_buckets import (
 )
 from src.dataset.length_metadata import RowLengthMetadata, sidecar_path
 from src.dataset.mix import DatasetEntry, parse_dataset_mix
-from src.train.config import DataConfig, ModelConfig
+from src.pretrain.config import DataConfig, ModelConfig
 from src.utils.prompt_contract import MAX_SEQUENCE_LENGTH
 
 PHASES = ("early", "middle", "late")

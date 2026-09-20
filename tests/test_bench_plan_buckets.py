@@ -35,7 +35,7 @@ from src.dataset.length_buckets import equal_mass_boundaries, padding_waste
 from src.dataset.captions import CaptionPolicy, caption_probabilities_from_lengths
 from src.dataset.length_metadata import RowLengthMetadata, sidecar_path
 from src.dataset.mix import parse_dataset_mix
-from src.train.train import load_bucket_plan
+from src.pretrain.train import load_bucket_plan
 from src.utils.prompt_contract import MAX_SEQUENCE_LENGTH
 
 # The memory model the synthetic sweeps are built from: 9.5 GB of weights,

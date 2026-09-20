@@ -9,7 +9,7 @@ from src.dataset.captions import (
     caption_probabilities_from_lengths,
     sample_caption_index_from_lengths,
 )
-from src.train.caption_telemetry import CaptionTelemetry, PolicyState
+from src.pretrain.caption_telemetry import CaptionTelemetry, PolicyState
 
 
 class TestCaptionPolicy:

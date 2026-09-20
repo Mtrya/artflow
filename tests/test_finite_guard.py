@@ -9,11 +9,11 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
-from src.train.finite_guard import require_finite_update
+from src.pretrain.finite_guard import require_finite_update
 
 
 def test_production_guard_precedes_optimizer_updates():
-    tree = ast.parse((Path(__file__).resolve().parents[1] / "src/train/train.py").read_text())
+    tree = ast.parse((Path(__file__).resolve().parents[1] / "src/pretrain/train.py").read_text())
     boundary = next(n for n in ast.walk(tree) if isinstance(n, ast.If)
                     and ast.unparse(n.test) == "should_optimizer_step"
                     and "require_finite_update" in ast.unparse(n))

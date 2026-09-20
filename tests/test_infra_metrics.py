@@ -2,7 +2,7 @@ import json
 import pytest
 from unittest.mock import MagicMock, patch
 
-from src.train.infra_metrics import InfraRecorder
+from src.pretrain.infra_metrics import InfraRecorder
 
 
 def test_replay_digest_tracks_caption_and_row_identity(tmp_path):

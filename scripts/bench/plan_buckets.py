@@ -3,7 +3,7 @@
 What a bucket plan is
 ---------------------
 The trainer reads a plan as ``{resolution id: [{max_length, batch_size}, ...]}``
-(``src.train.train.load_bucket_plan``).  A resolution id is one (resolution,
+(``src.pretrain.train.load_bucket_plan``).  A resolution id is one (resolution,
 aspect) bucket of the precompute step; inside it, the plan carries K length
 buckets, each a caption-length upper bound plus the micro-batch size that runs
 on it.  The bounds decide how much padding a step wastes, the sizes decide how

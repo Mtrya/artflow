@@ -383,7 +383,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
         sample_prompt_images,
     )
     from src.models.artflow import ArtFlow
-    from src.train.config import flatten, load_config
+    from src.pretrain.config import flatten, load_config
     from src.utils.vae_codec import get_vae_stats
 
     config = flatten(load_config(args.config))

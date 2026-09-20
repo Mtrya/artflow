@@ -5,7 +5,7 @@ import torch
 
 from src.models.artflow import ArtFlow
 from src.models.dit_blocks import set_real_rope
-from src.train.train import parse_args
+from src.pretrain.train import parse_args
 
 
 @pytest.mark.parametrize("real_rope", [False, True])

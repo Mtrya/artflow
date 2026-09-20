@@ -33,7 +33,7 @@ DEPTH=8
 NUM_HEADS=8
 
 # Launch training
-python -m src.train.train_uncond \
+python -m src.pretrain.train_uncond \
     --run_name "artflow-uncond-fm-ot" \
     --output_dir $OUTPUT_DIR \
     --precomputed_dataset_path $PRECOMPUTED_PATH \

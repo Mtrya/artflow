@@ -219,7 +219,7 @@ def test_launcher_derives_global_eval_steps(total, stage, accum, fractions):
 def test_training_grid_wiring_preserves_rng_and_has_preloop_baseline():
     import ast
     import inspect
-    from src.train import train
+    from src.pretrain import train
 
     tree = ast.parse(inspect.getsource(train))
     helper = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "evaluate_grid")

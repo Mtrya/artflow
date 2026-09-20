@@ -53,7 +53,7 @@ What is measured, and how
 
 Runs are launched exactly like the throughput comparison in
 ``scripts/bench/gate_ab.py``: a temporary TOML overrides ``[data]`` and
-``[train]`` on top of the base config, and ``src.train.train`` runs for a short
+``[train]`` on top of the base config, and ``src.pretrain.train`` runs for a short
 number of optimizer steps with tracker logging disabled.  The trainer's own
 timer covers the whole step - latent preparation, caption dropout, text
 encoding, DiT forward and backward, the optimizer, EMA and logging - and
@@ -329,7 +329,7 @@ class Bucket:
 def read_plan(path: str) -> Dict[int, List[Bucket]]:
     """Read the plan JSON, keeping its resolution ids and bucket order.
 
-    The shape is the one ``src.train.train.load_bucket_plan`` reads
+    The shape is the one ``src.pretrain.train.load_bucket_plan`` reads
     (resolution id -> [{max_length, batch_size}, ...]); only the batch sizes are
     rewritten by this script, so the file is read as-is rather than through the
     trainer's loader, which would drop the resolutions the caller is not
@@ -419,7 +419,7 @@ def load_plan_for_trainer(spec: str, resolution_ids: Sequence[int]) -> BucketPla
     will apply.  Imported here rather than at module level so the pure helpers
     above stay importable without the training stack.
     """
-    from src.train.train import load_bucket_plan
+    from src.pretrain.train import load_bucket_plan
 
     return load_bucket_plan(spec, resolution_ids)
 
@@ -773,7 +773,7 @@ def build_run_env(repo: str, probe_dir: Optional[str],
                   overrides: Mapping[str, str]) -> Dict[str, str]:
     """Environment for a training run: this repo first on the path, and the probe.
 
-    ``PYTHONPATH`` points at the repository so ``python -m src.train.train``
+    ``PYTHONPATH`` points at the repository so ``python -m src.pretrain.train``
     resolves from any working directory, exactly as ``gate_ab.py`` does.  The
     probe directory comes before it so the planted ``sitecustomize`` is the one
     Python imports at start-up.
@@ -834,7 +834,7 @@ def build_run_command(configs: Sequence[str], run_name: str,
     file is always last, so the measurement settings win over the recipe while
     the recipe supplies everything the measurement does not mention.
     """
-    command = [sys.executable, "-m", "src.train.train"]
+    command = [sys.executable, "-m", "src.pretrain.train"]
     for path in configs:
         command += ["--config", str(path)]
     command += ["--run_name", run_name]
@@ -2113,7 +2113,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--config", action="append", default=[],
                         help="extra config file, applied after the base one (repeatable)")
     parser.add_argument("--trainer-arg", action="append", default=[],
-                        help="extra flag for src.train.train, e.g. --trainer-arg --no-compile "
+                        help="extra flag for src.pretrain.train, e.g. --trainer-arg --no-compile "
                              "(repeatable; part of the cache key)")
     parser.add_argument("--vae", default=None, help="vae checkpoint or directory")
     parser.add_argument("--text-encoder", required=True,

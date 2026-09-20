@@ -48,7 +48,7 @@ for S in $SOURCES; do
   if [ ! -f "$M" ]; then echo "== $S: manifest missing, skip"; continue; fi
   if [ -f "$O/dataset_info.json" ]; then echo "== $S: already done, skip"; continue; fi
   echo "== $S: start $(date -Is)"
-  python -m src.train.precompute \
+  python -m src.pretrain.precompute \
     --dataset_name "$M" \
     --image_field local_path \
     --caption_fields captions \

@@ -2,7 +2,7 @@
 
 import torch
 
-from src.train.muon import (
+from src.pretrain.muon import (
     Muon,
     _zeropower_via_newtonschulz5,
     _zeropower_via_newtonschulz5_batched,

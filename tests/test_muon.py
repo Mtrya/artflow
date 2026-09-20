@@ -3,7 +3,7 @@
 import torch
 
 from src.models.artflow import ArtFlow
-from src.train.muon import Muon, build_param_groups, _chunk_hint
+from src.pretrain.muon import Muon, build_param_groups, _chunk_hint
 
 
 def _tiny_model():
@@ -22,7 +22,7 @@ def _tiny_model():
 
 
 def test_newtonschulz_orthogonalizes():
-    from src.train.muon import _zeropower_via_newtonschulz5
+    from src.pretrain.muon import _zeropower_via_newtonschulz5
 
     torch.manual_seed(0)
     g = torch.randn(64, 32)

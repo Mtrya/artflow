@@ -20,7 +20,7 @@ from scripts.bench.plan_buckets import (
 )
 from src.dataset.captions import CaptionPolicy
 from src.dataset.mix import parse_dataset_mix
-from src.train.config import load_config
+from src.pretrain.config import load_config
 
 
 def resize(sizes, shares, *, old_accumulation, new_accumulation, ranks, target):

@@ -27,7 +27,7 @@ from scripts.plan_buckets import (
 from src.dataset.captions import CaptionPolicy
 from src.dataset.length_buckets import architecture_cost
 from src.dataset.length_metadata import RowLengthMetadata, sidecar_path
-from src.train.train import load_bucket_plan
+from src.pretrain.train import load_bucket_plan
 from src.utils.prompt_contract import MAX_SEQUENCE_LENGTH
 
 

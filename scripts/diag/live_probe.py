@@ -33,7 +33,7 @@ from src.evaluation.prompt_grid import load_prompt_plan, resolved_prompt_seed, s
 from src.evaluation.visualize import make_image_grid
 from src.models.artflow import ArtFlow
 from src.models.dit_blocks import set_real_rope
-from src.train.config import flatten, load_config
+from src.pretrain.config import flatten, load_config
 from src.utils.vae_codec import get_vae_stats
 
 

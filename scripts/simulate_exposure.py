@@ -109,7 +109,7 @@ from scripts.plan_buckets import (
 from src.dataset.captions import CaptionPolicy, average_caption_probabilities
 from src.dataset.length_metadata import RowLengthMetadata
 from src.dataset.mix import DatasetEntry
-from src.train.config import DataConfig, TrainLoopConfig
+from src.pretrain.config import DataConfig, TrainLoopConfig
 
 # Retained-length bands the exposure is reported in.  The first band is
 # everything below the short-caption threshold the reserve protects.  These

@@ -77,7 +77,7 @@ latest_ckpt () {
 RESUME_ARGS=()
 OWN=$(latest_ckpt "$RUN_DIR")
 if [ -n "$OWN" ]; then
-  python3 -m src.train.stage_control "$OWN" --max-steps "$TOTAL_STEPS" \
+  python3 -m src.pretrain.stage_control "$OWN" --max-steps "$TOTAL_STEPS" \
     --stop-at-step "$END" --min-step "$START"
   RESUME_ARGS=(--resume "$OWN" --resume_full)
 elif [ -n "$PREV" ]; then
@@ -86,7 +86,7 @@ elif [ -n "$PREV" ]; then
     echo "no checkpoint from hero-$PREV to bootstrap from" >&2
     exit 1
   fi
-  python3 -m src.train.stage_control "$PREV_CKPT" --max-steps "$TOTAL_STEPS" \
+  python3 -m src.pretrain.stage_control "$PREV_CKPT" --max-steps "$TOTAL_STEPS" \
     --stop-at-step "$END" --expected-step "$START"
   RESUME_ARGS=(--resume "$PREV_CKPT" --resume_full --reset_sampler)
 fi
@@ -107,7 +107,7 @@ gradient_accumulation_steps = $ACCUM
 grid_steps = [$GRID_STEPS]
 EOF
 
-python3 -m torch.distributed.run --nproc_per_node=8 -m src.train.train \
+python3 -m torch.distributed.run --nproc_per_node=8 -m src.pretrain.train \
   --config configs/base.toml \
   --config "$INPUT_CONFIG" \
   --config configs/hero.toml \

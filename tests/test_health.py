@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-from src.train.health import (
+from src.pretrain.health import (
     ema_rel_distance,
     qk_gain_stats,
     snapshot_weights,
@@ -90,7 +90,7 @@ def test_actual_training_health_block_releases_snapshots():
     import ast
     import inspect
     import weakref
-    from src.train import train
+    from src.pretrain import train
 
     node = next(n for n in ast.walk(ast.parse(inspect.getsource(train.main)))
                 if isinstance(n, ast.If) and ast.unparse(n.test) == "health_snapshot is not None")

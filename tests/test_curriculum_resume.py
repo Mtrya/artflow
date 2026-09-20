@@ -9,7 +9,7 @@ import pytest
 from src.dataset.captions import CaptionPolicy
 from src.dataset.length_metadata import RowLengthMetadata
 from src.dataset.sampler import BucketPlan, LenBucket, RowLengthQueueBatchSampler
-from src.train import train
+from src.pretrain import train
 
 
 def make_sampler(stage=0.0):

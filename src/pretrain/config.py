@@ -112,7 +112,7 @@ class TrainLoopConfig:
     # "none" (every weight 1.0, the default) or "log2" for
     # max(1, log2(L / caption_loss_weight_reference)).  A curve the trainer
     # does not know is a configuration error, not something to repair on the
-    # way in.  See src/train/caption_loss_weights.py for what the weights act
+    # way in.  See src/pretrain/caption_loss_weights.py for what the weights act
     # on, what they are normalized by, and why.
     caption_loss_weight_curve: str = "none"
     caption_loss_weight_reference: int = 128

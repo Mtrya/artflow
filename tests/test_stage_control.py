@@ -15,9 +15,9 @@ import numpy as np
 import pytest
 import torch
 
-from src.train import train
-from src.train.config import flatten, load_config
-from src.train.stage_control import (
+from src.pretrain import train
+from src.pretrain.config import flatten, load_config
+from src.pretrain.stage_control import (
     CHECKPOINT_RECORD, stage_endpoint, validate_checkpoint, write_checkpoint_record, verify_restored_rng,
 )
 
@@ -296,7 +296,7 @@ def launcher_env(tmp_path):
     # and its temporary override without loading models or starting a GPU job.
     python = bindir / "python3"
     python.write_text(f"#!{sys.executable}\n" + '''import json, os, pathlib, runpy, sys, tomllib
-if sys.argv[1:3] in (["-m", "src.train.stage_control"], ["-m", "scripts.bench.render_hero_stage"]):
+if sys.argv[1:3] in (["-m", "src.pretrain.stage_control"], ["-m", "scripts.bench.render_hero_stage"]):
     sys.argv = [sys.argv[2], *sys.argv[3:]]
     runpy.run_module(sys.argv[0], run_name="__main__")
 else:

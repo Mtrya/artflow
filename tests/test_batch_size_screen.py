@@ -58,7 +58,7 @@ from scripts.bench.batch_size_screen import (
 )
 from src.dataset.captions import CaptionPolicy
 from src.dataset.length_metadata import RowLengthMetadata
-from src.train.train import load_bucket_plan
+from src.pretrain.train import load_bucket_plan
 
 
 def metadata(lengths):
@@ -505,7 +505,7 @@ def test_the_command_matches_how_gate_ab_launches_training(tmp_path):
     command = build_run_command(["configs/base.toml", str(tmp_path / "screen.toml")],
                                 "screen-run", ["--no-compile"])
 
-    assert command[1:3] == ["-m", "src.train.train"]
+    assert command[1:3] == ["-m", "src.pretrain.train"]
     assert command[3:5] == ["--config", "configs/base.toml"]
     assert command[5:7] == ["--config", str(tmp_path / "screen.toml")]
     assert command[7:9] == ["--run_name", "screen-run"]

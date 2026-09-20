@@ -6,7 +6,7 @@
 
 export PYTHONPATH=.
 
-python -m src.train.precompute \
+python -m src.pretrain.precompute \
     --dataset_name "laion/relaion-art" \
     --split "train" \
     --image_field "URL" \

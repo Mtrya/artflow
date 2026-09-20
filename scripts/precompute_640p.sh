@@ -72,7 +72,7 @@ for S in $SOURCES; do
   if [ ! -f "$M" ]; then echo "== $S: manifest missing at $M, skip"; continue; fi
   if [ -f "$O/dataset_info.json" ]; then echo "== $S: already done, skip"; continue; fi
   echo "== $S: start $(date -Is)"
-  CUDA_VISIBLE_DEVICES=$WORKER python -m src.train.precompute \
+  CUDA_VISIBLE_DEVICES=$WORKER python -m src.pretrain.precompute \
     --dataset_name "$M" \
     --image_field local_path \
     --caption_fields captions \

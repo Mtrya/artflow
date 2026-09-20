@@ -4,7 +4,7 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
-from src.train.state_verification import require_exact_state, verify_restored_training_state
+from src.pretrain.state_verification import require_exact_state, verify_restored_training_state
 
 
 def test_exact_state_rejects_values_types_metadata_and_nonfinite():

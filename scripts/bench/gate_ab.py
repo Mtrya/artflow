@@ -71,11 +71,11 @@ def main():
         f'[eval]\ndataset_path = {json.dumps(str(root / "precomputed_dataset/light-eval@256p"))}\n'
         '[telemetry]\nswanlab_project = "artflow-throughput"\n'
     )
-    launcher = [sys.executable, "-m", "src.train.train"]
+    launcher = [sys.executable, "-m", "src.pretrain.train"]
     if args.gpus > 1:
         launcher = ["accelerate", "launch", "--multi_gpu", "--num_processes",
                     str(args.gpus), "--num_machines", "1", "--mixed_precision",
-                    "bf16", "--dynamo_backend", "no", "-m", "src.train.train"]
+                    "bf16", "--dynamo_backend", "no", "-m", "src.pretrain.train"]
     common = ["--config", "configs/base.toml", "--config", str(config)]
     baseline = [f"--no-{flag}" for flag in (
         "fast_caption_dropout", "fast_telemetry", "fast_text_slice",

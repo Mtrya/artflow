@@ -17,12 +17,12 @@ import torch
 import torch.nn.functional as F
 
 from src.flow.paths import FlowMatchingOT
-from src.train.caption_loss_weights import (
+from src.pretrain.caption_loss_weights import (
     CaptionLossWeights,
     StepLossAccumulator,
     weighted_mean,
 )
-from src.train.caption_telemetry import CaptionTelemetry
+from src.pretrain.caption_telemetry import CaptionTelemetry
 
 REFERENCE = 128
 
