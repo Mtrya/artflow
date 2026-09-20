@@ -474,18 +474,22 @@ composition and multi-domain weighting. Everything else is decided by rule or li
 default, not swept.
 
 **Fixed before any run**: 8-step timestep grid (sweep Euler grids on the hero checkpoint,
-lock before distillation); cold-start → joint promotion rule (promote when 8-step rollouts
-are coherent enough for rewards to rank meaningfully — **not** at distillation convergence,
-which would collapse into the rejected sequential pipeline); backward-simulation
+lock before distillation); backward-simulation
 micro-batch from a one-off memory measurement (embed in the framework bring-up).
+Cold-start → joint promotion rule is **deferred**: decided together with the 640p
+checkpoint (2026-09-21), not fixed now — candidates are the PromotionGate reward-reliability
+probe vs DMDR's fixed step threshold; the settled constraint is only "not at distillation
+convergence" (that would collapse into the rejected sequential pipeline).
 
 **Dependencies — what can start now vs what waits for the hero checkpoint:**
 
 - *Now (no hero checkpoint needed)*: DMDR training loop (fake score, GAN head, backward
   simulation) with unit tests on small random models; async reward pipeline; local reward
-  scorer integration; VLM judge probes on existing grids; rollout prompt pool from the hero
-  mix; per-domain canary grids (adapt the eval panel); reward budget calculation; KID
-  reference sets; backward-simulation memory measurement on the 533M architecture.
+  scorer integration; VLM judge probes on existing grids; a small (5k) rollout prompt pool
+  from the hero mix for pipeline bring-up only — the full ~20k pool is deferred to the 640p
+  checkpoint and will be built jointly with the user (2026-09-21 decision); per-domain
+  canary grids (adapt the eval panel); reward budget calculation; KID reference sets;
+  backward-simulation memory measurement on the 533M architecture.
 - *Methodology now, rerun on the final checkpoint*: 8-step timestep grid sweep (build the
   harness on the current checkpoint, re-run at the end).
 - *Waits for the hero checkpoint*: CFG study (6.0), capability probe → SFT decision (6.1),
