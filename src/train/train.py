@@ -22,14 +22,14 @@ from types import SimpleNamespace
 import torch
 from torch.utils.data import DataLoader
 from accelerate import Accelerator
-from accelerate.utils import ProjectConfiguration, set_seed
+from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration, set_seed
 from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.optimization import get_scheduler
 from datasets import load_from_disk
 
 from ..models.artflow import ArtFlow
-from ..models.dit_blocks import set_sdpa_backends
+from ..models.dit_blocks import set_real_rope, set_sdpa_backends
 from ..dataset.sampler import (
     LenBucket,
     BucketPlan,
@@ -41,6 +41,9 @@ from ..dataset.sampler import (
 from ..dataset.captions import CaptionPolicy
 from .caption_telemetry import CaptionTelemetry, PolicyState
 from .caption_loss_weights import CaptionLossWeights, StepLossAccumulator, weighted_mean
+from .finite_guard import require_finite_update
+from .update_ops import divide_gradients, update_ema, clear_local_cuda_cache
+from .infra_metrics import InfraRecorder
 from ..dataset.mix import parse_dataset_mix, get_dataset_weights
 from ..utils.encode_text import encode_text
 from ..utils.vae_codec import get_vae_stats
@@ -50,7 +53,7 @@ from ..evaluation.prompt_grid import grid_due, run_prompt_grid_eval
 from ..evaluation.kid_eval import run_kid_eval
 from .config import load_config, flatten
 from .stage_control import (
-    CHECKPOINT_RECORD, stage_endpoint, validate_checkpoint, write_checkpoint_record,
+    CHECKPOINT_RECORD, stage_endpoint, validate_checkpoint, write_checkpoint_record, verify_restored_rng,
 )
 from .muon import build_param_groups as build_muon_param_groups
 from .health import (
@@ -66,12 +69,10 @@ warnings.filterwarnings("ignore", message="Mismatch dtype between input and weig
 
 @torch.no_grad()
 def update_ema_model(
-    ema_model: torch.nn.Module, current_model: torch.nn.Module, decay: float
+    ema_model: torch.nn.Module, current_model: torch.nn.Module, decay: float,
+    *, foreach: bool = False,
 ) -> None:
-    for ema_param, param in zip(ema_model.parameters(), current_model.parameters()):
-        ema_param.data.mul_(decay).add_(param.data, alpha=1.0 - decay)
-    for ema_buffer, buffer in zip(ema_model.buffers(), current_model.buffers()):
-        ema_buffer.copy_(buffer)
+    update_ema(ema_model, current_model, decay, foreach=foreach)
 
 
 def set_caption_curriculum(
@@ -178,6 +179,11 @@ def parse_args():
         "the resumed model weights)",
     )
     parser.add_argument(
+        "--verify_resume_state", action="store_true",
+        help="Diagnostic: compare live loaded weights/optimizers/schedulers/EMA exactly "
+             "with the full checkpoint before training; adds CPU copies and I/O",
+    )
+    parser.add_argument(
         "--reset_sampler", action="store_true",
         help="With --resume_full, start fresh resolution-specific sampler queues; "
              "keep the global step, scheduler, optimizer, EMA and RNG state",
@@ -238,6 +244,19 @@ def parse_args():
         "of the DiT block loop (identical math, fewer per-layer ops)",
     )
     parser.add_argument(
+        "--native_flash_varlen", action=argparse.BooleanOptionalAction, default=False,
+        help="Opt-in infra candidate: native torch 2.9.1 variable-length attention "
+        "with hoisted key-packing metadata; requires --attn_bias_hoist",
+    )
+    parser.add_argument(
+        "--real_rope", action=argparse.BooleanOptionalAction, default=False,
+        help="Opt-in infra candidate: express FP32 RoPE using real arithmetic for compiler fusion",
+    )
+    parser.add_argument(
+        "--hoist_double_rope", action=argparse.BooleanOptionalAction, default=False,
+        help="Opt-in infra candidate: move double-stream RoPE cache access outside compiled blocks",
+    )
+    parser.add_argument(
         "--compile",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -254,12 +273,41 @@ def parse_args():
         "instead of once per shape for a 24-layer graph",
     )
     parser.add_argument(
+        "--compile_dynamic",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Opt-in infra candidate: request dynamic shapes for per-block compilation",
+    )
+    parser.add_argument(
+        "--compile_autotune",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Opt-in infra candidate: autotune compiled DiT blocks without CUDA graphs",
+    )
+    parser.add_argument(
+        "--disable_ddp_compile_split",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Opt-in per-block compiler workaround: disable Dynamo's additional "
+        "DDP graph splitting, not DDP gradient synchronization",
+    )
+    parser.add_argument(
+        "--ddp_gradient_bucket_views", action=argparse.BooleanOptionalAction, default=False,
+        help="Opt-in memory candidate: alias gradients into DDP buckets and retain them with in-place zeroing",
+    )
+    parser.add_argument(
         "--muon_batched_ns",
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Run Muon's Newton-Schulz iterations as one batched matmul per "
         "matrix shape instead of a serial chain of small GEMMs (same "
         "per-matrix math)",
+    )
+    parser.add_argument(
+        "--muon_compile_square_ns",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Opt-in infra candidate: compile only square batched Muon NS chains",
     )
     parser.add_argument(
         "--ddp_boundary_sync",
@@ -269,6 +317,18 @@ def parse_args():
         "per micro-batch: micro-batches inside a step accumulate locally "
         "under no_sync. The gradient is identical because the reduction is "
         "linear, and the per-micro straggler wait across ranks disappears",
+    )
+    parser.add_argument(
+        "--foreach_updates", action=argparse.BooleanOptionalAction, default=False,
+        help="Opt-in infra candidate: batch pointwise gradient scaling and EMA updates",
+    )
+    parser.add_argument(
+        "--local_cache_clear", action=argparse.BooleanOptionalAction, default=False,
+        help="Opt-in infra candidate: clear only this rank's CUDA allocator cache",
+    )
+    parser.add_argument(
+        "--gpu_health_snapshot", action=argparse.BooleanOptionalAction, default=False,
+        help="Opt-in infra candidate: hold health snapshots on the local GPU only across the optimizer update",
     )
     return parser
 
@@ -334,6 +394,7 @@ def main():
         "resume",
         "resume_full",
         "resume_ema",
+        "verify_resume_state",
         "reset_sampler",
         "step_breakdown",
         "cpu_wall_profile",
@@ -341,16 +402,40 @@ def main():
         "fast_telemetry",
         "fast_text_slice",
         "attn_bias_hoist",
+        "native_flash_varlen",
+        "real_rope",
+        "hoist_double_rope",
         "compile",
         "compile_blocks",
+        "compile_dynamic",
+        "compile_autotune",
+        "disable_ddp_compile_split",
+        "ddp_gradient_bucket_views",
         "muon_batched_ns",
+        "muon_compile_square_ns",
         "ddp_boundary_sync",
+        "foreach_updates",
+        "local_cache_clear",
+        "gpu_health_snapshot",
         "text_encoder_exit_mode",
     ):
         setattr(args, name, getattr(cli, name))
 
+    if args.native_flash_varlen:
+        from ..models.varlen_attention import validate_runtime
+        validate_runtime()
+        if not args.attn_bias_hoist:
+            raise ValueError("--native_flash_varlen requires --attn_bias_hoist")
+    if args.compile_dynamic and not (args.compile and args.compile_blocks):
+        raise ValueError("--compile_dynamic requires --compile and --compile_blocks")
+    if args.compile_autotune and not (args.compile and args.compile_blocks):
+        raise ValueError("--compile_autotune requires --compile and --compile_blocks")
+    if args.disable_ddp_compile_split and not (args.compile and args.compile_blocks):
+        raise ValueError("--disable_ddp_compile_split requires --compile and --compile_blocks")
     if args.reset_sampler and not (args.resume_full and args.resume):
         raise ValueError("--reset_sampler requires --resume and --resume_full")
+    if args.verify_resume_state and not (args.resume_full and args.resume):
+        raise ValueError("--verify_resume_state requires --resume and --resume_full")
     # Reject invalid stages/checkpoints before allocating the model or GPUs.
     resume_step = 0
     if args.resume_full and args.resume and args.resume != "None":
@@ -361,7 +446,8 @@ def main():
     end_step = stage_endpoint(args.max_steps, args.stop_at_step, resume_step)
 
     # The masked (padded-text) attention path uses the memory-efficient SDPA
-    # backend; the cuDNN backend was measured slower for these shapes.
+    # backend unless the explicit native-varlen candidate is selected below.
+    # cuDNN's measured high-resolution gain is not yet a production default.
     set_sdpa_backends(["EFFICIENT_ATTENTION", "MATH"])
 
     # Allocation-history capture for out-of-memory post-mortems, enabled by
@@ -397,7 +483,11 @@ def main():
         mixed_precision="bf16",
         log_with="swanlab",
         project_config=project_config,
+        kwargs_handlers=[DistributedDataParallelKwargs(gradient_as_bucket_view=True)]
+        if args.ddp_gradient_bucket_views else [],
     )
+    if args.ddp_gradient_bucket_views and accelerator.num_processes < 2:
+        raise ValueError("--ddp_gradient_bucket_views requires at least two ranks")
 
     set_seed(args.seed)
 
@@ -468,6 +558,7 @@ def main():
         in_channels=16,
         txt_in_features=1024,
     )
+    set_real_rope(model, args.real_rope)
     # Print model statistics
     accelerator.print(
         f"Model params: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}"
@@ -484,6 +575,7 @@ def main():
         adam_lr=args.learning_rate,
         muon_momentum=args.muon_momentum,
         batched_ns=args.muon_batched_ns,
+        compile_square_ns=args.muon_compile_square_ns,
     )
     muon_params = sum(
         p.numel() for group in optimizers[0].param_groups for p in group["params"]
@@ -530,14 +622,25 @@ def main():
 
     ema_model = deepcopy(model) if args.use_ema else None
 
-    # torch.compile BEFORE accelerator.prepare (DDP wrapping): the compiled
-    # graph must not capture distributed collectives. EMA was deep-copied from
+    # Build per-block compile wrappers BEFORE accelerator.prepare (DDP wrapping).
+    # Compilation remains lazy and can observe DDP at the first forward; see
+    # the explicit graph-splitting workaround below. EMA was deep-copied from
     # the raw model above, so it stays an eager copy (eval-only).
     # model_raw keeps an unprefixed reference: the compiled wrapper's
     # state_dict keys carry an `_orig_mod.` prefix, so every EMA/state_dict
     # path must read from model_raw (parameters are SHARED with the wrapper).
     model_raw = model
     if args.compile and args.compile_blocks:
+        if args.disable_ddp_compile_split:
+            # Compilation is lazy: wrapping before DDP does not prevent Dynamo
+            # from observing DDP at the first forward. PyTorch 2.9.1's split
+            # AOT path fails on an integer output for these dynamic block graphs.
+            # Keep the eager DDP reducer; only omit within-block graph splitting.
+            # This may change communication overlap and needs distributed A/B.
+            import torch._dynamo as _dynamo
+
+            _dynamo.config.optimize_ddp = False
+            accelerator.print("Dynamo DDP graph splitting disabled; DDP reducer remains enabled")
         # Per-block compilation: all 24 blocks share the same shapes, so one
         # graph per (resolution, length, batch) is compiled once and reused,
         # instead of one 24-layer graph per shape. Same fusion opportunities on
@@ -562,15 +665,17 @@ def main():
                 _dynamo.config.cache_size_limit = limit
         except Exception as exc:  # pragma: no cover - version guard
             accelerator.print(f"could not raise the dynamo recompile limit ({exc})")
+        compile_mode = "max-autotune-no-cudagraphs" if args.compile_autotune else "default"
         accelerator.print(
-            "Compiling each DiT block (mode=\"default\", "
+            f"Compiling each DiT block (mode={compile_mode!r}, "
             f"{len(model_raw.blocks)} blocks sharing one graph per shape, "
-            f"recompile_limit={getattr(_dynamo.config, 'recompile_limit', '?')})..."
+            f"recompile_limit={getattr(_dynamo.config, 'recompile_limit', '?')}, "
+            f"dynamic={args.compile_dynamic})..."
         )
         t0 = time.time()
         for block in model_raw.blocks:
             block.forward = torch.compile(
-                block.forward, mode="default", dynamic=False
+                block.forward, mode=compile_mode, dynamic=args.compile_dynamic
             )
         accelerator.print(
             f"per-block torch.compile wrappers ready ({time.time() - t0:.1f}s; "
@@ -683,6 +788,12 @@ def main():
         batch_sampler=sampler,
         collate_fn=row_length_collate_fn,
         pin_memory=True,
+        # Iterator creation draws a worker base seed even with zero workers.
+        # Keep that draw out of the training CPU RNG (caption dropout), so
+        # recreating the iterator after full resume cannot advance it. Workers
+        # only resolve preselected RowRefs; row/caption randomness belongs to
+        # the separately checkpointed sampler, not this worker-seed generator.
+        generator=torch.Generator().manual_seed(args.seed + accelerator.process_index),
         **dataloader_worker_kwargs,
     )
 
@@ -712,7 +823,16 @@ def main():
     resumed_step = 0
     if args.resume and args.resume != "None":
         accelerator.print(f"Resuming from checkpoint: {args.resume}")
+        if args.resume_full and args.stop_at_step > 0:
+            validate_checkpoint(
+                args.resume, max_steps=args.max_steps, stop_at_step=args.stop_at_step,
+                require_record=True, scheduler_count=len(schedulers), use_ema=args.use_ema,
+                world_size=accelerator.num_processes,
+            )
         accelerator.load_state(args.resume)
+        if args.resume_full and args.stop_at_step > 0:
+            verify_restored_rng(args.resume, process_index=accelerator.process_index,
+                                device=accelerator.device)
 
         if args.resume_full:
             # Crash-resume restores model/optimizer state and step metadata.
@@ -784,6 +904,22 @@ def main():
                 accelerator.print("Restored EMA weights from checkpoint")
         for param in ema_model.parameters():
             param.requires_grad_(False)
+
+    if args.verify_resume_state:
+        from .state_verification import verify_restored_training_state
+
+        verification = verify_restored_training_state(
+            args.resume, model_raw, optimizers, schedulers, ema_model)
+        verify_restored_rng(args.resume, process_index=accelerator.process_index,
+                            device=accelerator.device)
+        verification.update(rng_exact=True, step=resumed_step, max_steps=args.max_steps,
+                            rank=accelerator.process_index)
+        # This runs before InfraRecorder/checkpoint creation. A fresh resume
+        # branch therefore may not have its per-run output directory yet.
+        os.makedirs(run_dir, exist_ok=True)
+        with open(os.path.join(run_dir, f"restore_step_{resumed_step:06d}_"
+                               f"rank_{accelerator.process_index:05d}.json"), "w") as handle:
+            json.dump(verification, handle, indent=2)
 
     # Probability Path
     algorithm = FlowMatchingOT()
@@ -911,6 +1047,15 @@ def main():
     peak_mem_gb = 0.0
     peak_reserved_gb = 0.0
 
+    infra_recorder = None
+    if os.environ.get("ARTFLOW_INFRA_METRICS") == "1":
+        infra_recorder = InfraRecorder(
+            run_dir, accelerator.process_index,
+            trace_start=int(os.environ.get("ARTFLOW_TRACE_START", "-1")),
+            trace_steps=int(os.environ.get("ARTFLOW_TRACE_STEPS", "3")),
+            record_identity=os.environ.get("ARTFLOW_INFRA_IDENTITIES") == "1",
+        )
+
     train_iter = iter(dataloader) if global_step < end_step else iter(())
 
     model.train()
@@ -922,10 +1067,21 @@ def main():
             ("fast_telemetry", args.fast_telemetry),
             ("fast_text_slice", args.fast_text_slice),
             ("attn_bias_hoist", args.attn_bias_hoist),
+            ("native_flash_varlen", args.native_flash_varlen),
+            ("real_rope", args.real_rope),
+            ("hoist_double_rope", args.hoist_double_rope),
             ("muon_batched_ns", args.muon_batched_ns),
+            ("muon_compile_square_ns", args.muon_compile_square_ns),
             ("ddp_boundary_sync", args.ddp_boundary_sync),
             ("compile", args.compile),
             ("compile_blocks", args.compile_blocks),
+            ("compile_dynamic", args.compile_dynamic),
+            ("compile_autotune", args.compile_autotune),
+            ("disable_ddp_compile_split", args.disable_ddp_compile_split),
+            ("ddp_gradient_bucket_views", args.ddp_gradient_bucket_views),
+            ("foreach_updates", args.foreach_updates),
+            ("local_cache_clear", args.local_cache_clear),
+            ("gpu_health_snapshot", args.gpu_health_snapshot),
         )
         if enabled
     ]
@@ -952,6 +1108,8 @@ def main():
         "dataset_ids",
         "retained_lengths",
         "row_positions",
+        "row_indices",
+        "caption_indices",
         "bucket_hi",
         "batch_id",
         "resolution_bucket_ids",
@@ -1061,6 +1219,7 @@ def main():
     } if args.cpu_wall_profile else None
 
     def save_checkpoint(step: int) -> None:
+        checkpoint_started = time.monotonic()
         save_path = os.path.join(
             args.output_dir,
             f"{args.run_name}/checkpoint_step_{step:06d}",
@@ -1114,7 +1273,12 @@ def main():
             )
         accelerator.wait_for_everyone()
 
+        if infra_recorder is not None:
+            infra_recorder.checkpoint(step=step, seconds=time.monotonic() - checkpoint_started)
+
     while global_step < end_step:
+        if infra_recorder is not None and micro_count % args.gradient_accumulation_steps == 0:
+            infra_recorder.begin_update(global_step)
         if cpu_acc is not None:
             _t_next0 = time.monotonic()
         try:
@@ -1143,6 +1307,13 @@ def main():
             host_meta = {
                 key: batch.pop(key) for key in host_batch_keys if key in batch
             }
+            if infra_recorder is not None:
+                identity = (dict(rows=host_meta["row_positions"],
+                                 captions=host_meta["caption_indices"].tolist(),
+                                 batch_id=host_meta["batch_id"])
+                            if infra_recorder.record_identity else None)
+                infra_recorder.micro(batch["latents"].shape, host_meta["bucket_hi"],
+                                     sample_identity=identity)
             batch = {
                 key: value.to(accelerator.device, non_blocking=True)
                 if torch.is_tensor(value) else value
@@ -1224,6 +1395,8 @@ def main():
                 txt_pooled=txt_pooled,
                 txt_mask=txt_mask,
                 fast_attn=args.attn_bias_hoist,
+                native_flash_varlen=args.native_flash_varlen,
+                hoist_double_rope=args.hoist_double_rope,
             )
 
             # Loss
@@ -1289,9 +1462,8 @@ def main():
                 if global_sample_count <= 0:
                     raise RuntimeError("optimizer step has no samples")
                 grad_divisor = global_loss_weight / accelerator.num_processes
-                for p in model.parameters():
-                    if p.grad is not None:
-                        p.grad.div_(grad_divisor)
+                divide_gradients(model.parameters(), grad_divisor,
+                                 foreach=args.foreach_updates)
                 global_loss_sum = accelerator.reduce(
                     step_losses.loss_sum(), reduction="sum"
                 )
@@ -1306,21 +1478,27 @@ def main():
                 grad_norm = accelerator.clip_grad_norm_(
                     model.parameters(), args.max_grad_norm
                 )
+                require_finite_update(step_global_loss, grad_norm)
 
                 health_snapshot = None
                 if (
                     args.health_interval
                     and (global_step + 1) % args.health_interval == 0
                 ):
-                    health_snapshot = snapshot_weights(optimizers)
+                    health_snapshot = snapshot_weights(
+                        optimizers, device=accelerator.device if args.gpu_health_snapshot else "cpu"
+                    )
 
                 for opt in optimizers:
                     opt.step()
-                    opt.zero_grad()
+                    opt.zero_grad(set_to_none=not args.ddp_gradient_bucket_views)
 
                 health_metrics = None
                 if health_snapshot is not None:
                     ratios = update_weight_ratios(health_snapshot)
+                    # A GPU snapshot must not survive into the next forward's
+                    # activation peak. Ratios contain only Python scalars.
+                    health_snapshot = None
                     health_metrics = {
                         "health/update_weight_ratio_muon": ratios[0],
                     }
@@ -1359,7 +1537,7 @@ def main():
                 if args.step_breakdown:
                     bd_mark("ema")
                 update_ema_model(
-                    ema_model, model_raw, args.ema_decay
+                    ema_model, model_raw, args.ema_decay, foreach=args.foreach_updates
                 )
                 if args.step_breakdown:
                     bd_mark("ema")
@@ -1391,7 +1569,11 @@ def main():
                     cpu_acc["prep_ms"] + cpu_acc["enc_ms"] + cpu_acc["pad_ms"]
                     + cpu_acc["fwd_ms"] + cpu_acc["bwd_ms"]
                 )
-                _resid = cpu_acc["micro_ms"] - cpu_acc["next_ms"] - _seg_sum - cpu_acc["syncopt_ms"]
+                # micro_ms starts after next(train_iter); subtracting next_ms
+                # again would hide unaccounted host time. Host call durations
+                # can wait for earlier asynchronous CUDA work; they are not
+                # GPU segment durations or a CPU/GPU critical-path partition.
+                _resid = cpu_acc["micro_ms"] - _seg_sum - cpu_acc["syncopt_ms"]
                 accelerator.print(
                     f"[cpu-wall@{global_step}] micro={cpu_acc['micro_ms']/_n:.1f}ms "
                     f"(next={cpu_acc['next_ms']/_n:.1f} prep={cpu_acc['prep_ms']/_n:.1f} "
@@ -1441,17 +1623,24 @@ def main():
                 caption_window = caption_telemetry.snapshot(reset=True)
 
             # CUDA cache clearing (independent of telemetry)
-            if global_step % args.cache_clear_interval == 0:
+            if args.cache_clear_interval > 0 and global_step % args.cache_clear_interval == 0:
                 gc.collect()
-                for i in range(torch.cuda.device_count()):
-                    with torch.cuda.device(i):
-                        torch.cuda.empty_cache()
+                if args.local_cache_clear:
+                    clear_local_cuda_cache(accelerator.device)
+                else:
+                    for i in range(torch.cuda.device_count()):
+                        with torch.cuda.device(i):
+                            torch.cuda.empty_cache()
 
             # Live telemetry includes completed optimizer and EMA GPU work.
             # The final summary below additionally includes logging overhead.
             if torch.cuda.is_available():
                 torch.cuda.synchronize(accelerator.device)
             step_dt = time.monotonic() - last_step_time
+            infra_memory = None
+            if infra_recorder is not None:
+                infra_memory = (torch.cuda.max_memory_allocated(accelerator.device),
+                                torch.cuda.max_memory_reserved(accelerator.device))
             if step_dt > 0:
                 sps = step_samples / step_dt
                 sps_ema = sps if sps_ema is None else 0.95 * sps_ema + 0.05 * sps
@@ -1512,6 +1701,14 @@ def main():
                 steady_wall_total += measured_step_dt
                 steady_samples_total += step_samples
 
+            if infra_recorder is not None:
+                infra_recorder.end_update(
+                    step=global_step, seconds=measured_step_dt,
+                    global_samples=step_samples, loss=step_loss,
+                    progress=sampler.stage, peak_allocated=infra_memory[0],
+                    peak_reserved=infra_memory[1], breakdown=bd_cur,
+                )
+
             # Always persist an endpoint before potentially expensive/failing eval.
             if global_step % args.checkpoint_interval == 0 or global_step == end_step:
                 save_checkpoint(global_step)
@@ -1567,6 +1764,7 @@ def main():
             dataset_path=args.eval_dataset_path,
             num_fake=args.kid_num_fake,
             batch_size=args.eval_batch_size,
+            ode_steps=args.ode_steps,
         )
 
     if accelerator.is_main_process and train_wall_total > 0:
@@ -1594,6 +1792,8 @@ def main():
             f"peak_mem_reserved_gb={peak_reserved_gb:.1f}"
         )
 
+    if infra_recorder is not None:
+        infra_recorder.close()
     accelerator.end_training()
     print("Training finished.")
 

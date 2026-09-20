@@ -9,6 +9,8 @@ from types import SimpleNamespace
 import os
 import subprocess
 import sys
+import random
+import numpy as np
 
 import pytest
 import torch
@@ -16,8 +18,41 @@ import torch
 from src.train import train
 from src.train.config import flatten, load_config
 from src.train.stage_control import (
-    CHECKPOINT_RECORD, stage_endpoint, validate_checkpoint, write_checkpoint_record,
+    CHECKPOINT_RECORD, stage_endpoint, validate_checkpoint, write_checkpoint_record, verify_restored_rng,
 )
+
+
+@pytest.mark.parametrize("workers", [0, 2])
+def test_training_loader_recreation_preserves_checkpoint_rng(workers):
+    # Execute the actual loader construction with a deterministic toy dataset.
+    # The production RowDescriptorDataset/collate similarly have no randomness:
+    # the checkpointed sampler has already selected rows and captions.
+    tree = ast.parse(inspect.getsource(train.main))
+    assignment = next(node for node in ast.walk(tree)
+                      if isinstance(node, ast.Assign)
+                      and any(isinstance(target, ast.Name) and target.id == "dataloader"
+                              for target in node.targets))
+    code = compile(ast.fix_missing_locations(ast.Module(
+        body=[copy.deepcopy(assignment)], type_ignores=[])), "<training loader>", "exec")
+    namespace = dict(
+        DataLoader=torch.utils.data.DataLoader, torch=torch,
+        row_dataset=torch.arange(8), sampler=[[0, 1], [2, 3], [4, 5], [6, 7]],
+        row_length_collate_fn=torch.utils.data.default_collate,
+        args=SimpleNamespace(seed=42), accelerator=SimpleNamespace(process_index=3),
+        dataloader_worker_kwargs=dict(num_workers=workers),
+    )
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(987)
+        checkpoint_rng = torch.get_rng_state().clone()
+        expected_dropout_draws = torch.rand(16)
+        for _ in range(2):  # New process/iterator after restoring the same RNG.
+            torch.set_rng_state(checkpoint_rng)
+            exec(code, namespace)
+            loader = namespace["dataloader"]
+            assert loader.generator.initial_seed() == 45
+            assert torch.equal(torch.cat(list(loader)), torch.arange(8))
+            assert torch.equal(torch.get_rng_state(), checkpoint_rng)
+            assert torch.equal(torch.rand(16), expected_dropout_draws)
 
 
 @pytest.mark.parametrize("total", [400000, 420000])
@@ -64,6 +99,9 @@ def checkpoint(tmp_path, step=300000, total=400000):
     for name in ("model.safetensors", "optimizer.bin", "optimizer_1.bin", "scheduler.bin",
                  "scheduler_1.bin", "ema_weights.pt", "sampler_state_rank_00000.pt"):
         (root / name).write_bytes(b"test-artifact")
+    for rank in range(8):
+        for name in (f"random_states_{rank}.pkl", f"sampler_state_rank_{rank:05d}.pt"):
+            (root / name).write_bytes(b"test-rank-state")
     write_checkpoint_record(root, step=step, max_steps=total, scheduler_count=2,
                             use_ema=True, world_size=8)
     return root
@@ -110,6 +148,50 @@ def test_legacy_resume_does_not_claim_verified_horizon(tmp_path):
         validate_checkpoint(root, max_steps=100, stop_at_step=75, require_record=True)
 
 
+@pytest.mark.parametrize("fault", [None, "python", "numpy", "torch", "corrupt"])
+def test_strict_rng_verification_detects_silent_load_failure(tmp_path, fault):
+    saved = dict(random_state=random.getstate(), numpy_random_seed=np.random.get_state(),
+                 torch_manual_seed=torch.get_rng_state())
+    path = tmp_path / "random_states_0.pkl"
+    torch.save(saved, path)
+    try:
+        if fault == "python":
+            random.random()
+        elif fault == "numpy":
+            np.random.random()
+        elif fault == "torch":
+            torch.rand(1)
+        elif fault == "corrupt":
+            path.write_bytes(b"invalid checkpoint")
+        if fault:
+            with pytest.raises(ValueError, match="RNG continuation failed"):
+                verify_restored_rng(tmp_path, process_index=0, device="cpu")
+        else:
+            verify_restored_rng(tmp_path, process_index=0, device="cpu")
+    finally:
+        random.setstate(saved["random_state"])
+        np.random.set_state(saved["numpy_random_seed"])
+        torch.set_rng_state(saved["torch_manual_seed"])
+
+
+@pytest.mark.parametrize("name", ["model.safetensors", "optimizer.bin", "optimizer_1.bin",
+                                  "random_states_7.pkl", "sampler_state_rank_00007.pt"])
+def test_incomplete_inventory_cannot_hide_missing_recovery_files(tmp_path, name):
+    root = checkpoint(tmp_path)
+    data = json.loads((root / CHECKPOINT_RECORD).read_text())
+    del data["files"][name]
+    (root / name).unlink()
+    (root / CHECKPOINT_RECORD).write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="missing required"):
+        validate(root)
+    # The writer must not certify that same incomplete directory either.
+    (root / CHECKPOINT_RECORD).unlink()
+    with pytest.raises(ValueError, match="missing required"):
+        write_checkpoint_record(root, step=300000, max_steps=400000,
+                                scheduler_count=2, use_ema=True, world_size=8)
+    assert not (root / CHECKPOINT_RECORD).exists()
+
+
 def test_save_before_eval_once_even_when_endpoint_is_off_cadence():
     tree = ast.parse(inspect.getsource(train.main))
     condition = next(n for n in ast.walk(tree) if isinstance(n, ast.If)
@@ -148,7 +230,7 @@ def test_actual_checkpoint_writer_produces_resumable_scheduler_files(tmp_path):
 
     def save_state(path):
         events.append("state")
-        for name in ("model.safetensors", "optimizer.bin", "optimizer_1.bin"):
+        for name in ("model.safetensors", "optimizer.bin", "optimizer_1.bin", "random_states_0.pkl"):
             (Path(path) / name).write_bytes(b"cpu-stand-in")
 
     class Scheduler:
@@ -163,6 +245,7 @@ def test_actual_checkpoint_writer_produces_resumable_scheduler_files(tmp_path):
                  "schedulers":[Scheduler(),Scheduler()],
                  "sampler":SimpleNamespace(state_dict=lambda:{"stage":.75}),
                  "sampler_state_name":"sampler_state_rank_00000.pt",
+                 "infra_recorder":None,
                  "ema_model":torch.nn.Linear(1,1),"run_dir":str(run_dir),
                  "runtime_path":str(run_dir / "runtime.json")}
     exec(compile(ast.fix_missing_locations(ast.Module(body=[function],type_ignores=[])),
@@ -213,13 +296,14 @@ def launcher_env(tmp_path):
     # and its temporary override without loading models or starting a GPU job.
     python = bindir / "python3"
     python.write_text(f"#!{sys.executable}\n" + '''import json, os, pathlib, runpy, sys, tomllib
-if sys.argv[1:3] == ["-m", "src.train.stage_control"]:
+if sys.argv[1:3] in (["-m", "src.train.stage_control"], ["-m", "scripts.bench.render_hero_stage"]):
     sys.argv = [sys.argv[2], *sys.argv[3:]]
-    runpy.run_module("src.train.stage_control", run_name="__main__")
+    runpy.run_module(sys.argv[0], run_name="__main__")
 else:
     paths = [sys.argv[i+1] for i,a in enumerate(sys.argv) if a == "--config"]
     config = tomllib.loads(pathlib.Path(paths[-1]).read_text())
-    pathlib.Path(os.environ["CAPTURE"]).write_text(json.dumps({"args":sys.argv,"config":config}))
+    inputs = tomllib.loads(pathlib.Path(paths[1]).read_text())
+    pathlib.Path(os.environ["CAPTURE"]).write_text(json.dumps({"args":sys.argv,"config":config,"inputs":inputs}))
 ''')
     python.chmod(0o755)
     env = {**os.environ, "ARTFLOW_ROOT": str(workspace), "PYTHONPATH": str(repo),
@@ -248,9 +332,42 @@ def test_actual_launcher_preflight_and_overrides(tmp_path, total, stage, start_f
     assert config["train"]["max_steps"] == total
     assert config["train"]["stop_at_step"] == total * end_frac // 100
     assert config["train"]["gradient_accumulation_steps"] == accum
+    config_paths = [captured["args"][i+1] for i, value in enumerate(captured["args"])
+                    if value == "--config"]
+    assert "configs/hero.toml" in config_paths
+    assert not any("ladder-" in path for path in config_paths)
+    assert captured["inputs"]["eval"]["dataset_path"] == str(
+        workspace / "precomputed_dataset" / f"light-eval@{stage}")
+    assert "d4-relaion" in captured["inputs"]["data"]["mix"]
+    from scripts.bench.infra_acceptance import TRAIN_FLAGS
+    assert set(TRAIN_FLAGS) | {"--compile_autotune"} <= set(captured["args"])
+    assert "--step_breakdown" not in captured["args"]
+    assert "--cpu_wall_profile" not in captured["args"]
     assert ("--reset_sampler" in captured["args"]) is bool(prev)
     if prev:
         assert {p.name:p.read_bytes() for p in predecessor.iterdir()} == before
+
+
+def test_versioned_hero_policy_matches_frozen_recipe():
+    repo = Path(__file__).resolve().parents[1]
+    config = load_config([repo / "configs/base.toml", repo / "configs/hero.toml"])
+    assert config.telemetry.cache_clear_interval == 0
+    assert (config.model.hidden_size, config.model.num_heads,
+            config.model.double_stream_depth, config.model.single_stream_depth) == (1152, 16, 1, 24)
+    assert config.data.caption_policy == "beta"
+    assert config.data.curriculum_start == 0.0 and config.data.curriculum_end == 1.0
+    assert config.data.caption_beta_start == -1 and config.data.caption_beta_end == 1
+    assert config.data.caption_short_reserve == .2
+    assert config.train.caption_loss_weight_curve == "log2"
+    assert config.train.caption_loss_weight_reference == 128
+    assert config.train.ema_decay == .9999 and config.train.ema_update_interval == 1
+    assert config.optim.muon_lr == .02 and config.optim.learning_rate == .0003
+    assert config.optim.lr_warmup_steps == 5000
+    assert config.optim.min_learning_rate == .000015
+    assert config.train.checkpoint_interval == 2000 and config.train.eval_interval == 2500
+    assert config.eval.loss_interval == 500 and config.eval.kid_at_end
+    assert config.eval.prompts_file == "assets/eval/hero_monitor_v1.jsonl"
+    assert config.eval.ode_steps == 50
 
 
 @pytest.mark.parametrize("fault", ["step", "horizon", "incomplete", "own_past_end"])

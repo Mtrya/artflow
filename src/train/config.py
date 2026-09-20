@@ -148,6 +148,7 @@ class TelemetryConfig:
     """Logging and allocator housekeeping."""
 
     log_interval: int = 25
+    # Zero disables periodic garbage collection / CUDA cache release.
     cache_clear_interval: int = 100
     swanlab_project: str = "artflow"
     # Steps between model-internal health reads (update/weight ratio, QK
@@ -232,6 +233,8 @@ def load_config(paths: Sequence[str]) -> TrainConfig:
 
 
 def _validate(config: TrainConfig) -> None:
+    if type(config.telemetry.cache_clear_interval) is not int or config.telemetry.cache_clear_interval < 0:
+        raise ValueError("[telemetry].cache_clear_interval must be a nonnegative integer")
     if type(config.eval.ode_steps) is not int or config.eval.ode_steps < 1:
         raise ValueError("[eval].ode_steps must be a positive integer")
     if not isinstance(config.eval.grid_steps, list) or any(

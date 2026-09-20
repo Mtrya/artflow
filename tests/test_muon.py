@@ -38,6 +38,50 @@ def test_newtonschulz_orthogonalizes():
     assert off_diag.abs().max() < 0.2
 
 
+def test_square_compile_routing_preserves_updates_and_state(monkeypatch):
+    """Exercise optimizer routing, not GPU compiler numerical equivalence."""
+    compiled_shapes = []
+    compiler_options = []
+
+    def compile_spy(function, **options):
+        compiler_options.append(options)
+
+        def call(matrix, steps):
+            compiled_shapes.append(tuple(matrix.shape))
+            return function(matrix, steps)
+
+        return call
+
+    monkeypatch.setattr(torch, "compile", compile_spy)
+    torch.manual_seed(52)
+    params = [torch.nn.Parameter(torch.randn(*shape))
+              for shape in [(8, 8), (8, 8), (16, 8), (8, 16), (24, 8)]]
+    candidate = [torch.nn.Parameter(p.detach().clone()) for p in params]
+
+    def groups(values):
+        return [dict(params=values[:4], chunks=1), dict(params=values[4:], chunks=3)]
+
+    baseline = Muon(groups(params), weight_decay=.1)
+    optimized = Muon(groups(candidate), weight_decay=.1, compile_square_ns=True)
+    for _ in range(3):
+        for p, q in zip(params, candidate):
+            p.grad = torch.randn_like(p)
+            q.grad = p.grad.clone()
+        baseline.step()
+        optimized.step()
+        for p, q in zip(params, candidate):
+            assert torch.equal(p, q)
+            assert torch.equal(baseline.state[p]["momentum_buffer"],
+                               optimized.state[q]["momentum_buffer"])
+    assert compiled_shapes == [(2, 8, 8), (3, 8, 8)] * 3
+    assert compiler_options == [dict(fullgraph=True, dynamic=False,
+                                    options={"emulate_precision_casts": True,
+                                             "shape_padding": False})]
+    # Runtime execution policy survives loading a legacy optimizer state.
+    optimized.load_state_dict(baseline.state_dict())
+    assert optimized.compile_square_ns is True
+
+
 def test_chunk_hint_rules():
     assert _chunk_hint("blocks.0.attn.qkv.weight", torch.Size([192, 64])) == 3
     assert _chunk_hint("blocks.0.modulation.1.weight", torch.Size([384, 64])) == 6

@@ -18,6 +18,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+try:
+    from .varlen_attention import packed_attention
+except ImportError:
+    from varlen_attention import packed_attention
+
 # Optional SDPA backend restriction for the masked (padded-text) attention
 # path; None keeps the library default.
 _SDPA_BACKENDS = None
@@ -153,6 +158,33 @@ def apply_rotary_emb(x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
     x_out = torch.view_as_real(x_rotated).flatten(3)
 
     return x_out.type_as(x)
+
+
+def apply_rotary_emb_real(x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
+    """Equivalent FP32 rotation expressed without complex multiplication.
+
+    This lets Inductor fuse surrounding casts/layout operations. Compiled
+    rounding may differ; the complex implementation remains the default.
+    """
+    pairs = x.float().reshape(*x.shape[:-1], -1, 2)
+    real, imag = pairs.unbind(-1)
+    cosine, sine = torch.view_as_real(freqs_cis)[None, :, None].unbind(-1)
+    rotated = torch.stack((real * cosine - imag * sine,
+                           real * sine + imag * cosine), dim=-1)
+    return rotated.flatten(3).type_as(x)
+
+
+def set_real_rope(model: nn.Module, enabled: bool) -> None:
+    """Set an instance-local execution policy before compiling the model.
+
+    This is not checkpoint state: loading weights must not override the launch
+    policy. Other live models and the complex frequency tables are untouched.
+    """
+    if type(enabled) is not bool:
+        raise ValueError("real RoPE policy must be boolean")
+    for module in model.modules():
+        if isinstance(module, (DoubleStreamAttention, SingleStreamAttention, UnconditionalAttention)):
+            module.real_rope = enabled
 
 
 class MSRoPE(nn.Module):
@@ -388,6 +420,7 @@ class DoubleStreamAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.scale = self.head_dim**-0.5
+        self.real_rope = False
 
         self.qkv_img = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.qkv_txt = nn.Linear(dim, dim * 3, bias=qkv_bias)
@@ -415,6 +448,8 @@ class DoubleStreamAttention(nn.Module):
         img_hw: Tuple[int, int],
         txt_seq_len: int,
         txt_attention_mask: Optional[torch.Tensor] = None,
+        attn_metadata=None,
+        rope_freqs: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         B, S_img, C = img_tokens.shape
         _, S_txt, _ = txt_tokens.shape
@@ -442,14 +477,18 @@ class DoubleStreamAttention(nn.Module):
         k_txt = self.k_norm_txt(k_txt)
 
         # RoPE
-        img_freqs, txt_freqs = self.rope(img_hw, txt_seq_len, img_tokens.device)
+        img_freqs, txt_freqs = (
+            self.rope(img_hw, txt_seq_len, img_tokens.device)
+            if rope_freqs is None else rope_freqs
+        )
 
         # Apply RoPE (need to transpose to [B, S, H, D] for apply_rotary_emb)
-        q_img = apply_rotary_emb(q_img.transpose(1, 2), img_freqs).transpose(1, 2)
-        k_img = apply_rotary_emb(k_img.transpose(1, 2), img_freqs).transpose(1, 2)
+        rotate = apply_rotary_emb_real if self.real_rope else apply_rotary_emb
+        q_img = rotate(q_img.transpose(1, 2), img_freqs).transpose(1, 2)
+        k_img = rotate(k_img.transpose(1, 2), img_freqs).transpose(1, 2)
 
-        q_txt = apply_rotary_emb(q_txt.transpose(1, 2), txt_freqs).transpose(1, 2)
-        k_txt = apply_rotary_emb(k_txt.transpose(1, 2), txt_freqs).transpose(1, 2)
+        q_txt = rotate(q_txt.transpose(1, 2), txt_freqs).transpose(1, 2)
+        k_txt = rotate(k_txt.transpose(1, 2), txt_freqs).transpose(1, 2)
 
         # Concat
         q = torch.cat([q_img, q_txt], dim=2)
@@ -458,7 +497,7 @@ class DoubleStreamAttention(nn.Module):
 
         # Prepare attention mask
         attn_mask = None
-        if txt_attention_mask is not None:
+        if txt_attention_mask is not None and attn_metadata is None:
             # Image tokens always have attention
             img_mask = torch.ones(
                 B,
@@ -474,7 +513,8 @@ class DoubleStreamAttention(nn.Module):
             attn_mask = attn_mask.to(dtype=torch.bool)
 
         # Attention with mask
-        x = sdpa_with_pad_mask(q, k, v, attn_mask)
+        x = (packed_attention(q, k, v, attn_metadata) if attn_metadata is not None
+             else sdpa_with_pad_mask(q, k, v, attn_mask))
 
         # Split
         x_img = x[:, :, :S_img, :]
@@ -577,6 +617,8 @@ class DoubleStreamDiTBlock(nn.Module):
         img_hw: Tuple[int, int],
         txt_seq_len: int,
         txt_attention_mask: Optional[torch.Tensor] = None,
+        attn_metadata=None,
+        rope_freqs: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # Modulation
         # c: [B, c_dim]
@@ -634,7 +676,9 @@ class DoubleStreamDiTBlock(nn.Module):
         txt_norm = modulate(self.norm1_txt(txt_tokens), shift_msa_txt, scale_msa_txt)
 
         img_attn, txt_attn = self.attn(
-            img_norm, txt_norm, img_hw, txt_seq_len, txt_attention_mask
+            img_norm, txt_norm, img_hw, txt_seq_len, txt_attention_mask,
+            attn_metadata=attn_metadata,
+            rope_freqs=rope_freqs,
         )
 
         img_tokens = img_tokens + gate_msa_img.unsqueeze(1) * img_attn
@@ -677,6 +721,7 @@ class SingleStreamAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.scale = self.head_dim**-0.5
+        self.real_rope = False
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.q_norm = nn.RMSNorm(self.head_dim, eps=1e-6)
@@ -700,6 +745,7 @@ class SingleStreamAttention(nn.Module):
         txt_attention_mask: Optional[torch.Tensor] = None,
         rope_freqs: Optional[torch.Tensor] = None,
         attn_bias: Optional[torch.Tensor] = None,
+        attn_metadata=None,
     ) -> torch.Tensor:
         B, S, C = x.shape
 
@@ -713,11 +759,12 @@ class SingleStreamAttention(nn.Module):
         q = self.q_norm(q)
         k = self.k_norm(k)
 
+        rotate = apply_rotary_emb_real if self.real_rope else apply_rotary_emb
         if rope_freqs is not None:
             # Frequencies already cover [img, txt] in that order, so RoPE is a
             # single elementwise pass over the concatenated sequence.
-            q = apply_rotary_emb(q.transpose(1, 2), rope_freqs).transpose(1, 2)
-            k = apply_rotary_emb(k.transpose(1, 2), rope_freqs).transpose(1, 2)
+            q = rotate(q.transpose(1, 2), rope_freqs).transpose(1, 2)
+            k = rotate(k.transpose(1, 2), rope_freqs).transpose(1, 2)
         else:
             # Need to apply different RoPE to img and txt parts
             # Assuming x is [img, txt]
@@ -730,13 +777,17 @@ class SingleStreamAttention(nn.Module):
 
             img_freqs, txt_freqs = self.rope(img_hw, txt_seq_len, x.device)
 
-            q_img = apply_rotary_emb(q_img.transpose(1, 2), img_freqs).transpose(1, 2)
-            k_img = apply_rotary_emb(k_img.transpose(1, 2), img_freqs).transpose(1, 2)
-            q_txt = apply_rotary_emb(q_txt.transpose(1, 2), txt_freqs).transpose(1, 2)
-            k_txt = apply_rotary_emb(k_txt.transpose(1, 2), txt_freqs).transpose(1, 2)
+            q_img = rotate(q_img.transpose(1, 2), img_freqs).transpose(1, 2)
+            k_img = rotate(k_img.transpose(1, 2), img_freqs).transpose(1, 2)
+            q_txt = rotate(q_txt.transpose(1, 2), txt_freqs).transpose(1, 2)
+            k_txt = rotate(k_txt.transpose(1, 2), txt_freqs).transpose(1, 2)
 
             q = torch.cat([q_img, q_txt], dim=2)
             k = torch.cat([k_img, k_txt], dim=2)
+
+        if attn_metadata is not None:
+            x = packed_attention(q, k, v, attn_metadata)
+            return self.proj(x.transpose(1, 2).reshape(B, S, C))
 
         if attn_bias is not None:
             x = sdpa_with_bias(q, k, v, attn_bias)
@@ -841,6 +892,7 @@ class SingleStreamDiTBlock(nn.Module):
         txt_attention_mask: Optional[torch.Tensor] = None,
         rope_freqs: Optional[torch.Tensor] = None,
         attn_bias: Optional[torch.Tensor] = None,
+        attn_metadata=None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # Modulation
         # c: [B, c_dim]
@@ -875,6 +927,7 @@ class SingleStreamDiTBlock(nn.Module):
             txt_attention_mask,
             rope_freqs=rope_freqs,
             attn_bias=attn_bias,
+            attn_metadata=attn_metadata,
         )
 
         x = x + gate_msa.unsqueeze(1) * x_attn
@@ -909,6 +962,7 @@ class UnconditionalAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.scale = self.head_dim**-0.5
+        self.real_rope = False
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.q_norm = nn.RMSNorm(self.head_dim, eps=1e-6)
@@ -941,8 +995,9 @@ class UnconditionalAttention(nn.Module):
         img_freqs, _ = self.rope(img_hw, 0, x.device)
 
         # Apply RoPE
-        q = apply_rotary_emb(q.transpose(1, 2), img_freqs).transpose(1, 2)
-        k = apply_rotary_emb(k.transpose(1, 2), img_freqs).transpose(1, 2)
+        rotate = apply_rotary_emb_real if self.real_rope else apply_rotary_emb
+        q = rotate(q.transpose(1, 2), img_freqs).transpose(1, 2)
+        k = rotate(k.transpose(1, 2), img_freqs).transpose(1, 2)
 
         x = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0)
 

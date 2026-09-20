@@ -70,3 +70,38 @@ def test_ema_rel_distance_positive_after_drift():
         for p in live.parameters():
             p.add_(0.5)
     assert ema_rel_distance(ema, live) > 0.0
+
+
+def test_same_device_snapshot_is_independent_fp32_storage():
+    model = _toy_model().to(torch.bfloat16)
+    opt = torch.optim.SGD(model.parameters(), lr=0.1)
+    snapshots = snapshot_weights([opt], device=next(model.parameters()).device)
+    for param, old in snapshots[0]:
+        assert old.dtype == torch.float32 and not old.requires_grad
+        assert old.data_ptr() != param.data_ptr()
+        assert torch.equal(old, param.float())
+    with torch.no_grad():
+        for param in model.parameters():
+            param.add_(0.25)
+    assert update_weight_ratios(snapshots)[0] > 0
+
+
+def test_actual_training_health_block_releases_snapshots():
+    import ast
+    import inspect
+    import weakref
+    from src.train import train
+
+    node = next(n for n in ast.walk(ast.parse(inspect.getsource(train.main)))
+                if isinstance(n, ast.If) and ast.unparse(n.test) == "health_snapshot is not None")
+    model = _toy_model()
+    opt = torch.optim.SGD(model.parameters(), lr=0.1)
+    snapshots = snapshot_weights([opt])
+    refs = [weakref.ref(pair[1]) for pair in snapshots[0]]
+    ns = dict(health_snapshot=snapshots, update_weight_ratios=update_weight_ratios)
+    del snapshots
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[])),
+                 "<training health block>", "exec"), ns)
+    assert ns["health_snapshot"] is None
+    assert all(ref() is None for ref in refs)
+    assert ns["health_metrics"]["health/update_weight_ratio_muon"] == 0

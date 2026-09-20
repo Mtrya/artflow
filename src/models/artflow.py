@@ -183,6 +183,8 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
         txt_pooled: Optional[torch.Tensor] = None,
         txt_mask: Optional[torch.Tensor] = None,
         fast_attn: bool = False,
+        native_flash_varlen: bool = False,
+        hoist_double_rope: bool = False,
     ) -> torch.Tensor:
         """
         x: (N, C, H, W)
@@ -194,6 +196,10 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
             attention bias out of the single-stream block loop. Same math, one
             table lookup and one mask build per forward instead of one per
             single-stream layer.
+        native_flash_varlen: opt-in pinned-runtime attention candidate. Shares
+            packed-key metadata across both stream types; requires fast_attn.
+        hoist_double_rope: prepare each double-stream block's own frequency
+            tensors outside its compiled forward, avoiding mutable cache guards.
         """
         _, _, H, W = x.shape
         x = self.x_embedder(x)  # (N, D, H/p, W/p)
@@ -216,6 +222,17 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
 
         rope_freqs = None
         attn_bias = None
+        attn_metadata = None
+        if native_flash_varlen:
+            if not fast_attn:
+                raise ValueError("native_flash_varlen requires fast_attn")
+            from .varlen_attention import mask_metadata, validate_runtime
+            validate_runtime()
+            text_keep = (txt_mask > 0 if txt_mask is not None else
+                         torch.ones(txt.shape[:2], device=txt.device, dtype=torch.bool))
+            keep = torch.cat([torch.ones(x.shape[:2], device=x.device, dtype=torch.bool),
+                              text_keep], dim=1)
+            attn_metadata = mask_metadata(keep)
         if fast_attn:
             # Hoist the per-layer RoPE table and padded-text bias for the
             # single-stream blocks. Double-stream blocks (if any) build their
@@ -228,7 +245,7 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
                 rope_freqs = first_single.attn.rope.prepare_freqs(
                     img_hw, txt_seq_len, x.device
                 )
-            if first_single is not None and txt_mask is not None:
+            if first_single is not None and txt_mask is not None and not native_flash_varlen:
                 keep = torch.cat(
                     [
                         torch.ones(
@@ -256,9 +273,15 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
                     txt_mask,
                     rope_freqs=rope_freqs,
                     attn_bias=attn_bias,
+                    attn_metadata=attn_metadata,
                 )
             else:
-                x, txt = block(x, txt, c, img_hw, txt_seq_len, txt_mask)
+                # Use this block's own table: checkpoint buffers or RoPE policies
+                # may differ across blocks. Do not share the first block's table.
+                double_freqs = (block.attn.rope(img_hw, txt_seq_len, x.device)
+                                if hoist_double_rope else None)
+                x, txt = block(x, txt, c, img_hw, txt_seq_len, txt_mask,
+                               attn_metadata=attn_metadata, rope_freqs=double_freqs)
 
         x = self.final_layer(x)
         x = self.unpatchify(x, H, W)

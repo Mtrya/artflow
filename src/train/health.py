@@ -20,16 +20,20 @@ from typing import List, Optional, Sequence, Tuple
 
 import torch
 
-# (parameter, CPU fp32 copy) taken before the optimizer step.
+# (parameter, independent fp32 copy) taken before the optimizer step.
 WeightSnapshot = List[Tuple[torch.nn.Parameter, torch.Tensor]]
 
 
-def snapshot_weights(optimizers: Sequence[torch.optim.Optimizer]) -> List[WeightSnapshot]:
-    """CPU copies of every trainable parameter, grouped per optimizer.
+def snapshot_weights(
+    optimizers: Sequence[torch.optim.Optimizer], *, device: str | torch.device = "cpu"
+) -> List[WeightSnapshot]:
+    """Independent FP32 copies of each parameter, grouped per optimizer.
 
     Called right before ``optimizer.step()``; pairing the copies with the
     post-step weights gives the step's actual update. CPU copies keep the
-    probe's transient GPU memory at one parameter at a time.
+    probe's transient GPU memory at one parameter at a time. The opt-in device
+    snapshot avoids round-trip transfers but must be released after computing
+    ratios, before the next forward, and needs optimizer-boundary memory checks.
     """
     snapshots: List[WeightSnapshot] = []
     for optimizer in optimizers:
@@ -37,7 +41,7 @@ def snapshot_weights(optimizers: Sequence[torch.optim.Optimizer]) -> List[Weight
         for param_group in optimizer.param_groups:
             for param in param_group["params"]:
                 group.append(
-                    (param, param.detach().to("cpu", torch.float32, copy=True))
+                    (param, param.detach().to(device, torch.float32, copy=True))
                 )
         snapshots.append(group)
     return snapshots

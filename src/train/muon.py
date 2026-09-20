@@ -63,20 +63,26 @@ def _zeropower_via_newtonschulz5_batched(G: torch.Tensor, steps: int = 5):
     of [r, c] tensors.
     """
     assert G.ndim == 3
-    a, b, c = (3.4445, -4.7750, 2.0315)
     X = G.to(torch.bfloat16)
     transposed = X.shape[1] > X.shape[2]
     if transposed:
         X = X.mT
     norms = X.flatten(1).norm(dim=1).clamp_min(1e-7).view(-1, 1, 1)
     X = X / norms
+    X = _newtonschulz5_batched_iterations(X, steps)
+    if transposed:
+        X = X.mT
+    return list(X.unbind(0))
+
+
+def _newtonschulz5_batched_iterations(X: torch.Tensor, steps: int = 5):
+    """Iteration-only compiler boundary; preserve eager norm reduction order."""
+    a, b, c = (3.4445, -4.7750, 2.0315)
     for _ in range(steps):
         A = X @ X.mT
         B = b * A + c * (A @ A)
         X = a * X + B @ X
-    if transposed:
-        X = X.mT
-    return list(X.unbind(0))
+    return X
 
 
 class Muon(torch.optim.Optimizer):
@@ -96,6 +102,7 @@ class Muon(torch.optim.Optimizer):
         nesterov: bool = True,
         ns_steps: int = 5,
         weight_decay: float = 0.0,
+        compile_square_ns: bool = False,
     ):
         defaults = dict(
             lr=lr,
@@ -106,6 +113,10 @@ class Muon(torch.optim.Optimizer):
             chunks=1,
         )
         super().__init__(params, defaults)
+        # Execution policy, not optimizer state: checkpoint loading must not
+        # silently replace the launch's measured kernel selection.
+        self.compile_square_ns = compile_square_ns
+        self._compiled_square_ns = None
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -160,9 +171,28 @@ class Muon(torch.optim.Optimizer):
                     by_shape.setdefault(tuple(entry[1].shape), []).append(entry)
                 for items in by_shape.values():
                     stacked = torch.stack([item[1] for item in items])
-                    updates = _zeropower_via_newtonschulz5_batched(
-                        stacked, group["ns_steps"]
-                    )
+                    if self.compile_square_ns and stacked.shape[-2] == stacked.shape[-1]:
+                        # The target-runtime probe found exact, faster square
+                        # batches initially; a full-update probe subsequently
+                        # found rare drift. Keep norm reduction eager, since
+                        # cast emulation does not fix reduction ordering.
+                        # Rectangular batches stay entirely eager.
+                        if self._compiled_square_ns is None:
+                            self._compiled_square_ns = torch.compile(
+                                _newtonschulz5_batched_iterations,
+                                fullgraph=True, dynamic=False,
+                                options={"emulate_precision_casts": True,
+                                         "shape_padding": False},
+                            )
+                        X = stacked.to(torch.bfloat16)
+                        norms = X.flatten(1).norm(dim=1).clamp_min(1e-7).view(-1, 1, 1)
+                        updates = list(self._compiled_square_ns(
+                            X / norms, group["ns_steps"]
+                        ).unbind(0))
+                    else:
+                        updates = _zeropower_via_newtonschulz5_batched(
+                            stacked, group["ns_steps"]
+                        )
                     for (dest, _, scale), updated in zip(items, updates):
                         dest.add_(updated.to(dest.dtype), alpha=-lr * scale)
                 continue
@@ -195,6 +225,7 @@ def build_param_groups(
     adam_betas=(0.9, 0.95),
     muon_momentum: float = 0.95,
     batched_ns: bool = True,
+    compile_square_ns: bool = False,
 ) -> List[torch.optim.Optimizer]:
     """
     Split model parameters into Muon (2D hidden) and AdamW (everything else)
@@ -243,6 +274,7 @@ def build_param_groups(
                 lr=muon_lr,
                 momentum=muon_momentum,
                 weight_decay=muon_wd,
+                compile_square_ns=compile_square_ns,
             )
         )
     if adam_params:
