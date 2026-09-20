@@ -46,5 +46,42 @@ def test_build_pool_skips_rows_without_captions(tmp_path):
     rows = [{"caption_zh": "有"}, {"note": "no captions"}]
     p = tmp_path / "x.jsonl"
     _write_jsonl(p, rows)
-    pool = build_pool({"x": p}, {}, 2, seed=0)
+    pool = build_pool({"x": p}, {}, 1, seed=0)
     assert all(r["prompt"] == "有" for r in pool)
+
+
+def test_build_pool_reads_captions_list_format(tmp_path):
+    # Precomputed training manifests carry {"captions": [str, ...]}.
+    rows = [{"captions": [f"c{i}", f"alt{i}"]} for i in range(10)]
+    p = tmp_path / "m.jsonl"
+    _write_jsonl(p, rows)
+    pool = build_pool({"m": p}, {}, 5, seed=0)
+    assert len(pool) == 5
+    assert all(r["field"] == "captions" for r in pool)
+
+
+def test_build_pool_rejects_source_without_any_captions(tmp_path):
+    p = tmp_path / "empty.jsonl"
+    _write_jsonl(p, [{"note": "no captions"}, {"other": 1}])
+    with pytest.raises(ValueError, match="no usable captions"):
+        build_pool({"x": p}, {}, 4)
+
+
+def test_build_pool_redistributes_exhausted_allocation(tmp_path):
+    # Heavy weight on a tiny source: allocation asks for more than it holds;
+    # the shortfall must move to other sources, not silently vanish.
+    pa = tmp_path / "a.jsonl"
+    pb = tmp_path / "b.jsonl"
+    _write_jsonl(pa, [{"caption_zh": f"甲{i}"} for i in range(10)])
+    _write_jsonl(pb, [{"caption_en": f"b{i}"} for i in range(1000)])
+    pool = build_pool({"a": pa, "b": pb}, {"a": 100.0, "b": 1.0}, 100, seed=0)
+    assert len(pool) == 100
+    assert sum(1 for r in pool if r["source"] == "a") == 10
+    assert sum(1 for r in pool if r["source"] == "b") == 90
+
+
+def test_build_pool_raises_when_total_exceeds_capacity(tmp_path):
+    p = tmp_path / "tiny.jsonl"
+    _write_jsonl(p, [{"caption_zh": "只有一条"}])
+    with pytest.raises(ValueError, match="usable rows"):
+        build_pool({"x": p}, {}, 5)

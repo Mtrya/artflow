@@ -6,6 +6,13 @@ proportional to (hero mix weight x source size), so the rollout distribution
 matches what the model was trained on without re-running the bucket planner.
 Prompts keep their domain tag for the per-domain canary/hacking monitors.
 
+Accepted row formats:
+  - caption_zh / caption_en / caption_long string fields (HF metadata style)
+  - "captions": list[str] (precomputed training manifest style)
+Rows without any usable caption are dropped BEFORE allocation, so the
+requested counts and mix are preserved; a source with zero usable rows is a
+hard error.
+
 Example:
     python -m scripts.posttrain.build_rollout_prompts \
         --source d1=data/hf_d1/captions.jsonl --weight d1=2.0 \
@@ -38,6 +45,41 @@ def allocate(sizes: dict[str, int], weights: dict[str, float],
     return counts
 
 
+def fit_counts(counts: dict[str, int], sizes: dict[str, int],
+               weights: dict[str, float], total: int) -> dict[str, int]:
+    """Cap counts at availability and redistribute the shortfall.
+
+    Allocation may request more rows than a small source holds; capping alone
+    would silently shrink and skew the pool. The deficit is re-allocated to
+    sources with spare capacity, again proportional to weight x spare size.
+    """
+    counts = {n: min(c, sizes[n]) for n, c in counts.items()}
+    for _ in range(len(counts) + 2):
+        deficit = total - sum(counts.values())
+        if deficit <= 0:
+            return counts
+        spare = {n: sizes[n] - counts[n] for n in counts if sizes[n] > counts[n]}
+        if not spare:
+            raise ValueError(
+                f"requested {total} prompts but the sources hold only "
+                f"{total - deficit} usable rows in total")
+        extra = allocate(spare, weights, deficit)
+        for n, e in extra.items():
+            counts[n] = min(counts[n] + e, sizes[n])
+    raise AssertionError("fit_counts did not converge")
+
+
+def row_captions(row: dict, fields) -> list[tuple[str, str]]:
+    """(field, text) pairs usable as prompts; supports both row formats."""
+    out = [(f, row[f]) for f in fields if row.get(f)]
+    caps = row.get("captions")
+    if isinstance(caps, str):
+        caps = [caps]
+    if caps:
+        out.extend(("captions", c) for c in caps if c)
+    return out
+
+
 def iter_rows(path: Path):
     with path.open(encoding="utf-8") as fh:
         for line in fh:
@@ -50,19 +92,22 @@ def build_pool(sources: dict[str, Path], weights: dict[str, float],
                total: int, *, fields=DEFAULT_FIELDS,
                seed: int = 0) -> list[dict]:
     rng = random.Random(seed)
-    rows = {name: list(iter_rows(path)) for name, path in sources.items()}
-    sizes = {name: len(rs) for name, rs in rows.items()}
-    counts = allocate(sizes, weights, total)
+    eligible = {}
+    for name, path in sources.items():
+        rows = [(row, row_captions(row, fields)) for row in iter_rows(path)]
+        rows = [(row, caps) for row, caps in rows if caps]
+        if not rows:
+            raise ValueError(
+                f"source {name!r} at {path} has no usable captions "
+                f"(looked for {tuple(fields)} and 'captions')")
+        eligible[name] = rows
+    sizes = {name: len(rs) for name, rs in eligible.items()}
+    counts = fit_counts(allocate(sizes, weights, total), sizes, weights, total)
     pool = []
     for name, count in counts.items():
-        chosen = rng.sample(rows[name], k=min(count, len(rows[name])))
-        for row in chosen:
-            available = [f for f in fields if row.get(f)]
-            if not available:
-                continue
-            field = rng.choice(available)
-            pool.append({"prompt": row[field], "source": name,
-                         "field": field})
+        for row, caps in rng.sample(eligible[name], k=count):
+            field, text = rng.choice(caps)
+            pool.append({"prompt": text, "source": name, "field": field})
     rng.shuffle(pool)
     return pool
 

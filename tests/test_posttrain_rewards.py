@@ -123,6 +123,17 @@ def test_promotion_gate_requires_a_streak():
         gate.observe(1.5)
 
 
+def test_promotion_is_a_one_time_latch():
+    gate = PromotionGate(coherence_threshold=0.8, patience=2)
+    assert not gate.observe(0.9)
+    assert gate.observe(0.9)  # the transition itself
+    # Later probes never re-emit the transition, and a failing probe must
+    # not revoke promotion: the cold-start -> joint switch is one-way.
+    assert not gate.observe(0.9)
+    assert not gate.observe(0.0)
+    assert gate.promoted
+
+
 def test_lambda_controller_lowers_on_plateau_plus_kid_regression():
     ctl = LambdaController(value=1.0, factor=0.5, window=3,
                            plateau_tol=0.01, kid_regress_tol=0.05)

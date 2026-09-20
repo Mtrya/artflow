@@ -60,6 +60,7 @@ def backward_simulate(model_fn, z: torch.Tensor, grid: torch.Tensor,
 
 def dmd_surrogate_loss(x0_gen: torch.Tensor, v_fake: torch.Tensor,
                        v_real: torch.Tensor, t: torch.Tensor, *,
+                       x_t: torch.Tensor | None = None,
                        normalize: bool = True) -> torch.Tensor:
     """Surrogate loss whose gradient is the DMD update direction.
 
@@ -68,16 +69,25 @@ def dmd_surrogate_loss(x0_gen: torch.Tensor, v_fake: torch.Tensor,
     score. `v_fake`/`v_real` are the fake- and real-score networks' velocity
     predictions at the re-noised x0_gen; both are detached here.
 
-    `normalize` applies DMD2's gradient normalization (divide by the mean
-    absolute gradient), which decouples the step size from the t^2/(1-t)
-    scale and from score magnitudes; the learning rate then sets the update
-    magnitude directly.
+    `normalize` applies DMD2's gradient normalization: each sample's
+    gradient is divided by that sample's teacher reconstruction residual
+    sg(mean(|x0_gen - x0_real|)), where x0_real = x_t + (1 - t) * v_real
+    (DMD2 sd_guidance.py divides by abs(p_real) per sample). This keeps the
+    update proportional to the *relative* score discrepancy instead of
+    amplifying tiny absolute differences; `x_t` is required when enabled.
     """
     t = t.view(-1, *([1] * (x0_gen.dim() - 1)))
     weight = (t ** 2 / (1.0 - t)).clamp(max=1e4)
     grad = (v_fake.detach() - v_real.detach()) * weight
     if normalize:
-        grad = grad / grad.abs().mean().clamp_min(1e-8)
+        if x_t is None:
+            raise ValueError("normalize=True requires x_t (the re-noised "
+                             "x0_gen the scores were evaluated at)")
+        x0_real = x_t.detach() + (1.0 - t) * v_real.detach()
+        resid = ((x0_gen.detach() - x0_real).double().abs()
+                 .flatten(1).mean(dim=1).clamp_min(1e-8))
+        grad = grad / resid.view(-1, *([1] * (grad.dim() - 1))).to(grad.dtype)
+        grad = torch.nan_to_num(grad)
     return (x0_gen * grad).mean()
 
 

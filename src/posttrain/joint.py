@@ -45,22 +45,29 @@ class PromotionGate:
     coherence_threshold: float = 0.8
     patience: int = 3
     _streak: int = 0
+    _promoted: bool = False
     _history: List[float] = field(default_factory=list)
 
     def observe(self, coherent_fraction: float) -> bool:
-        """Record one probe; return True exactly when the gate opens."""
+        """Record one probe; return True exactly once, on promotion."""
         if not 0.0 <= coherent_fraction <= 1.0:
             raise ValueError("coherent_fraction must be in [0, 1]")
         self._history.append(coherent_fraction)
+        if self._promoted:
+            return False
         if coherent_fraction >= self.coherence_threshold:
             self._streak += 1
         else:
             self._streak = 0
-        return self._streak >= self.patience
+        if self._streak >= self.patience:
+            self._promoted = True
+            return True
+        return False
 
     @property
     def promoted(self) -> bool:
-        return self._streak >= self.patience
+        """One-way latch: promotion outlives later failing probes."""
+        return self._promoted
 
 
 @dataclass

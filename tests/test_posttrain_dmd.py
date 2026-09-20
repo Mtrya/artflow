@@ -93,6 +93,32 @@ def test_dmd_surrogate_moves_toward_real_score():
     assert (x0.grad > 0).all()  # descent step subtracts a positive gradient
 
 
+def test_dmd_normalization_requires_xt():
+    import pytest
+    x0 = torch.zeros(1, 1, requires_grad=True)
+    with pytest.raises(ValueError):
+        dmd_surrogate_loss(x0, torch.ones(1, 1), torch.zeros(1, 1),
+                           torch.tensor([0.5]))
+
+
+def test_dmd_normalization_is_per_sample_teacher_residual():
+    # DMD2 (sd_guidance.py) divides each sample's gradient by that sample's
+    # |x0_gen - x0_real|, NOT by a batch-wide magnitude of the score
+    # difference. Samples with small score differences must keep small
+    # gradients.
+    x0 = torch.zeros(2, 1, requires_grad=True)
+    v_real = torch.zeros(2, 1)
+    v_fake = torch.tensor([[1.0], [1e-6]])
+    t = torch.tensor([0.5, 0.5])
+    # x0_real = x_t + (1 - t) * v_real = x_t; per-sample residuals 2 and 1.
+    x_t = torch.tensor([[-2.0], [-1.0]])
+    dmd_surrogate_loss(x0, v_fake, v_real, t, x_t=x_t).backward()
+    w = 0.5 ** 2 / 0.5  # t^2 / (1 - t) = 0.5
+    expected = torch.tensor([[w * 1.0 / 2.0], [w * 1e-6 / 1.0]]) / x0.numel()
+    torch.testing.assert_close(x0.grad, expected)
+    assert x0.grad[0].abs() > 1e4 * x0.grad[1].abs()
+
+
 def test_fake_score_loss_uses_flow_target():
     x0 = torch.randn(2, 2, 4, 4)
     eps = torch.randn(2, 2, 4, 4)

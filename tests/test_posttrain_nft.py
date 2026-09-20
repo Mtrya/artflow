@@ -91,3 +91,22 @@ def test_adaptive_weighting_requires_xt_and_t():
     with pytest.raises(ValueError):
         nft_loss(v, v, v, torch.tensor([0.5, 0.5]), 0.5,
                  adaptive_x0_weight=True)
+
+
+def test_adaptive_weighting_does_not_explode_when_policy_converges():
+    # Reference scenario (NVlabs/DiffusionNFT train_nft_sd3.py): each branch
+    # is normalized by its OWN per-sample residual. When v_theta has already
+    # converged to the target but v_old has not, a shared v_theta residual
+    # would be ~0 and blow the loss up; per-branch normalization keeps the
+    # gradient at the documented magnitude.
+    v_target = torch.zeros(1, 1)
+    v_theta = v_target.clone().requires_grad_(True)
+    v_old = torch.full((1, 1), 10.0)
+    t = torch.tensor([0.5])
+    x_t = torch.zeros(1, 1)  # any fixed point; only (1 - t) matters here
+    loss = nft_loss(v_theta, v_old, v_target, torch.tensor([1.0]), 0.5,
+                    x_t=x_t, t=t, adaptive_x0_weight=True)
+    loss.backward()
+    # Single element, r=1: loss reduces to |resid_pos|, whose gradient
+    # magnitude is 2 * (1 - t) * beta = 0.5.
+    torch.testing.assert_close(v_theta.grad, torch.full((1, 1), 0.5))

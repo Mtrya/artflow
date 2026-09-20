@@ -52,8 +52,14 @@ def nft_loss(v_theta: torch.Tensor, v_old: torch.Tensor,
         x_t, t: the noised sample and timesteps; required when
             adaptive_x0_weight is set.
         adaptive_x0_weight: replace the plain velocity MSE with the paper's
-            self-normalized x0 regression, ||x0_pred - x0||^2 /
-            sg(mean(|x0_pred - x0|)), per branch.
+            self-normalized x0 regression. Each branch is normalized by its
+            OWN per-sample residual, sg(mean(|x0_pred_branch - x0|)) clipped
+            at 1e-5, as in the reference implementation
+            (NVlabs/DiffusionNFT train_nft_sd3.py). Normalizing both branches
+            by a shared v_theta residual explodes once v_theta converges
+            while v_old has not. The reference additionally scales the
+            objective by 1/beta; that is a constant folded into the learning
+            rate here.
 
     v_old is detached internally; the old policy must never receive gradients.
     """
@@ -67,8 +73,16 @@ def nft_loss(v_theta: torch.Tensor, v_old: torch.Tensor,
             raise ValueError("adaptive_x0_weight requires x_t and t")
         t_b = t.view(-1, *([1] * (v_theta.dim() - 1))).to(v_theta.dtype)
         # x0_pred = x_t + (1 - t) * v under this repo's path convention.
-        x0_err = ((1.0 - t_b) * (v_theta - v_target)).flatten(1).abs().mean(dim=1)
-        norm = x0_err.detach().mean().clamp_min(1e-8)
-        err_pos = err_pos * (1.0 - t) ** 2 / norm
-        err_neg = err_neg * (1.0 - t) ** 2 / norm
+        scale = (1.0 - t_b)
+        x0 = x_t + scale * v_target
+
+        def _branch_err(v_branch: torch.Tensor) -> torch.Tensor:
+            resid = x_t + scale * v_branch - x0
+            weight = (resid.detach().double().abs().flatten(1).mean(dim=1)
+                      .clamp_min(1e-5))
+            return (resid.pow(2).flatten(1).mean(dim=1)
+                    / weight.to(resid.dtype))
+
+        err_pos = _branch_err(v_pos)
+        err_neg = _branch_err(v_neg)
     return (r * err_pos + (1.0 - r) * err_neg).mean()
