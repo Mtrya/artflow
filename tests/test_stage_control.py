@@ -339,8 +339,10 @@ def test_actual_launcher_preflight_and_overrides(tmp_path, total, stage, start_f
     assert captured["inputs"]["eval"]["dataset_path"] == str(
         workspace / "precomputed_dataset" / f"light-eval@{stage}")
     assert "d4-relaion" in captured["inputs"]["data"]["mix"]
-    from scripts.bench.infra_acceptance import TRAIN_FLAGS
-    assert set(TRAIN_FLAGS) | {"--compile_autotune"} <= set(captured["args"])
+    hero_train_flags = ("--compile_dynamic", "--disable_ddp_compile_split",
+                        "--hoist_double_rope", "--native_flash_varlen", "--real_rope",
+                        "--muon_compile_square_ns", "--gpu_health_snapshot", "--local_cache_clear")
+    assert set(hero_train_flags) | {"--compile_autotune"} <= set(captured["args"])
     assert "--step_breakdown" not in captured["args"]
     assert "--cpu_wall_profile" not in captured["args"]
     assert ("--reset_sampler" in captured["args"]) is bool(prev)

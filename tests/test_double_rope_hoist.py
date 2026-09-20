@@ -1,5 +1,4 @@
 import copy
-import json
 
 import pytest
 import torch
@@ -7,8 +6,6 @@ import torch
 from src.models.artflow import ArtFlow
 from src.models.dit_blocks import set_real_rope
 from src.train.train import parse_args
-from src.train.config import load_config
-from scripts.bench.rope_cache_probe import model_patch_size, shapes_from_records
 
 
 @pytest.mark.parametrize("real_rope", [False, True])
@@ -53,16 +50,3 @@ def test_hoisting_is_an_explicit_default_off_training_flag():
     assert not parse_args().parse_args(["--config", "configs/base.toml"]).hoist_double_rope
     assert parse_args().parse_args(["--config", "configs/base.toml",
                                     "--hoist_double_rope"]).hoist_double_rope
-
-
-def test_probe_uses_actual_model_geometry_and_recorded_micro_shape(tmp_path):
-    cfg = load_config(["configs/base.toml", "configs/hero.toml"]).model
-    assert model_patch_size(cfg) == 2
-    path = tmp_path / "rank-1.jsonl"
-    row = dict(step=115, shapes=[dict(shape=[109, 16, 24, 42, 21], count=1)])
-    path.write_text(json.dumps(row))
-    assert shapes_from_records(path, [115]) == [(109, 16, 24, 42, 21)]
-    row["shapes"][0]["count"] = 2
-    path.write_text(json.dumps(row))
-    with pytest.raises(ValueError, match="one-micro"):
-        shapes_from_records(path, [115])
