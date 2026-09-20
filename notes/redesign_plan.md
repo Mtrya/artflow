@@ -469,7 +469,8 @@ while RL breaks the teacher ceiling. Z-Image-Turbo is the industrial 8-step prec
   of "greasy". Watch test-vs-train reward divergence and precision/recall drift as early
   hacking/collapse signals.
 
-**Ablation axes** (100 4090-h): RL algorithm (ReFL vs DiffusionNFT), λ_rl, reward
+**Ablation axes** (100 4090-h): RL algorithm (ReFL vs DiffusionNFT; GRPO/DPO
+excluded per DMDR's negative evidence), λ_rl, reward
 composition and multi-domain weighting, rollout group size G (16 vs 24; NFT
 default 24, initial value 16 to save VLM scoring cost), and prompts per
 iteration (initial value 48 like NFT → effective RL batch ~768 at G=16;
