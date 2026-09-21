@@ -126,12 +126,18 @@ class VLMJudge:
 
     def __init__(self, client: CaptionClient, *, max_tokens: int = 256,
                  temperature: float = 0.0, judge_prompt: str = JUDGE_RUBRIC,
-                 prompt_version: str = JUDGE_PROMPT_VERSION):
+                 prompt_version: str = JUDGE_PROMPT_VERSION,
+                 extra: Optional[Dict[str, Any]] = None):
         self.client = client
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.judge_prompt = judge_prompt
         self.prompt_version = prompt_version
+        # Extra request-body fields passed through to the provider, e.g.
+        # {"chat_template_kwargs": {"enable_thinking": False}} for the college
+        # Qwen endpoint.  They join the cache key, so a toggle cannot silently
+        # reuse a response scored under different settings.
+        self.extra = extra
 
     async def score(self, http_client, *, image_bytes: bytes,
                     prompt: str) -> Optional[float]:
@@ -139,7 +145,7 @@ class VLMJudge:
         response: Response = await self.client.generate(
             http_client, image_bytes=image_bytes, prompt=prompt_text,
             prompt_version=self.prompt_version, max_tokens=self.max_tokens,
-            temperature=self.temperature)
+            temperature=self.temperature, extra=self.extra)
         if response.error or not response.text:
             return None
         axes = parse_judge_scores(response.text)

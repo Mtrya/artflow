@@ -54,9 +54,15 @@ class Provider:
 
 DEEPSEEK_ROOT = "https://api.deepseek.com"
 
+# College self-hosted endpoint (SII internal network only; see
+# notes/posttrain_reward_budget.md).  Serves Qwen3.8-27B, the only multimodal
+# model on the college deployment; the key lives in the environment, never here.
+SII_ROOT = "https://cqhbod8bjjjbcoakk8pmeebgkaq9akcq.openapi-sj.sii.edu.cn/v1"
+
 PROVIDERS = {
     "zenmux": Provider(name="zenmux", root=ZENMUX_ROOT, key_env="ZENMUX_API_KEY"),
     "deepseek": Provider(name="deepseek", root=DEEPSEEK_ROOT, key_env="DEEPSEEK_API_KEY"),
+    "sii": Provider(name="sii", root=SII_ROOT, key_env="SII_VLM_API_KEY"),
     "openrouter": Provider(
         name="openrouter", root=OPENROUTER_ROOT, key_env="OPENROUTER_API_KEY",
         extra_headers={"HTTP-Referer": "https://github.com/kaupane/artflow",

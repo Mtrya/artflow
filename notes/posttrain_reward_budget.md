@@ -6,6 +6,17 @@ endpoint/key 存于 GPFS `$W/secrets/sii_vlm.json`）实测可用（8 并发 7.7
 按次计费；约束变为吞吐与共享资源礼貌使用（并发 ≤16–32 + 退避）。ZenMux 仅作
  fallback（校外、judge 全挂、或需第二意见时）。原文的按次计费模型保留作 fallback 参考。
 
+**接入（复用 CaptionClient，无新 client）**：Provider 注册表已有 `sii` 条目，
+key 从环境变量 `SII_VLM_API_KEY` 读（不进代码库）：
+
+```python
+client = CaptionClient(cache_dir=..., model="sii:Qwen3.8-27B",
+                       pricing=ModelPricing(0.0, 0.0), concurrency=16)
+judge = VLMJudge(client, extra={"chat_template_kwargs": {"enable_thinking": False}})
+```
+
+`extra` 原样进请求体并参与缓存键；免费 provider 用零价 ModelPricing 跳过 /models 询价。
+
 ## 每次 RL 迭代的打分量
 
 NFT/ReFL 结构：**每迭代打分图片数 = prompts/iter × G**。
