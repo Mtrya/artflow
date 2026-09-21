@@ -1,7 +1,10 @@
 # Stage 6 reward budget（VLM judge 侧成本估算）
 
-更新于 2026-09-21。定价按 ZenMux gemini-2.5-flash-lite 档当前单价填（见下），
-价格变动只需改 `PRICE_PER_CALL` 一行。
+更新于 2026-09-21。**成本前提已变化**：学院自部署 VLM（Qwen3.8-27B，SII 内网，
+endpoint/key 存于 GPFS `$W/secrets/sii_vlm.json`）实测可用（8 并发 7.7s 全成功，
+支持 image_url，`enable_thinking:false` 直达输出）。**API 调用费用≈0**，不再需要
+按次计费；约束变为吞吐与共享资源礼貌使用（并发 ≤16–32 + 退避）。ZenMux 仅作
+ fallback（校外、judge 全挂、或需第二意见时）。原文的按次计费模型保留作 fallback 参考。
 
 ## 每次 RL 迭代的打分量
 
