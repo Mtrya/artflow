@@ -30,7 +30,7 @@ plus `notes/dataset_plan.md` (data-source detail).
 | D10 | VLM captioning | **Via API** (Qwen-VL-class), not self-hosted — caption cost is money + rate limits, not GPU-hours. No GPU-with-internet workspace needed |
 | D11 | Modulation | **Shared per-layer modulation MLP (`mod=layer`)** — 2.2a resolved 2026-09-05: layer wins eval/loss@end (0.9437 vs 0.9441) with a persistent t040 advantage (5/5 probes from 3K, -0.0002→-0.0010), KID agrees (0.0190 vs 0.0195), +0.6% faster, -8% peak mem; tie-break prior (PixArt/DiT-Air) points the same way. All stage-2+ arms use it |
 | D12 | Optimizer | **Muon (chunked orthogonalization), LR 0.02** — 2.5 resolved 2026-09-06: 16K confirm muon 0.91127 vs AdamW 0.92134 eval/loss (-1.1%), KID 0.00699 vs 0.00922, +10% step time (<15% bar); AdamW leads early, muon overtakes by 8K and pulls away (CMuon-style late gain) |
-| D13 | Quality monitoring | Small bilingual panels inspect anatomy, architecture, style and layout; no numerical capability target or forecast gate. Report observed strengths and limitations; [Stage-4 plan](stage4_plan.md) |
+| D13 | Quality monitoring | Small bilingual panels inspect anatomy, architecture, style and layout; no numerical capability target or forecast gate. Report observed strengths and limitations; [Stage-4 plan](archive/stage4_plan.md) |
 | D14 | Inference scope | No prescribed inference device, VRAM ceiling, or latency launch gate; use reproducible evaluation settings. Deployment optimization and distillation are optional later work |
 
 ## Design dimension ledger (2026-09-04, agreed with user)
@@ -254,7 +254,7 @@ implements it; hero recipe exit layer = 20.
 
 Stage 3 keeps the Stage-2 hero architecture, dataset mix, caption curriculum,
 and chunked Muon plus auxiliary AdamW optimizer. Its current implementation and
-throughput gate are defined by [`notes/stage3_gate.md`](stage3_gate.md).
+throughput gate are defined by [`notes/stage3_gate.md`](archive/stage3_gate.md).
 
 The work is row-preserving: sample a dataset and row first, select one caption
 inside that row with the existing curriculum, then use `(resolution,
@@ -287,15 +287,15 @@ slice, hoisted RoPE/attention tables, true early exit at k=20, per-block
 Rejected on measurement: cuDNN attention, text-encoder prefetch, CUDA-graph
 `reduce-overhead` compile, whole-model `torch.compile`. Details, per-resolution
 ceilings, and the Stage-4 sizing inputs are in
-[`notes/stage3_gate.md`](stage3_gate.md).
+[`notes/stage3_gate.md`](archive/stage3_gate.md).
 
 ## Stage 3.5 — Long-caption experiments, dataset refresh, and bucket planning
 
 **Goal**: prepare the caption distribution and efficient per-resolution batching
-before the Stage-4 scaling probes. The detailed [Stage-3.5 plan](stage3_5_plan.md)
+before the Stage-4 scaling probes. The detailed [Stage-3.5 plan](archive/stage3_5_plan.md)
 sets a separate 75-hour experiment/profiling cap and approximately $100 API budget;
 full-corpus precompute/storage require separate costing. Its
-[execution record](stage3_5_pilot.md) records subsequent design amendments and
+[execution record](archive/stage3_5_pilot.md) records subsequent design amendments and
 measured outcomes, which supersede older provisional details below.
 
 - 3.5.1 **Long-caption bias experiment**: compare the current curriculum with
@@ -333,7 +333,7 @@ bucket-plan revision.
 recipe**, from scratch through **256p → 640p → 896p**. Stage 5
 must be able to proceed directly, **without a planned Stage 4.5**. Full design,
 literature anchors, evaluation contract, experiment budget, and exit checklist:
-[`notes/stage4_plan.md`](stage4_plan.md).
+[`notes/stage4_plan.md`](archive/stage4_plan.md).
 
 The 450-hour experiment/profiling cap is separate from Stage 3.5's 75 hours and
 the hero working range of **1,600–2,200 RTX 4090 hours**. Empirical diffusion
@@ -421,6 +421,15 @@ sits at ~15–25% of pretraining — already an order of magnitude above the 1�
 the diffusion literature (DiffusionNFT: GenEval 0.24→0.98 in 1K steps; DMDR: 1.5K+1.5K
 steps). The risk here is correctness and system structure, not throughput: **no separate
 infra stage**; one embedded measurement pass, then a 640p pilot, then the 896p main line.
+
+**Platform decision (2026-09-23): all Stage-6 work runs on NVIDIA cards** (4090 jobs in
+可上网GPU资源; judge/HF/swanlab integrations are already proven there). The Ascend
+line carries the hero pretraining only — the 910B bring-up cost (shm coin-flip crashes,
+torchair GE blockers, tbe shutdown hangs, 30–70 min log lag, 16-card整机 quota) is
+tolerable for a fixed, already-validated recipe but unacceptable for research-grade
+bring-up where every bug would become "model bug or platform bug". Stage-6 compute is
+modest (533M model, 8-step rollouts, 100 4090-h ablation budget), so the free Ascend
+capacity buys nothing here.
 
 **Why joint, not sequential** (DMDR §2.3, Fig. 3): RL on an already-distilled model
 anchors on a mode-impoverished distribution → reward hacking and collapse; RL before

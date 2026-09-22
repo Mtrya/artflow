@@ -643,7 +643,8 @@ Cap: 5.5 hours / 44 GPU-hours; outer command 19,600 seconds, inner
 workload 19,000 seconds. No hero run is launched. Caps do not guarantee every
 phase completes.
 
-[infra_acceptance.py](../scripts/bench/infra_acceptance.py) serializes 23 phases:
+The acceptance run serialized 23 phases (one-off harness removed after
+evidence archival):
 
 1. Render exact versioned inputs without regenerating weights.
 2. Measure all resolutions at three equal-width curriculum-slice midpoints.

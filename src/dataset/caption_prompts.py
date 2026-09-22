@@ -33,7 +33,6 @@ LENGTH_BANDS = {
     "512-895": (512, 895),
     "896-1280": (896, 1280),
 }
-BAND_NAMES = tuple(LENGTH_BANDS)
 
 WORDS_PER_TOKEN = {"en": 0.757, "zh": 1.21}
 

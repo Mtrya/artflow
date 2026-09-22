@@ -1,26 +1,17 @@
 """Evaluation module for ArtFlow.
 
-This module provides metrics calculation, visualization utilities,
-and evaluation pipelines for generative models.
+Live evaluation is driven by the training loop and diagnostics:
+- eval_loss: teacher-forced eval loss probes (length-binned)
+- prompt_grid: periodic sample grids on the frozen hero panel
+- kid_eval: KID against precomputed reference statistics
 """
 
-from .metrics import (
-    calculate_fid,
-    calculate_kid,
-    calculate_clip_score,
-)
+from .metrics import calculate_kid
 from .visualize import make_image_grid, visualize_denoising, format_prompt_caption
-from .pipeline import run_evaluation_uncond, run_evaluation_light, run_evaluation_heavy
 
 __all__ = [
-    "calculate_fid",
     "calculate_kid",
-    "calculate_clip_score",
     "make_image_grid",
     "visualize_denoising",
     "format_prompt_caption",
-    "run_evaluation_uncond",
-    "run_evaluation_light",
-    "run_evaluation_heavy",
 ]
-

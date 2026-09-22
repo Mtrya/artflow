@@ -221,7 +221,7 @@ class BucketPlan:
 
     Each resolution maps to ordered ``LenBucket`` values.  A length is assigned
     to the first bucket whose ``max_length`` is greater than or equal to it, so
-    a retained length of 1280 is valid when the final bound is 1280.
+    a retained length equal to the final bound is still valid.
     """
 
     def __init__(self, by_resolution: Mapping[int, Sequence[LenBucket | Tuple[int, int]]]):

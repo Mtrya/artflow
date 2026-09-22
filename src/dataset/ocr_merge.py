@@ -30,7 +30,6 @@ _CATALOGUE = re.compile(
 )
 # A seal or a column of calligraphy is mostly Chinese characters.  Latin letters
 # and digits in bulk mean the line is a label or a mis-read code.
-_NON_CJK = re.compile(r"[A-Za-z0-9]")
 _CJK = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 
 _SEAL_PREFIX = re.compile(r"^[【\[]?\s*(印|印文|印章|seal)\s*[】\]]?\s*[:：]?\s*", re.IGNORECASE)

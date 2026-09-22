@@ -30,7 +30,6 @@ LICENSE = "CC0 (1MP) / CC-BY-4.0 (6MP), NPM Taipei Open Data"
 DETAIL_ID_RE = re.compile(r"/opendata/Pub/Detail/(\d+)\?dep=P")
 META_ROW_RE = re.compile(r"<tr>\s*<td>([^<]+)</td>\s*<td>(.*?)</td>\s*</tr>", re.S)
 TAG_RE = re.compile(r"<[^>]+>")
-SIZE_ROW_RE = re.compile(r"<tr>\s*<td>([^<]+)</td>\s*<td>([^<]+)</td>\s*</tr>", re.S)
 
 
 def parse_search_ids(html_text: str) -> List[str]:
@@ -107,11 +106,6 @@ def fetch_detail_html(session, cid: str) -> str:
     """Fetch the Detail page HTML ('' on failure)."""
     resp = request_with_retry(session, "GET", f"{BASE}/opendata/Pub/Detail/{cid}?dep=P&mode=full")
     return resp.text if resp is not None else ""
-
-
-def fetch_detail_metadata(session, cid: str) -> Dict[str, str]:
-    """Fetch and parse the Detail page metadata tables."""
-    return parse_detail_metadata(fetch_detail_html(session, cid))
 
 
 def extract_image_codes(html_text: str) -> List[str]:

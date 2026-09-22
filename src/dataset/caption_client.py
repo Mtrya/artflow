@@ -399,19 +399,6 @@ class CaptionClient:
         return response
 
 
-async def run_batch(client: CaptionClient, jobs: List[Dict[str, Any]],
-                    progress: Optional[Any] = None) -> List[Response]:
-    """Run ``jobs`` concurrently, where each job is a kwargs dict for ``generate``."""
-    async with httpx.AsyncClient() as http:
-        tasks = [client.generate(http, **job) for job in jobs]
-        results = []
-        for coro in asyncio.as_completed(tasks):
-            results.append(await coro)
-            if progress is not None:
-                progress(results)
-        return results
-
-
 def summarise(responses: List[Response]) -> Dict[str, Any]:
     """Aggregate cost and usage over a batch, counting cached calls separately."""
     billed = [r for r in responses if not r.cached]

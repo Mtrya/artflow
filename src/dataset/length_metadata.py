@@ -55,13 +55,6 @@ def prompt_metadata_contract(num_rows: int) -> dict:
     }
 
 
-def _column(dataset: Any, name: str) -> List[Any]:
-    try:
-        return list(dataset[name])
-    except (KeyError, TypeError, IndexError):
-        return [dataset[index][name] for index in range(len(dataset))]
-
-
 def _prompt_text(caption: str) -> str:
     return PROMPT_TEMPLATE.format(system_prompt=SYSTEM_PROMPT, user_prompt=caption)
 

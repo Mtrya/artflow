@@ -9,7 +9,6 @@ import torch
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.models.artflow_uncond import ArtFlowUncond
 from src.models.artflow import ArtFlow
 
 
@@ -24,46 +23,6 @@ def print_test_result(passed, message=""):
     """Print test result with formatting"""
     status = "✓ PASSED" if passed else "✗ FAILED"
     print(f"{status}: {message}")
-
-
-def test_artflow_uncond():
-    """Test ArtFlowUncond model"""
-    print_test_header("ArtFlowUncond")
-
-    # Setup parameters
-    batch_size = 2
-    in_channels = 4
-    patch_size = 2
-    hidden_size = 32
-    num_heads = 4
-    depth = 2
-
-    # Create inputs
-    H, W = 32, 32
-    x = torch.randn(batch_size, in_channels, H, W)
-    t = torch.randint(0, 1000, (batch_size,))
-
-    # Initialize model
-    model = ArtFlowUncond(
-        patch_size=patch_size,
-        in_channels=in_channels,
-        hidden_size=hidden_size,
-        depth=depth,
-        num_heads=num_heads,
-    )
-
-    # Forward pass
-    out = model(x, t)
-
-    # Check shape
-    shape_correct = out.shape == x.shape
-    print_test_result(shape_correct, f"Output shape: {out.shape} (expected: {x.shape})")
-
-    # Check for non-zero output
-    non_zero = not torch.allclose(out, torch.zeros_like(out))
-    print_test_result(non_zero, "Output contains non-zero values")
-
-    return shape_correct and non_zero
 
 
 def test_artflow_pure():
@@ -305,7 +264,6 @@ def run_all_tests():
     results = {}
 
     # Run all tests
-    results["ArtFlowUncond"] = test_artflow_uncond()
     results["ArtFlow Pure"] = test_artflow_pure()
     results["ArtFlow Fused"] = test_artflow_fused()
     results["ArtFlow Hybrid"] = test_artflow_hybrid()

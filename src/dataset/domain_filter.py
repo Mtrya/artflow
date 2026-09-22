@@ -16,8 +16,6 @@ import json
 from collections import Counter
 from typing import Dict
 
-_GUOHUA_CLASSES = ("paintings", "painting", "calligraphy", "繪畫", "法書")
-
 # AIC's `classification` is medium-like and lowercase; painting-like values below.
 _AIC_PAINTING_CLASSES = (
     "painting", "hanging scroll", "handscroll", "album leaf", "fan", "screen",
