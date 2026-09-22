@@ -186,10 +186,12 @@ class LocalScorer:
 
 
 class ClipAestheticScorer:
-    """LAION aesthetic predictor: CLIP ViT-L/14 image embedding -> linear head.
+    """Improved LAION aesthetic predictor: CLIP ViT-L/14 image embedding -> MLP.
 
-    The head output (roughly 0-10) is divided by 10 into [0, 1]. The prompt
-    is ignored (the LAION predictor is prompt-free). Requires
+    The checkpoint is the christophschuhmann/improved-aesthetic-predictor MLP
+    (768 -> 1024 -> 128 -> 64 -> 16 -> 1, dropout between layers, inactive in
+    eval mode). The head output (roughly 0-10) is divided by 10 into [0, 1].
+    The prompt is ignored (the predictor is prompt-free). Requires
     `open_clip_torch`; weights load in __init__ so the object, once built,
     is thread-safe for concurrent CPU/GPU forwards.
     """
@@ -209,8 +211,17 @@ class ClipAestheticScorer:
         model, _, preprocess = open_clip.create_model_and_transforms(
             clip_model, pretrained=pretrained, device=device)
         model.eval()
-        head = torch.nn.Linear(model.visual.output_dim, 1)
-        head.load_state_dict(torch.load(head_path, map_location=device))
+        dim = model.visual.output_dim
+        head = torch.nn.Sequential(
+            torch.nn.Linear(dim, 1024), torch.nn.Dropout(0.2),
+            torch.nn.Linear(1024, 128), torch.nn.Dropout(0.2),
+            torch.nn.Linear(128, 64), torch.nn.Dropout(0.1),
+            torch.nn.Linear(64, 16), torch.nn.Linear(16, 1))
+        state = torch.load(head_path, map_location=device)
+        # The upstream checkpoint nests the stack under a `layers.` prefix
+        # (it was an attribute of a LightningModule); strip it.
+        state = {k.removeprefix("layers."): v for k, v in state.items()}
+        head.load_state_dict(state)
         head.to(device).eval()
         self._torch = torch
         self._model = model

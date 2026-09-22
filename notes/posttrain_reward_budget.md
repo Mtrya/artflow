@@ -21,13 +21,17 @@ judge = VLMJudge(client, extra={"chat_template_kwargs": {"enable_thinking": Fals
 
 NFT/ReFL 结构：**每迭代打分图片数 = prompts/iter × G**。
 
-| 配置 | prompts/iter | G | 图/迭代 |
-|---|---:|---:|---:|
-| 初始（省钱包） | 48 | 16 | 768 |
-| NFT 默认 | 48 | 24 | 1,152 |
+| 配置 | prompts/iter | G | 图/迭代 | 实测耗时（SII VLM，16 并发） |
+|---|---:|---:|---:|---:|
+| 初始（省钱包） | 48 | 16 | 768 | ≈3.5 min |
+| NFT 默认 | 48 | 24 | 1,152 | ≈5.3 min |
 
 每图 1 次 VLM judge 调用（rubric 多维一次输出；若拆多调用则乘倍数），
-加 ~10% 重试/解析失败冗余。
+加 ~10% 重试/解析失败冗余。耗时基准来自 judge 探针实测
+（notes/judge_probe_sii.md，2026-09-22）：thinking off / max_tokens=256 /
+temperature=0 时 3.7 calls/s（≈0.27 s/图），106 次计费调用 0 次传输失败；
+并发保持 ≤16 并保留客户端退避。按此速率，5.5k probe 池约 25 min。
+若需降噪，每图重复 k 次取均值，成本按 k 线性乘（k=2 时 ≈0.55 s/图）。
 
 ## 总成本公式
 
