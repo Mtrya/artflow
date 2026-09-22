@@ -38,6 +38,7 @@ and reports the aggregate metrics only; the omission is stated on stdout,
 because that run's curve cannot be read by caption length.
 """
 
+import os
 import zipfile
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -63,8 +64,8 @@ from ..utils.encode_text import encode_text
 
 def _autocast_ctx(device: torch.device):
     """Match training-time numerics (accelerate bf16 mixed precision)."""
-    if device.type == "cuda":
-        return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+    if device.type in ("cuda", "npu", "xpu"):
+        return torch.autocast(device_type=device.type, dtype=torch.bfloat16)
     import contextlib
 
     return contextlib.nullcontext()
@@ -422,6 +423,12 @@ class EvalLossProbe:
                 )
                 bs = z1.shape[0]
                 slots = [self._slots[i] for i in idxs]
+                if os.environ.get("ART_EVAL_PROBE_DEBUG"):
+                    print(
+                        f"[probe-debug] batch {gstart}/{len(group)} bs={bs} "
+                        f"txt_w={txt.shape[1]} latent={z1.shape[-2]}x{z1.shape[-1]}",
+                        flush=True,
+                    )
 
                 for ti, t_val in enumerate(self.t_grid):
                     t = torch.full((bs,), t_val, device=self.device)

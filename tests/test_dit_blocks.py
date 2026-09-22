@@ -12,6 +12,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from src.models.dit_blocks import (
     TimestepEmbeddings,
     apply_rotary_emb,
+    apply_rotary_emb_real,
+    apply_rotary_emb_realfreq,
     MSRoPE,
     SingleStreamAttention,
     SingleStreamDiTBlock,
@@ -95,6 +97,21 @@ def test_apply_rotary_emb():
     print_test_result(modified, "Rotation was applied (output differs from input)")
 
     return shape_correct and dtype_correct and modified
+
+
+def test_apply_rotary_emb_variants_equivalent():
+    """The real-rope variants must match the complex reference."""
+    B, S, H, D = 2, 10, 4, 128
+    x = torch.randn(B, S, H, D)
+    freqs = torch.polar(torch.ones(S, D // 2), torch.randn(S, D // 2))
+
+    ref = apply_rotary_emb(x, freqs)
+    real = apply_rotary_emb_real(x, freqs)
+    realfreq = apply_rotary_emb_realfreq(x, torch.view_as_real(freqs))
+
+    assert torch.allclose(ref, real, atol=1e-5)
+    assert torch.allclose(ref, realfreq, atol=1e-5)
+    assert realfreq.shape == x.shape and realfreq.dtype == x.dtype
 
 
 def test_msrope():

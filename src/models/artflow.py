@@ -245,6 +245,11 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
                 rope_freqs = first_single.attn.rope.prepare_freqs(
                     img_hw, txt_seq_len, x.device
                 )
+                if first_single.attn.real_rope:
+                    # Materialize the real (cos, sin) layout once here, outside
+                    # any compiled block, so no complex-typed tensor crosses
+                    # the graph boundary (torchair/GE has no complex dtype).
+                    rope_freqs = torch.view_as_real(rope_freqs)
             if first_single is not None and txt_mask is not None and not native_flash_varlen:
                 keep = torch.cat(
                     [

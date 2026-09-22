@@ -101,6 +101,11 @@ class TrainLoopConfig:
     num_workers: int = 8
     use_ema: bool = True
     ema_decay: float = 0.999
+    # Bias-corrected EMA schedule: decay_t = min(ema_decay, (1+t)/(10+t))
+    # (ADM/EDM warmup). Early steps average over a short window so the EMA
+    # tracks the live weights instead of initialization residue; pure function
+    # of the step, so crash-resume reproduces it exactly.
+    ema_decay_warmup: bool = False
     ema_update_interval: int = 1
     use_logit_normal_sampling: bool = True
     logit_normal_mu: float = 0.0

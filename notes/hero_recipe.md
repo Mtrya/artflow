@@ -342,3 +342,110 @@ adoption, and record why a tested candidate was accepted or rejected:
 
 The pass does not reopen source mixtures or add a 1024p stage. Any unexpected
 need to change the scientific recipe is a separate redesign requiring approval.
+
+## Ascend (910B) variant — 2026-09-22, signed off by user
+
+Applies only if the hero run migrates to the 昇腾卡公共空间 (16×910B/node).
+Everything not listed here is identical to the 4090 recipe above (model shape,
+data mix, curriculum, optimizer, evaluation policy).
+
+| item | 4090 value | Ascend value |
+|---|---|---|
+| total steps T | 480k (anchored) | **600k** |
+| warmup | 5,000 | **20,000** |
+| LR schedule | cosine to min 1.5e-5 | unchanged (T=600k horizon) |
+| EMA | 0.9999 | 0.9999 with **bias-corrected warmup** (user, 2026-09-22): `decay_t = min(0.9999, (1+t)/(10+t))` — the ADM/EDM schedule, `ema_decay_warmup = true` in the launch override |
+| bucket plan | batch-targets-0914 | **ascend-0922** (44GiB level, bs 8..72; the 48g variant was retired — see amendment below) |
+| grad accumulation | 1/5/7 (256/640/896) | **1/4/5** (effective batch ≈1010/750/470 vs thresholds 640/512/400) |
+| allocator | cuda native | **`PYTORCH_NPU_ALLOC_CONF=expandable_segments:True`**, no periodic cache_clear (amendment 2026-09-22 late) |
+| compile | per-block inductor | none (`--no-compile`) — torchair decision 2026-09-23: **dead**, see below |
+| attention | native varlen flash | `npu_fusion_attention` bool (B,1,S,S) drop-mask, explicit scale (0922b) |
+
+Bucket-budget calibration (sweep3 linear model + two real 16-card runs, all
+30/30 unless noted): 44GiB budget → OK; 54GiB → OOM at 59.5GiB active; 50GiB →
+OK with **peak 58.9GiB / reserved 59.5GiB** (measured via the new NPU memory
+telemetry). Real static (Muon+Adam+EMA) ≈ 12GiB vs the sweep's 3.3GiB (SGD).
+~~Final choice 48GiB~~ — **superseded**, see amendment below.
+
+**Amendment 2026-09-22 late (smoke3-8 + memdiag6):** the 48g plan died in
+practice — smoke3/4 OOMed at ~step 55-250 with reserved pinned at the
+~59.7GiB ceiling while active was only ~51.4GiB (fragmentation accumulates
+with the number of distinct bucket shapes seen; `max_split_size_mb:256` did
+not help). The run moved to the **ascend-0922 (44GiB-level) plan**. Periodic
+`empty_cache` (cache_clear) did not prevent the creep either (smoke6) and was
+dropped. **memdiag6 settled the mechanism**: with `expandable_segments:True`
+reserved oscillates 51-60GiB with the shape mix but does **not** grow
+monotonically (fixed-shape control run is perfectly flat: resv 51.11GiB,
+seg 568, 100 steps), i.e. no leak — the earlier OOMs were peak-vs-ceiling,
+and cache_clear only added release/realloc spikes. Final memory config:
+`expandable_segments:True` alone (smoke7 two-factor + smoke8 single-factor
+both green over 750 steps). bs ranges at 44g: 256p 8..72 / 640p 5..13 /
+896p 4..6.
+
+EMA note (user decision 2026-09-22): the Ascend run launches with the
+bias-corrected warmup schedule directly. The form `min(d, (1+t)/(10+t))` is
+the ADM/EDM codebase standard; it removes the initialization drag and keeps
+the averaging window short through the 20k LR warmup (saturation at t≈90k).
+What it does not change is the steady-state tracking lag at high constant LR
+(the `ema_rel_distance` plateau seen on the 4090 run) — that is inherent to
+any fixed decay and resolves in the cosine tail; if mid-run grids look too
+stale we can still lower the decay itself at a later restart.
+
+Wall-clock estimate (single 16-card node, measured bucket times): ~312h ≈ 13
+days for 600k steps (~5000 NPU-hours). Multi-node would shorten this but the
+昇腾 workspace offers only 16-card job quotas, so single-node it is.
+
+**torchair decision 2026-09-23 (final: NOT used).** Six bench rounds cleared
+two GE blockers (`aten.isneginf` → `eq(-inf)`; complex RoPE purged from the
+compiled region — `apply_rotary_emb_realfreq` + real freq table materialized
+at model level, bitwise-identical, kept in the tree as 0922m) but hit a third:
+an empty `[0]` FX-graph output (likely the NPU fused-attention's empty aux
+output at dropout=0, saved for backward) that GE materializes as `[0,0,0,0]`.
+More decisive than the bug chain was the expected gain: hostprobe5's cpu-wall
+breakdown shows `syncopt` (grad allreduce + optimizer) at ~850ms of the
+~1.3s/step, with fwd+bwd host time only ~175ms — torchair could only compress
+a slice of the latter, far below the user's >20% adoption threshold. The hero
+launches **eager** with `FOREACH=1 FUSED_ADAM=1` (validated 300/300 steps in
+hostprobe5: eval/loss 1.998→1.004, peak 52.7GiB). Retained risk: if someone
+revives torchair later, `src/pretrain/train.py`'s torchair path already wires
+`set_real_rope` + single-stream-only compilation.
+
+**Launch record 2026-09-23 (UTC+8):** `ascend-hero2-256p`, code 0922l,
+eager, `expandable_segments:True`, T=600k, fault-tolerance 200 retries.
+Launched WITHOUT FOREACH/FUSED_ADAM: hostprobe5's levered run showed ~725
+samples/s clean (eval-probe overhead removed) vs smoke8's ~890 un-levered —
+the levers target optimizer dispatch, but `syncopt` is allreduce-dominated,
+so they aimed at the wrong segment and may even cost throughput. A/B deferred
+to a post-launch checkpoint restart. Launcher v2 adds an endpoint watchdog
+(kill the wedged torchrun group 180s after "reached stage endpoint" —
+hostprobe5 showed the tbe shutdown can hang a finished job on 16 idle cards).
+(First launch `ascend-hero-256p` 00:20 carried the levers and was stopped
+~00:50 before meaningful progress; renamed for uniqueness after duplicate
+同名 job rows proliferated via fault-tolerance retries.)
+
+**Launch record 2026-09-23 ~01:05 (UTC+8):** `ascend-hero3-256p`, code
+**0922n** — hero2 crashed 4 min in with a DataLoader worker bus error:
+`/dev/shm` on the ascend pod is only 64MB and the default `file_system`
+tensor-sharing strategy fills it (`torch_*` spill files). 0922n sets
+`mp.set_sharing_strategy("file_descriptor")` (memfd, bypasses /dev/shm)
+via new CLI arg `--dataloader_sharing_strategy file_descriptor`, and the
+launcher raises `ulimit -n` to 1048576. Same config otherwise: eager,
+`expandable_segments:True`, T=600k, no FOREACH/FUSED_ADAM. Expected
+throughput ~890 samples/s (smoke8 baseline); first 2000 steps are the
+verification window.
+
+256p data-mix tweak (user decision 2026-09-22, code bundle 0922f): with the
+step budget enlarged to 600k, D4 (world) weights in the **256p stage only**
+are raised by +0.2× each (inat 1.2, megalith 1.4, pd12m/vintage/zimage/
+relaion 1.2), moving D4 share from 50.9% to 55.5% after renormalization;
+D1–D3 multipliers unchanged. 640p/896p mixes and all bucket plans untouched.
+
+Migration status (2026-09-22 morning): 256p (104GB) already uploaded to the
+private HF bridge repos from inko-patrol at ~55MB/s aggregate (6 parallel
+`upload_folder`); 640p (502GB) uploading, 896p (574GB) next. sj-side pull
+runs as a 16-card job (`ascend-dl-256p`, snapshot_download max_workers=24 via
+hf-mirror) into `…/ky26021/artflow/precomputed_dataset` on sj-ssd3; the 2-card
+notebook route was abandoned — the cann image's JupyterTerminal never comes
+up. Remaining open items: (1) verify sj-side download integrity (row counts
+vs qb), (2) hero launch script with OOM watchdog + auto-resume, (3) user
+sign-off on this variant.

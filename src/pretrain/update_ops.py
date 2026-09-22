@@ -20,6 +20,20 @@ def divide_gradients(parameters, divisor, *, foreach=False):
         torch._foreach_div_(tensors, divisor)
 
 
+def ema_decay_at(step, decay, *, warmup=False):
+    """EMA decay for an optimizer step (1-based).
+
+    With warmup=True, ramp the decay as min(decay, (1+step)/(10+step)) — the
+    bias-corrected schedule from the ADM/EDM codebases. Early steps keep a
+    short averaging window so the EMA tracks the live weights instead of
+    carrying initialization residue; the schedule is a pure function of the
+    step, so crash-resume reproduces it exactly.
+    """
+    if not warmup:
+        return decay
+    return min(decay, (1.0 + step) / (10.0 + step))
+
+
 @torch.no_grad()
 def update_ema(ema_model, model, decay, *, foreach=False):
     groups = defaultdict(lambda: ([], []))

@@ -133,9 +133,7 @@ class _Accumulator:
 class CaptionTelemetry:
     """Host-side caption and execution counters for the training loop."""
 
-    def __init__(self, short_threshold: int = 256, log_every: int = 25):
-        self.short_threshold = int(short_threshold)
-        self.log_every = int(log_every)
+    def __init__(self) -> None:
         self._accumulator = _Accumulator()
         self._cumulative = _Accumulator()
         # dataset index -> bitset of drawn row positions.  Grown towards the
@@ -253,7 +251,9 @@ class CaptionTelemetry:
         if world_size <= 1 or not torch.distributed.is_available() \
                 or not torch.distributed.is_initialized():
             return
-        flat = torch.tensor(self.window_counts(), dtype=torch.float64,
+        # int64: every counter is an integer, and HCCL (Ascend) rejects
+        # float64 collectives while NCCL/Gloo/HCCL all take int64.
+        flat = torch.tensor(self.window_counts(), dtype=torch.int64,
                             device=device or "cpu")
         torch.distributed.all_reduce(flat, op=torch.distributed.ReduceOp.SUM)
         # The reduced vector already contains this rank's own counters, so it

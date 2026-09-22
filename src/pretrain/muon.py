@@ -226,6 +226,7 @@ def build_param_groups(
     muon_momentum: float = 0.95,
     batched_ns: bool = True,
     compile_square_ns: bool = False,
+    fused_adamw: bool = False,
 ) -> List[torch.optim.Optimizer]:
     """
     Split model parameters into Muon (2D hidden) and AdamW (everything else)
@@ -278,8 +279,17 @@ def build_param_groups(
             )
         )
     if adam_params:
+        adamw_cls = torch.optim.AdamW
+        if fused_adamw:
+            # torch_npu's fused AdamW runs the whole update as one kernel
+            # instead of ~6 small ops per parameter — a large host-dispatch
+            # saving on NPU, where Python dispatch dominates. Same AdamW
+            # math and per-param state layout as torch.optim.AdamW.
+            from torch_npu.optim import NpuFusedAdamW
+
+            adamw_cls = NpuFusedAdamW
         optimizers.append(
-            torch.optim.AdamW(
+            adamw_cls(
                 adam_params, lr=adam_lr, weight_decay=adam_wd, betas=adam_betas
             )
         )

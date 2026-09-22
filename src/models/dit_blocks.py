@@ -89,6 +89,27 @@ def sdpa_with_bias(
     bias: torch.Tensor,
 ) -> torch.Tensor:
     """SDPA with a precomputed additive bias of shape [B, 1, 1, S_k]."""
+    if q.device.type == "npu":
+        # torch_npu's F.sdpa dispatch with a float additive bias materializes
+        # per-head S^2 bias + P matrix per layer (measured: +2.8 GiB at
+        # B8/S2304), which OOMs long-caption batches. npu_fusion_attention with
+        # a bool (B,1,S,S) drop-mask (True = drop) is true flash attention:
+        # +0.06 GiB saved for backward, maxdiff 2e-3 vs the float-bias path at
+        # S=2304 bf16. Two gotchas, both measured: the scale argument defaults
+        # to 1.0 (NOT 1/sqrt(D)) so it must be passed explicitly, and the mask
+        # must be full (B,1,S,S) - aclnn rejects broadcastable (B,1,1,S).
+        import torch_npu
+
+        b, h, s_q, d = q.shape
+        s_k = k.shape[2]
+        # bias == -inf: identical to torch.isneginf for float tensors, but
+        # aten.eq.Scalar has a torchair GE converter while aten.isneginf does
+        # not (ascend-ta-bench3 NotImplementedError).
+        drop = bias == float("-inf")
+        mask = drop.expand(b, 1, s_q, s_k).contiguous()
+        return torch_npu.npu_fusion_attention(
+            q, k, v, h, "BNSD", atten_mask=mask, keep_prob=1.0, scale=d ** -0.5
+        )[0]
     from torch.nn.attention import sdpa_kernel
 
     backends = _sdpa_backends()
@@ -169,6 +190,22 @@ def apply_rotary_emb_real(x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Ten
     pairs = x.float().reshape(*x.shape[:-1], -1, 2)
     real, imag = pairs.unbind(-1)
     cosine, sine = torch.view_as_real(freqs_cis)[None, :, None].unbind(-1)
+    rotated = torch.stack((real * cosine - imag * sine,
+                           real * sine + imag * cosine), dim=-1)
+    return rotated.flatten(3).type_as(x)
+
+
+def apply_rotary_emb_realfreq(x: torch.Tensor, freqs_real: torch.Tensor) -> torch.Tensor:
+    """apply_rotary_emb_real taking an already-real frequency tensor.
+
+    freqs_real is [S, D/2, 2] float32 (cos, sin pairs) — the view_as_real of
+    the complex table, materialized OUTSIDE compiled regions so no
+    complex-typed tensor crosses the graph boundary (torchair/GE has no
+    complex dtype support).
+    """
+    pairs = x.float().reshape(*x.shape[:-1], -1, 2)
+    real, imag = pairs.unbind(-1)
+    cosine, sine = freqs_real[None, :, None].unbind(-1)
     rotated = torch.stack((real * cosine - imag * sine,
                            real * sine + imag * cosine), dim=-1)
     return rotated.flatten(3).type_as(x)
@@ -759,13 +796,17 @@ class SingleStreamAttention(nn.Module):
         q = self.q_norm(q)
         k = self.k_norm(k)
 
-        rotate = apply_rotary_emb_real if self.real_rope else apply_rotary_emb
         if rope_freqs is not None:
             # Frequencies already cover [img, txt] in that order, so RoPE is a
-            # single elementwise pass over the concatenated sequence.
+            # single elementwise pass over the concatenated sequence. Under
+            # the real-rope policy the hoisted table arrives in real
+            # [S, D/2, 2] layout (converted once at model level, outside any
+            # compiled block); otherwise it is complex.
+            rotate = apply_rotary_emb_realfreq if self.real_rope else apply_rotary_emb
             q = rotate(q.transpose(1, 2), rope_freqs).transpose(1, 2)
             k = rotate(k.transpose(1, 2), rope_freqs).transpose(1, 2)
         else:
+            rotate = apply_rotary_emb_real if self.real_rope else apply_rotary_emb
             # Need to apply different RoPE to img and txt parts
             # Assuming x is [img, txt]
             S_img = img_hw[0] * img_hw[1]

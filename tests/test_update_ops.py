@@ -81,3 +81,17 @@ def test_muon_and_adamw_preserve_updates_with_retained_gradient_views():
         assert not storage.any()
         assert all(p.grad is None for p in reference.parameters())
         assert all(p.grad._base is storage for p in candidate.parameters())
+
+
+def test_ema_decay_warmup_schedule():
+    from src.pretrain.update_ops import ema_decay_at
+
+    assert ema_decay_at(1, 0.9999) == 0.9999
+    assert ema_decay_at(1, 0.9999, warmup=True) == 2.0 / 11.0
+    # Monotone ramp that saturates exactly at the configured decay.
+    values = [ema_decay_at(t, 0.9999, warmup=True) for t in (1, 100, 1000, 10000)]
+    assert all(a < b for a, b in zip(values, values[1:]))
+    assert ema_decay_at(10**9, 0.9999, warmup=True) == 0.9999
+    # Saturation near t ~= 90k: still ramping at 50k, saturated by 200k.
+    assert ema_decay_at(50000, 0.9999, warmup=True) < 0.9999
+    assert ema_decay_at(200000, 0.9999, warmup=True) == 0.9999

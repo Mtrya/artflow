@@ -29,7 +29,11 @@ from transformers.optimization import get_scheduler
 from datasets import load_from_disk
 
 from ..models.artflow import ArtFlow
-from ..models.dit_blocks import set_real_rope, set_sdpa_backends
+from ..models.dit_blocks import (
+    SingleStreamDiTBlock,
+    set_real_rope,
+    set_sdpa_backends,
+)
 from ..dataset.sampler import (
     LenBucket,
     BucketPlan,
@@ -42,7 +46,7 @@ from ..dataset.captions import CaptionPolicy
 from .caption_telemetry import CaptionTelemetry, PolicyState
 from .caption_loss_weights import CaptionLossWeights, StepLossAccumulator, weighted_mean
 from .finite_guard import require_finite_update
-from .update_ops import divide_gradients, update_ema, clear_local_cuda_cache
+from .update_ops import divide_gradients, ema_decay_at, update_ema, clear_local_cuda_cache
 from .infra_metrics import InfraRecorder
 from ..dataset.mix import parse_dataset_mix, get_dataset_weights
 from ..utils.encode_text import encode_text
@@ -129,6 +133,33 @@ def build_linear_cosine_scheduler(
         return min_ratio + (1.0 - min_ratio) * cosine
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+def _device_mem_allocated(device) -> float:
+    """Current allocated memory in GiB for cuda/npu; 0.0 otherwise."""
+    if device.type == "cuda" and torch.cuda.is_available():
+        return torch.cuda.memory_allocated(device) / 1024**3
+    if device.type == "npu":
+        return torch.npu.memory_allocated(device) / 1024**3
+    return 0.0
+
+
+def _device_peak_mem(device):
+    """(peak_allocated_gib, peak_reserved_gib) for cuda/npu, else None."""
+    if device.type == "cuda" and torch.cuda.is_available():
+        return (torch.cuda.max_memory_allocated(device) / 1024**3,
+                torch.cuda.max_memory_reserved(device) / 1024**3)
+    if device.type == "npu":
+        return (torch.npu.max_memory_allocated(device) / 1024**3,
+                torch.npu.max_memory_reserved(device) / 1024**3)
+    return None
+
+
+def _device_reset_peak_mem(device) -> None:
+    if device.type == "cuda" and torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats(device)
+    elif device.type == "npu":
+        torch.npu.reset_peak_memory_stats(device)
+
 
 def sample_logit_normal_timesteps(batch_size, device, mu=0.0, sigma=1.0):
     """Sample timesteps from a logit-normal distribution."""
@@ -273,6 +304,15 @@ def parse_args():
         "instead of once per shape for a 24-layer graph",
     )
     parser.add_argument(
+        "--compile_backend",
+        type=str,
+        default="",
+        help="torch.compile backend override. 'torchair' selects the Ascend "
+        "torchair GE backend (requires the torchair package); any other value "
+        "is passed through as a torch.compile backend name. Empty keeps the "
+        "default (inductor)",
+    )
+    parser.add_argument(
         "--compile_dynamic",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -302,6 +342,26 @@ def parse_args():
         help="Run Muon's Newton-Schulz iterations as one batched matmul per "
         "matrix shape instead of a serial chain of small GEMMs (same "
         "per-matrix math)",
+    )
+    parser.add_argument(
+        "--npu_fused_adamw",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use torch_npu's fused AdamW for the auxiliary (non-Muon) "
+        "parameter group: one kernel for the whole update instead of ~6 "
+        "small ops per parameter. Same AdamW math; NPU-only lever against "
+        "host dispatch overhead",
+    )
+    parser.add_argument(
+        "--dataloader_sharing_strategy",
+        type=str,
+        default=None,
+        choices=["file_system", "file_descriptor"],
+        help="torch.multiprocessing sharing strategy for DataLoader "
+        "worker->main tensor transfer. 'file_descriptor' (memfd) bypasses "
+        "/dev/shm entirely — required on pods with a tiny shm mount "
+        "(Ascend nodes ship 64MB, and file_system dies there with bus "
+        "errors / torch_* ENOSPC). Empty keeps the torch default.",
     )
     parser.add_argument(
         "--muon_compile_square_ns",
@@ -384,6 +444,26 @@ def load_bucket_plan(spec: str, resolution_ids) -> BucketPlan:
     return BucketPlan(by_resolution)
 
 
+def _resolve_compile_backend(spec, log=print):
+    """Map --compile_backend to a torch.compile backend object/name.
+
+    'torchair' builds the Ascend GE backend via the torchair package (lazy
+    import: the package only exists on NPU hosts). Any other non-empty value
+    is a registered torch.compile backend name. Empty -> None (default
+    inductor path).
+    """
+    if not spec:
+        return None
+    if spec == "torchair":
+        # Import through torch_npu so we always get the version-matched
+        # bundled backend, even when no standalone torchair is installed.
+        from torch_npu.dynamo import torchair
+        from torchair import CompilerConfig
+
+        return torchair.get_npu_backend(compiler_config=CompilerConfig())
+    return spec
+
+
 def main():
     parser = parse_args()
     cli = parser.parse_args()
@@ -407,12 +487,15 @@ def main():
         "hoist_double_rope",
         "compile",
         "compile_blocks",
+        "compile_backend",
         "compile_dynamic",
         "compile_autotune",
         "disable_ddp_compile_split",
         "ddp_gradient_bucket_views",
         "muon_batched_ns",
         "muon_compile_square_ns",
+        "npu_fused_adamw",
+        "dataloader_sharing_strategy",
         "ddp_boundary_sync",
         "foreach_updates",
         "local_cache_clear",
@@ -420,6 +503,14 @@ def main():
         "text_encoder_exit_mode",
     ):
         setattr(args, name, getattr(cli, name))
+
+    if args.dataloader_sharing_strategy:
+        # Must be set before any DataLoader worker spawns. file_descriptor
+        # uses memfd instead of /dev/shm (64MB on Ascend pods — file_system
+        # dies there with ENOSPC/bus error, nondeterministically).
+        import torch.multiprocessing as mp
+
+        mp.set_sharing_strategy(args.dataloader_sharing_strategy)
 
     if args.native_flash_varlen:
         from ..models.varlen_attention import validate_runtime
@@ -576,6 +667,7 @@ def main():
         muon_momentum=args.muon_momentum,
         batched_ns=args.muon_batched_ns,
         compile_square_ns=args.muon_compile_square_ns,
+        fused_adamw=args.npu_fused_adamw,
     )
     muon_params = sum(
         p.numel() for group in optimizers[0].param_groups for p in group["params"]
@@ -666,25 +758,56 @@ def main():
         except Exception as exc:  # pragma: no cover - version guard
             accelerator.print(f"could not raise the dynamo recompile limit ({exc})")
         compile_mode = "max-autotune-no-cudagraphs" if args.compile_autotune else "default"
+        compile_backend = _resolve_compile_backend(args.compile_backend, accelerator.print)
+        compile_kwargs = {"dynamic": args.compile_dynamic}
+        if compile_backend is not None:
+            compile_kwargs["backend"] = compile_backend
+        else:
+            compile_kwargs["mode"] = compile_mode
         accelerator.print(
             f"Compiling each DiT block (mode={compile_mode!r}, "
+            f"backend={args.compile_backend or 'default'!r}, "
             f"{len(model_raw.blocks)} blocks sharing one graph per shape, "
             f"recompile_limit={getattr(_dynamo.config, 'recompile_limit', '?')}, "
             f"dynamic={args.compile_dynamic})..."
         )
         t0 = time.time()
-        for block in model_raw.blocks:
-            block.forward = torch.compile(
-                block.forward, mode=compile_mode, dynamic=args.compile_dynamic
-            )
+        if args.compile_backend == "torchair":
+            # GE has no complex dtype support: switch to the complex-free RoPE
+            # (real frequency table materialized at model level, outside the
+            # compiled blocks) and leave double-stream blocks eager — they
+            # build their own complex rope table internally. Numerics are
+            # identical (tests/test_dit_blocks.py equivalence test).
+            set_real_rope(model_raw, True)
+            n_skip = 0
+            for block in model_raw.blocks:
+                if isinstance(block, SingleStreamDiTBlock):
+                    block.forward = torch.compile(block.forward, **compile_kwargs)
+                else:
+                    n_skip += 1
+            if n_skip:
+                accelerator.print(
+                    f"torchair: {n_skip} double-stream block(s) left eager "
+                    "(internal complex RoPE table)"
+                )
+        else:
+            for block in model_raw.blocks:
+                block.forward = torch.compile(block.forward, **compile_kwargs)
         accelerator.print(
             f"per-block torch.compile wrappers ready ({time.time() - t0:.1f}s; "
             "first step per shape triggers graph compilation)"
         )
     elif args.compile:
-        accelerator.print("Compiling DiT with torch.compile (mode=\"default\")...")
+        compile_backend = _resolve_compile_backend(args.compile_backend, accelerator.print)
+        accelerator.print(
+            f"Compiling DiT with torch.compile "
+            f"(backend={args.compile_backend or 'default'!r}, mode=\"default\")..."
+        )
         t0 = time.time()
-        model = torch.compile(model, mode="default")
+        if compile_backend is not None:
+            model = torch.compile(model, backend=compile_backend)
+        else:
+            model = torch.compile(model, mode="default")
         accelerator.print(
             f"torch.compile wrapper ready ({time.time() - t0:.1f}s; first step "
             "triggers graph compilation)"
@@ -772,10 +895,7 @@ def main():
         for resolution_id, buckets in sorted(bucket_plan.by_resolution.items())
     )
     accelerator.print(f"  Length-bucketed sampler plan: {bucket_desc}")
-    caption_telemetry = CaptionTelemetry(
-        short_threshold=caption_policy.short_threshold,
-        log_every=args.telemetry_log_interval,
-    )
+    caption_telemetry = CaptionTelemetry()
     # Per-sample loss weights as a curve over retained caption length. The
     # "none" curve (the default) leaves the loss and its normalization exactly
     # as they were, so a run is only reweighted when its config says so.
@@ -1072,6 +1192,7 @@ def main():
             ("hoist_double_rope", args.hoist_double_rope),
             ("muon_batched_ns", args.muon_batched_ns),
             ("muon_compile_square_ns", args.muon_compile_square_ns),
+            ("npu_fused_adamw", args.npu_fused_adamw),
             ("ddp_boundary_sync", args.ddp_boundary_sync),
             ("compile", args.compile),
             ("compile_blocks", args.compile_blocks),
@@ -1179,20 +1300,26 @@ def main():
         txt, txt_mask = pad_text_to_hi(txt, txt_mask, bucket_hi)
         return txt, txt_mask, txt_pooled
 
-    # Per-optimizer-step breakdown (--step_breakdown): record CUDA-event
+    # Per-optimizer-step breakdown (--step_breakdown): record device-event
     # pairs per segment per micro-batch, settle (sync + elapsed) once per
     # optimizer step. Segments: text (frozen encoder), fwd (DiT fwd + loss),
     # bwd, opt (clip+step+zero), ema.
     if args.step_breakdown:
+        # torch.cuda.Event hard-crashes on NPU-only boxes (first bd_mark):
+        # pick the backend's event/sync API like the memory-stats helpers do.
+        if accelerator.device.type == "cuda":
+            _bd_event_mod = torch.cuda
+        else:
+            _bd_event_mod = torch.npu
         bd_seg: dict = {"text": [], "fwd": [], "bwd": [], "opt": [], "ema": []}
 
         def bd_mark(seg: str):
-            ev = torch.cuda.Event(enable_timing=True)
+            ev = _bd_event_mod.Event(enable_timing=True)
             ev.record()
             bd_seg[seg].append(ev)
 
         def bd_settle():
-            torch.cuda.synchronize()
+            _bd_event_mod.synchronize()
             out = {}
             for seg, evs in bd_seg.items():
                 pairs = len(evs) // 2
@@ -1383,7 +1510,7 @@ def main():
                     f"txt_len={txt.shape[1]} "
                     f"B={int(latents.shape[0])} "
                     f"latent={z_t.shape[-2]}x{z_t.shape[-1]} "
-                    f"mem_gb={torch.cuda.memory_allocated() / 1024**3:.2f}"
+                    f"mem_gb={_device_mem_allocated(accelerator.device):.2f}"
                 )
             # Forward
             if args.step_breakdown:
@@ -1491,7 +1618,11 @@ def main():
 
                 for opt in optimizers:
                     opt.step()
-                    opt.zero_grad(set_to_none=not args.ddp_gradient_bucket_views)
+                    # NpuFusedAdamW rejects set_to_none=True.
+                    opt.zero_grad(
+                        set_to_none=not args.ddp_gradient_bucket_views
+                        and not args.npu_fused_adamw
+                    )
 
                 health_metrics = None
                 if health_snapshot is not None:
@@ -1537,7 +1668,12 @@ def main():
                 if args.step_breakdown:
                     bd_mark("ema")
                 update_ema_model(
-                    ema_model, model_raw, args.ema_decay, foreach=args.foreach_updates
+                    ema_model,
+                    model_raw,
+                    ema_decay_at(
+                        global_step, args.ema_decay, warmup=args.ema_decay_warmup
+                    ),
+                    foreach=args.foreach_updates,
                 )
                 if args.step_breakdown:
                     bd_mark("ema")
@@ -1656,19 +1792,18 @@ def main():
                     log_dict["train/grad_norm"] = float(grad_norm)
                 if sps_ema is not None:
                     log_dict["train/samples_per_sec"] = sps_ema
-                if torch.cuda.is_available():
+                peak = _device_peak_mem(accelerator.device)
+                if peak is not None:
                     # Memory telemetry: catch transient spikes (long-caption batches,
                     # ckpt saves, eval overlaps) instead of guessing post-OOM.
-                    step_peak_gb = torch.cuda.max_memory_allocated() / 1024**3
+                    step_peak_gb, step_reserved_gb = peak
                     peak_mem_gb = max(peak_mem_gb, step_peak_gb)
                     # Reserved (the allocator's own ceiling) is what decides whether
                     # a larger batch fits, so a batch-size screen needs it next to
                     # the allocated figure.
-                    peak_reserved_gb = max(
-                        peak_reserved_gb, torch.cuda.max_memory_reserved() / 1024**3
-                    )
+                    peak_reserved_gb = max(peak_reserved_gb, step_reserved_gb)
                     log_dict["train/mem_peak_gb"] = step_peak_gb
-                    torch.cuda.reset_peak_memory_stats()
+                    _device_reset_peak_mem(accelerator.device)
                 if caption_window:
                     log_dict.update(caption_window)
 

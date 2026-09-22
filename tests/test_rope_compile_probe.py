@@ -47,6 +47,11 @@ def test_real_rope_policy_is_instance_local_and_preserves_attention(kind):
         if kind == "unconditional":
             return (model(image, (2, 3)),)
         freqs = model.rope.prepare_freqs((2, 3), 5, image.device) if kind.endswith("hoisted") else None
+        if freqs is not None and model.real_rope:
+            # The real-rope contract: the hoisted table is materialized in
+            # real [S, D/2, 2] layout once at model level (as ArtFlow.forward
+            # does), never converted inside the attention module.
+            freqs = torch.view_as_real(freqs)
         return (model(torch.cat((image, text), 1), (2, 3), 5, rope_freqs=freqs),)
 
     outputs = [forward(model) for model in (reference, candidate)]
