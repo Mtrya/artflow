@@ -1,7 +1,7 @@
 # Long-caption enrichment pilot — measurements and decisions
 
 Date: 2026-09-09.  Design and budget in [stage3_5_plan.md](stage3_5_plan.md);
-roadmap in [redesign_plan.md](redesign_plan.md).  Everything below is measured
+roadmap in [redesign_plan.md](../redesign_plan.md).  Everything below is measured
 unless marked as an estimate.
 
 ## Caption coverage of the current corpus
@@ -1589,9 +1589,9 @@ The selected 896p hero pool contains ten logical sources in fourteen dataset
 directories (relaion is split into five parts), using the 896p bucket family
 ([(896,896),(1184,672),(672,1184),(1024,768),(768,1024)], ~0.8M pixels each).
 Counts below are the retained rows read from each `length_metadata.npz` sidecar
-by the [current 896p plan report](../bucket_plans/hero/batch-targets-0914/hero-896p-k20.report.md),
+by the [current 896p plan report](../../bucket_plans/hero/batch-targets-0914/hero-896p-k20.report.md),
 not source-manifest counts before resolution filtering. This is the training
-pool selected in [hero_recipe.md](hero_recipe.md); zero-weight sources, including
+pool selected in [hero_recipe.md](../hero_recipe.md); zero-weight sources, including
 `d3-synth-v2`, and evaluation rows are not included in its total.
 
 | dataset | rows |

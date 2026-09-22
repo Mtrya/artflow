@@ -6,7 +6,7 @@ the caption-policy training comparison (§5, §6) and the 640p precompute (§9) 
 not been run. Sections below are kept as written at design time, so quantities in
 §2 and §3.4 are forecasts, not results.
 
-This document specifies the design for Stage 3.5 of [the redesign plan](redesign_plan.md).
+This document specifies the design for Stage 3.5 of [the redesign plan](../redesign_plan.md).
 It does not authorize launching jobs, spending API credit, publishing a dataset,
 or entering Stage 4. Numeric settings explicitly marked provisional must be
 finalized from the pilot or recorded before training results are inspected.
