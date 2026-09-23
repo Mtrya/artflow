@@ -42,8 +42,6 @@ def workspace(tmp_path):
         f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p}\n"
         for p in sorted(inputs.glob("*.toml"))
     ))
-    (root / "jobs").mkdir()
-    (root / "jobs/swanlab_login.sh").write_text("# Test: no credentials.\n")
     binaries = tmp_path / "bin"
     binaries.mkdir()
     python = binaries / "python3"
@@ -69,6 +67,7 @@ else:
                ARTFLOW_H200_INPUTS=str(inputs), ARTFLOW_PRETRAIN_PACKAGE="src.pretrain",
                ARTFLOW_H200_COMPILER_CACHE=str(root / "inductor"),
                ARTFLOW_H200_TRITON_CACHE=str(root / "triton"),
+               SWANLAB_MODE="local",
                PATH=f"{binaries}:{os.environ['PATH']}")
     return root, env
 
@@ -139,6 +138,13 @@ def test_transition_requires_h200_endpoint_and_resets_sampler(workspace):
 def test_changed_qualified_inputs_fail_before_training(workspace):
     root, _ = workspace
     (root / "inputs/h200.toml").write_text("[train]\nmax_steps = 1\n")
+    result, invocation = run(workspace)
+    assert result.returncode != 0 and not invocation.exists()
+
+
+def test_cloud_logging_requires_staged_credentials_before_training(workspace):
+    root, env = workspace
+    env["SWANLAB_MODE"] = "cloud"
     result, invocation = run(workspace)
     assert result.returncode != 0 and not invocation.exists()
 

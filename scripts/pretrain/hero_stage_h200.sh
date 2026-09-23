@@ -35,7 +35,12 @@ export TRITON_CACHE_DIR=${ARTFLOW_H200_TRITON_CACHE:?Set the qualified H200 Trit
 export TORCH_HOME="$W/models/torch_home"
 unset ARTFLOW_LOG_SHAPES ARTFLOW_INFRA_METRICS ARTFLOW_INFRA_IDENTITIES
 unset ARTFLOW_TRACE_START ARTFLOW_TRACE_STEPS
-source "$W/jobs/swanlab_login.sh"
+export SWANLAB_LOG_DIR="$W/runs/swanlog"
+if [ "${SWANLAB_MODE:-cloud}" = cloud ]; then
+  test -r "$W/secrets/swanlab.netrc"
+  mkdir -p "$HOME/.swanlab"
+  install -m 600 "$W/secrets/swanlab.netrc" "$HOME/.swanlab/.netrc"
+fi
 cd "$SOURCE"
 
 RUN="hero-h200-$STAGE"
