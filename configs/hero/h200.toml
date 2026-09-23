@@ -1,0 +1,9 @@
+# Fresh four-H200 hero, approved 2026-09-24.
+# Layer after hero.toml; stage inputs carry the approved data mix and buckets.
+[train]
+max_steps = 600000
+# Same bias-corrected schedule as the Ascend hero; global-step based on resume.
+ema_decay_warmup = true
+
+[optim]
+lr_warmup_steps = 20000
