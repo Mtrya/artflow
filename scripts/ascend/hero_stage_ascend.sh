@@ -145,10 +145,11 @@ latest_ckpt () {
 
 # Intentional rollback: pin the resume checkpoint to step $RESUME_PIN and move
 # every newer own-stage checkpoint aside (preserved, not deleted) so
-# latest_ckpt resolves to the pin. Used for recipe-change restarts (e.g. the
-# 2026-09-23 lr 0.02 -> 0.016 rollback to step 8000).
+# latest_ckpt resolves to the pin. Used for recipe-change restarts (first real
+# use: 2026-09-23 lr 0.016 -> 0.012 rollback to step 14000). Dir name must
+# match train.py's checkpoint_step_{step:06d}.
 if [ -n "${RESUME_PIN:-}" ]; then
-  PIN_DIR="$RUN_DIR/checkpoint_step_$(printf '%07d' "$RESUME_PIN")"
+  PIN_DIR="$RUN_DIR/checkpoint_step_$(printf '%06d' "$RESUME_PIN")"
   if [ ! -d "$PIN_DIR" ]; then
     echo "RESUME_PIN $RESUME_PIN: checkpoint not found: $PIN_DIR" >&2
     exit 1
