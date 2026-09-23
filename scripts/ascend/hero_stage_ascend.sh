@@ -143,6 +143,28 @@ latest_ckpt () {
   ls -d "$1"/checkpoint_step_[0-9]* 2>/dev/null | sort -V | tail -1
 }
 
+# Intentional rollback: pin the resume checkpoint to step $RESUME_PIN and move
+# every newer own-stage checkpoint aside (preserved, not deleted) so
+# latest_ckpt resolves to the pin. Used for recipe-change restarts (e.g. the
+# 2026-09-23 lr 0.02 -> 0.016 rollback to step 8000).
+if [ -n "${RESUME_PIN:-}" ]; then
+  PIN_DIR="$RUN_DIR/checkpoint_step_$(printf '%07d' "$RESUME_PIN")"
+  if [ ! -d "$PIN_DIR" ]; then
+    echo "RESUME_PIN $RESUME_PIN: checkpoint not found: $PIN_DIR" >&2
+    exit 1
+  fi
+  QUAR="$RUN_DIR/quarantine_after_$RESUME_PIN"
+  mkdir -p "$QUAR"
+  for d in "$RUN_DIR"/checkpoint_step_[0-9]*; do
+    [ -d "$d" ] || continue
+    s=$(basename "$d" | sed 's/^checkpoint_step_//' | sed 's/^0*//')
+    s=${s:-0}
+    if [ "$s" -gt "$RESUME_PIN" ]; then
+      mv "$d" "$QUAR/" && echo "PIN_QUARANTINE $(basename "$d")"
+    fi
+  done
+fi
+
 RESUME_ARGS=()
 OWN=$(latest_ckpt "$RUN_DIR")
 if [ -n "$OWN" ]; then
@@ -175,6 +197,7 @@ checkpoint_interval = ${CKPT_INTERVAL:-2000}
 eval_interval = ${EVAL_INTERVAL:-2500}
 [optim]
 lr_warmup_steps = ${LR_WARMUP:-20000}
+muon_lr = ${MUON_LR:-0.02}
 [data]
 bucket_plan = "$W/repo-ascend/bucket_plans/hero/${PLAN_DIR:-ascend-0922}/hero-$STAGE-k20.json"
 [eval]

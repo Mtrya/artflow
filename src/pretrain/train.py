@@ -993,6 +993,13 @@ def main():
                 if state.get("last_epoch") != resumed_step:
                     raise ValueError(f"scheduler step does not match checkpoint step: {sch_path}")
                 sch.load_state_dict(state)
+                # Config is authoritative for the LR trajectory: the restored
+                # state carries the checkpoint's base_lrs (the old peak), which
+                # would silently keep the previous peak when the recipe
+                # deliberately changed lr. Re-apply the construction-time
+                # (config) base_lrs; last_epoch stays at the resume position.
+                for pg_idx, fresh_lr in enumerate(optimizer_base_lrs[i]):
+                    sch.base_lrs[pg_idx] = fresh_lr
         else:
             # A plain --resume carries weights+optimizer but restarts the
             # schedule from step 0: the schedulers are fresh (not restored by

@@ -283,6 +283,33 @@ def test_scheduler_roundtrip_preserves_next_lr_and_global_curriculum():
     assert sch.get_last_lr()[0] > .001  # The schedule has not ended at 95%.
 
 
+def test_resume_base_lrs_follow_config_not_checkpoint():
+    """Recipe-change resume: the checkpoint's base_lrs (old peak) must not
+    silently keep the previous lr — train.py's resume block re-applies the
+    construction-time (config) base_lrs after load_state_dict."""
+    def setup(lr):
+        param = torch.nn.Parameter(torch.ones(1))
+        opt = torch.optim.SGD([param], lr=lr)
+        sch = train.build_linear_cosine_scheduler(opt, num_warmup_steps=5,
+                num_training_steps=100, min_learning_rate=.001,
+                base_learning_rate=lr, start_learning_rate=.0001)
+        return opt, sch
+    opt_old, sch_old = setup(.02)
+    for _ in range(4):  # mid-warmup
+        opt_old.step(); sch_old.step()
+    state = copy.deepcopy(sch_old.state_dict())
+    _, sch_new = setup(.016)
+    sch_new.load_state_dict(state)
+    # Sanity: without the override the checkpoint's old peak would win.
+    assert sch_new.base_lrs == [.02]
+    sch_new.base_lrs = [.016]  # what the resume block re-applies from config
+    sch_new.step()
+    expected_ratio = (.0001 / .016) + (1 - .0001 / .016) * (sch_new.last_epoch / 5)
+    # With the checkpoint's old base (.02) this would read .02 at this epoch.
+    assert sch_new.get_last_lr()[0] == pytest.approx(.016 * expected_ratio, rel=1e-6)
+    assert sch_new.get_last_lr()[0] == pytest.approx(.016, rel=1e-6)
+
+
 def launcher_env(tmp_path):
     repo = Path(__file__).resolve().parents[1]
     workspace = tmp_path / "workspace"
