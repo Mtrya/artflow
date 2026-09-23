@@ -48,3 +48,9 @@ Unattended spike response for the hourly patrol cron. Baseline = median of
   checkpoint_step_014000 with MUON_LR 0.016 -> 0.012 and ADAM_LR 3e-4 ->
   1e-4 (job ascend-hero6-256p). Automatic-rollback counter resets for the
   new segment; stability timer restarts at the hero6 training start.
+- 2026-09-23 ~23:00 (hero6, lr 0.012 era): tier-1 event @26358 — single-step
+  loss 1.531 (1.81x baseline 0.844) with grad_norm 270 at the same step;
+  loss back within 1.1x baseline by the next logged point (~2 steps).
+  Same signature as the @13793 event (grad 79). Recorded, no action.
+  Running frequency: ~1 single-step event per 12k steps; watch for
+  clustering or failed recovery (tier 2/3 triggers).
