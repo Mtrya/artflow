@@ -220,10 +220,13 @@ if [ "${DRY_RUN:-0}" = 1 ]; then
   exit 0
 fi
 
-# /dev/shm is 64MB on these pods: DataLoader worker->main transfers must use
-# memfd (file_descriptor) instead of shm files, and the fd strategy wants a
-# higher open-file limit. Root cause of the ~4-min crash coin-flip seen in
-# hostprobe5 attempts 1-2 and hero2 attempt 1 (torch_* ENOSPC -> bus error).
+# /dev/shm is 64MB on these pods: DataLoader worker->main tensor transfers
+# die there with torch_* ENOSPC -> bus error (root cause of the ~4-min crash
+# coin-flip in hostprobe5 attempts 1-2, hero2 attempt 1, and hero4 — the fd
+# strategy still lands /torch_* files in /dev/shm on this torch_npu build).
+# --dataloader_numpy_batch makes workers return numpy, which crosses the
+# queue by value and never touches shm. Keep the shm cleanup + ulimit above
+# as belt-and-braces for any residual shm user.
 ulimit -n 1048576 2>/dev/null || ulimit -n 65536 2>/dev/null || true
 
 # Byte cursor into $LOG before training starts: on crash, only the region
@@ -238,7 +241,7 @@ setsid python3 -m torch.distributed.run --nproc_per_node=16 --master_port=29511 
   --config "$INPUT_CONFIG" \
   --config configs/hero.toml \
   --config "$OVERRIDE" \
-  --dataloader_sharing_strategy file_descriptor \
+  --dataloader_numpy_batch \
   $COMPILE_ARGS \
   $TRAIN_EXTRA_ARGS \
   --run_name "$RUN" \
@@ -293,15 +296,18 @@ if [ "$RC" != "0" ]; then
   # traceback — chronologically almost always the crashing rank, printed
   # before the teardown noise that fills the raw tail.
   NEWLOG=$(mktemp)
+  # -a: the log contains progress-bar control chars that make grep treat it
+  # as binary and print "binary file matches" instead of line numbers, which
+  # silently disabled this whole diagnostic section (hero4, 2026-09-23).
   tail -c +$((CRASH_CURSOR + 1)) "$LOG" | tr '\r' '\n' > "$NEWLOG" 2>/dev/null || true
-  FIRST_TB=$(grep -n "Traceback (most recent call last)" "$NEWLOG" | head -1 | cut -d: -f1)
+  FIRST_TB=$(grep -an "Traceback (most recent call last)" "$NEWLOG" | head -1 | cut -d: -f1)
   if [ -n "$FIRST_TB" ]; then
     echo "----- TRAIN_FIRST_TRACEBACK begin -----"
     sed -n "${FIRST_TB},$((FIRST_TB + 60))p" "$NEWLOG"
     echo "----- TRAIN_FIRST_TRACEBACK end -----"
   fi
   echo "----- TRAIN_FATAL_LINES begin -----"
-  grep -n -i "bus error\|no space left\|RuntimeError\|ValueError\|out of memory\|AssertionError\|KeyError\|FileNotFoundError" "$NEWLOG" | head -15
+  grep -an -i "bus error\|no space left\|RuntimeError\|ValueError\|out of memory\|AssertionError\|KeyError\|FileNotFoundError" "$NEWLOG" | head -15
   echo "----- TRAIN_FATAL_LINES end -----"
   rm -f "$NEWLOG"
   # torchrun writes the failing rank's full traceback as JSON under --log-dir;

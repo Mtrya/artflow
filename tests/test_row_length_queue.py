@@ -148,6 +148,30 @@ def test_collate_strict_metadata_and_row_resolution():
             row_length_collate_fn([base, bad])
 
 
+def test_collate_numpy_mode_returns_no_tensors():
+    import numpy as np
+
+    base = {
+        "latents": np.zeros((1, 2, 2), dtype=np.float32), "captions": "caption",
+        "dataset_id": 0, "row_idx": 0, "caption_idx": 0,
+        "resolution_bucket_id": 1, "retained_length": 2, "len_bucket_idx": 0,
+        "bucket_hi": 4, "batch_id": 3,
+    }
+    output = row_length_collate_fn([base, dict(base)], return_numpy=True)
+    assert output["latents"].shape == (2, 1, 2, 2)
+    assert output["latents"].dtype == np.float32
+    # Nothing torch may cross the worker->main queue in this mode: tensors
+    # would be transferred through shared memory, which is exactly what this
+    # mode exists to avoid on pods with a tiny /dev/shm.
+    for key, value in output.items():
+        assert not torch.is_tensor(value), key
+    assert output["dataset_ids"].tolist() == [0, 0]
+    assert output["row_positions"] == [(0, 0), (0, 0)]
+    # The main process converts back with torch.from_numpy before H2D.
+    restored = torch.from_numpy(output["latents"])
+    assert restored.shape == (2, 1, 2, 2) and restored.dtype == torch.float32
+
+
 def test_pad_text_overflow_raises():
     txt = torch.zeros(1, 5, 3)
     mask = torch.ones(1, 5, dtype=torch.long)

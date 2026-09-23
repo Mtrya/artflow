@@ -38,6 +38,7 @@ def test_training_loader_recreation_preserves_checkpoint_rng(workers):
         DataLoader=torch.utils.data.DataLoader, torch=torch,
         row_dataset=torch.arange(8), sampler=[[0, 1], [2, 3], [4, 5], [6, 7]],
         row_length_collate_fn=torch.utils.data.default_collate,
+        collate_fn=torch.utils.data.default_collate,
         args=SimpleNamespace(seed=42), accelerator=SimpleNamespace(process_index=3),
         dataloader_worker_kwargs=dict(num_workers=workers),
     )

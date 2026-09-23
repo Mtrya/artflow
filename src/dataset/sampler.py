@@ -659,8 +659,18 @@ class RowLengthQueueBatchSampler(Sampler[List[RowRef]]):
         self._next_batch_id = int(state["next_batch_id"])
 
 
-def row_length_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Strict collate for row-level length-bucketed batches."""
+def row_length_collate_fn(
+    batch: List[Dict[str, Any]], *, return_numpy: bool = False
+) -> Dict[str, Any]:
+    """Strict collate for row-level length-bucketed batches.
+
+    With ``return_numpy=True`` every array payload leaves the worker as a
+    numpy array instead of a torch tensor. numpy is pickled by value through
+    the worker->main queue, while tensors are transferred through shared
+    memory — which dies with bus errors on pods whose /dev/shm is tiny
+    (Ascend nodes ship 64MB). The training loop converts back with
+    ``torch.from_numpy`` after the queue crossing.
+    """
     if not batch:
         raise ValueError("row_length_collate_fn requires a non-empty batch")
 
@@ -692,7 +702,7 @@ def row_length_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         if len(set(values)) != 1:
             raise ValueError(f"mixed {name} values in one row-length batch")
 
-    latents = [torch.as_tensor(field(sample, "latents")) for sample in batch]
+    latents = [field(sample, "latents") for sample in batch]
     latent_shape = tuple(latents[0].shape)
     if any(tuple(latent.shape) != latent_shape for latent in latents[1:]):
         raise ValueError("mixed latent shapes in one row-length batch")
@@ -714,8 +724,26 @@ def row_length_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     dataset_ids = [int(field(sample, "dataset_id", "entry_id")) for sample in batch]
     row_indices = [int(field(sample, "row_idx", "row_index")) for sample in batch]
 
+    if return_numpy:
+        return {
+            "latents": np.stack([np.asarray(latent) for latent in latents], axis=0),
+            "captions": captions,
+            "dataset_ids": np.asarray(dataset_ids, dtype=np.int64),
+            "row_indices": np.asarray(row_indices, dtype=np.int64),
+            "row_positions": list(zip(dataset_ids, row_indices)),
+            "caption_indices": np.asarray(
+                [int(field(sample, "caption_idx", "caption_index")) for sample in batch],
+                dtype=np.int64,
+            ),
+            "resolution_bucket_ids": np.asarray(resolution_ids, dtype=np.int64),
+            "retained_lengths": np.asarray(retained_lengths, dtype=np.int64),
+            "len_bucket_idx": len_bucket_ids[0],
+            "bucket_hi": bucket_his[0],
+            "batch_id": batch_ids[0],
+        }
+
     return {
-        "latents": torch.stack(latents, dim=0),
+        "latents": torch.stack([torch.as_tensor(latent) for latent in latents], dim=0),
         "captions": captions,
         "dataset_ids": torch.tensor(dataset_ids, dtype=torch.long),
         "row_indices": torch.tensor(row_indices, dtype=torch.long),

@@ -11,6 +11,7 @@ import os
 import gc
 import argparse
 import contextlib
+import functools
 import json
 import re
 import time
@@ -19,6 +20,7 @@ import math
 from copy import deepcopy
 from types import SimpleNamespace
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from accelerate import Accelerator
@@ -353,15 +355,28 @@ def parse_args():
         "host dispatch overhead",
     )
     parser.add_argument(
+        "--dataloader_numpy_batch",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Collate DataLoader batches to numpy instead of torch tensors, "
+        "converting back with torch.from_numpy in the main process. numpy "
+        "crosses the worker->main queue by value; tensors cross through "
+        "shared memory, which dies with bus errors on pods whose /dev/shm "
+        "is tiny (Ascend nodes ship 64MB). Prefer this over "
+        "--dataloader_sharing_strategy there: on the Ascend torch_npu stack "
+        "even 'file_descriptor' still lands /torch_* files in /dev/shm.",
+    )
+    parser.add_argument(
         "--dataloader_sharing_strategy",
         type=str,
         default=None,
         choices=["file_system", "file_descriptor"],
         help="torch.multiprocessing sharing strategy for DataLoader "
-        "worker->main tensor transfer. 'file_descriptor' (memfd) bypasses "
-        "/dev/shm entirely — required on pods with a tiny shm mount "
-        "(Ascend nodes ship 64MB, and file_system dies there with bus "
-        "errors / torch_* ENOSPC). Empty keeps the torch default.",
+        "worker->main tensor transfer. NOTE: 'file_descriptor' is NOT memfd "
+        "on every stack — on the Ascend torch_npu build it still allocates "
+        "/torch_* files under /dev/shm and dies there with ENOSPC/bus "
+        "errors when shm is 64MB. Use --dataloader_numpy_batch on such "
+        "pods. Empty keeps the torch default.",
     )
     parser.add_argument(
         "--muon_compile_square_ns",
@@ -496,6 +511,7 @@ def main():
         "muon_compile_square_ns",
         "npu_fused_adamw",
         "dataloader_sharing_strategy",
+        "dataloader_numpy_batch",
         "ddp_boundary_sync",
         "foreach_updates",
         "local_cache_clear",
@@ -505,9 +521,9 @@ def main():
         setattr(args, name, getattr(cli, name))
 
     if args.dataloader_sharing_strategy:
-        # Must be set before any DataLoader worker spawns. file_descriptor
-        # uses memfd instead of /dev/shm (64MB on Ascend pods — file_system
-        # dies there with ENOSPC/bus error, nondeterministically).
+        # Must be set before any DataLoader worker spawns. See the CLI help:
+        # this does not reliably dodge a tiny /dev/shm on every stack —
+        # --dataloader_numpy_batch is the deterministic fix there.
         import torch.multiprocessing as mp
 
         mp.set_sharing_strategy(args.dataloader_sharing_strategy)
@@ -903,10 +919,15 @@ def main():
         curve=args.caption_loss_weight_curve,
         reference=args.caption_loss_weight_reference,
     )
+    collate_fn = (
+        functools.partial(row_length_collate_fn, return_numpy=True)
+        if args.dataloader_numpy_batch
+        else row_length_collate_fn
+    )
     dataloader = DataLoader(
         row_dataset,
         batch_sampler=sampler,
-        collate_fn=row_length_collate_fn,
+        collate_fn=collate_fn,
         pin_memory=True,
         # Iterator creation draws a worker base seed even with zero workers.
         # Keep that draw out of the training CPU RNG (caption dropout), so
@@ -1448,17 +1469,25 @@ def main():
                             if infra_recorder.record_identity else None)
                 infra_recorder.micro(batch["latents"].shape, host_meta["bucket_hi"],
                                      sample_identity=identity)
-            batch = {
-                key: value.to(accelerator.device, non_blocking=True)
-                if torch.is_tensor(value) else value
-                for key, value in batch.items()
-            }
+            def to_device(value):
+                if torch.is_tensor(value):
+                    return value.to(accelerator.device, non_blocking=True)
+                if isinstance(value, np.ndarray):
+                    # --dataloader_numpy_batch: workers return numpy (queue
+                    # crossing by value, no shared memory); convert back here.
+                    return torch.from_numpy(value).to(
+                        accelerator.device, non_blocking=True
+                    )
+                return value
+
+            batch = {key: to_device(value) for key, value in batch.items()}
 
             # Track per-dataset samples (multi-dataset mode)
             if "dataset_ids" in host_meta:
                 if args.fast_telemetry:
                     telemetry_counts += torch.bincount(
-                        host_meta["dataset_ids"], minlength=len(dataset_aliases)
+                        torch.as_tensor(host_meta["dataset_ids"]),
+                        minlength=len(dataset_aliases),
                     )
                 else:
                     for ds_id in host_meta["dataset_ids"].tolist():
