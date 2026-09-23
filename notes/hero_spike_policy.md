@@ -39,3 +39,12 @@ Unattended spike response for the hourly patrol cron. Baseline = median of
   a clean continuation, not a mixed state.
 - swanlab `train/grad_norm` is pre-clip; a grad spike alongside a tier-1
   loss spike is expected and not by itself actionable.
+
+## Event log
+
+- 2026-09-23 ~18:00: user-directed manual rollback (outside the automatic
+  tiers). After repeated loss spikes and a grad_norm 79.2 single-step event
+  @13793, hero5 was stopped at ~step 15000 and the run was resumed from
+  checkpoint_step_014000 with MUON_LR 0.016 -> 0.012 and ADAM_LR 3e-4 ->
+  1e-4 (job ascend-hero6-256p). Automatic-rollback counter resets for the
+  new segment; stability timer restarts at the hero6 training start.
