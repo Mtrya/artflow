@@ -68,3 +68,20 @@ def _rank_guard(rank, init_method, fault):
 def test_rank_local_failure_stops_all_optimizers(tmp_path, fault):
     mp.spawn(_rank_guard, args=((tmp_path / "rendezvous").as_uri(), fault),
              nprocs=2, join=True)
+
+
+def test_accelerate_clip_matches_production_call():
+    """The production wiring (accelerator.clip_grad_norm_(model.parameters(),
+    args.max_grad_norm)) really bounds the update: return value is the
+    pre-clip total norm, post-clip norm equals max_grad_norm."""
+    from accelerate import Accelerator
+
+    accelerator = Accelerator()
+    model = torch.nn.Linear(4, 4)
+    for param in model.parameters():
+        param.grad = torch.full_like(param, 10.0)
+    pre = torch.sqrt(sum(p.grad.pow(2).sum() for p in model.parameters()))
+    returned = accelerator.clip_grad_norm_(model.parameters(), 1.0)
+    post = torch.sqrt(sum(p.grad.pow(2).sum() for p in model.parameters()))
+    assert float(returned) == pytest.approx(float(pre), rel=1e-5)
+    assert float(post) == pytest.approx(1.0, rel=1e-5)
