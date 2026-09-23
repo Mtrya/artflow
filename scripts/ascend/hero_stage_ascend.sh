@@ -147,8 +147,11 @@ latest_ckpt () {
 # every newer own-stage checkpoint aside (preserved, not deleted) so
 # latest_ckpt resolves to the pin. Used for recipe-change restarts (first real
 # use: 2026-09-23 lr 0.016 -> 0.012 rollback to step 14000). Dir name must
-# match train.py's checkpoint_step_{step:06d}.
-if [ -n "${RESUME_PIN:-}" ]; then
+# match train.py's checkpoint_step_{step:06d}. The pin is applied only once
+# (marker file): fault-tolerance restarts re-run this launcher, and re-pinning
+# then would roll back checkpoints written after the resume.
+PIN_MARK="$RUN_DIR/.resume_pin_applied_${RESUME_PIN:-}"
+if [ -n "${RESUME_PIN:-}" ] && [ ! -e "$PIN_MARK" ]; then
   PIN_DIR="$RUN_DIR/checkpoint_step_$(printf '%06d' "$RESUME_PIN")"
   if [ ! -d "$PIN_DIR" ]; then
     echo "RESUME_PIN $RESUME_PIN: checkpoint not found: $PIN_DIR" >&2
@@ -164,6 +167,7 @@ if [ -n "${RESUME_PIN:-}" ]; then
       mv "$d" "$QUAR/" && echo "PIN_QUARANTINE $(basename "$d")"
     fi
   done
+  touch "$PIN_MARK"
 fi
 
 RESUME_ARGS=()
