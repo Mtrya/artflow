@@ -9,6 +9,7 @@ SOURCE=${ARTFLOW_SOURCE:?Set the qualified NVIDIA source snapshot}
 INPUTS=${ARTFLOW_H200_INPUTS:?Set the qualified H200 stage-input directory}
 PACKAGE=${ARTFLOW_PRETRAIN_PACKAGE:-src.pretrain}
 STAGE=${1:?usage: hero_stage_h200.sh <256p|640p|896p>}
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 TOTAL_STEPS=600000
 case "$PACKAGE" in
   src.train|src.pretrain) ;;
@@ -35,7 +36,7 @@ export TRITON_CACHE_DIR=${ARTFLOW_H200_TRITON_CACHE:?Set the qualified H200 Trit
 export TORCH_HOME="$W/models/torch_home"
 unset ARTFLOW_LOG_SHAPES ARTFLOW_INFRA_METRICS ARTFLOW_INFRA_IDENTITIES
 unset ARTFLOW_TRACE_START ARTFLOW_TRACE_STEPS
-export SWANLAB_LOG_DIR="$W/runs/swanlog"
+export SWANLAB_LOG_DIR="$W/runs/swanlog/h200"
 if [ "${SWANLAB_MODE:-cloud}" = cloud ]; then
   test -r "$W/secrets/swanlab.netrc"
   mkdir -p "$HOME/.swanlab"
@@ -43,7 +44,7 @@ if [ "${SWANLAB_MODE:-cloud}" = cloud ]; then
 fi
 cd "$SOURCE"
 
-RUN="hero-h200-$STAGE"
+RUN="h200-hero-$STAGE"
 RUN_DIR="$W/runs/$RUN"
 LOG="$W/data/logs/$RUN.log"
 mkdir -p "$RUN_DIR" "$W/data/logs"
@@ -88,7 +89,7 @@ if [ -n "$OWN" ]; then
     --stop-at-step "$END" --min-step "$START" --world-size 4
   RESUME_ARGS=(--resume "$OWN" --resume_full)
 elif [ -n "$PREV" ]; then
-  PREVIOUS=$(latest_checkpoint "$W/runs/hero-h200-$PREV")
+  PREVIOUS=$(latest_checkpoint "$W/runs/h200-hero-$PREV")
   if [ -z "$PREVIOUS" ]; then
     echo "missing completed H200 predecessor for $STAGE" >&2
     exit 1
@@ -126,7 +127,11 @@ grid_steps = [$GRID_STEPS]
 output_dir = "$W/runs"
 EOF
 echo "H200_LAUNCH stage=$STAGE start=$START end=$END resume=${OWN:-${PREVIOUS:-fresh}}"
-python3 -m torch.distributed.run --nproc_per_node=4 -m "$PACKAGE.train" \
+TRAIN_ENTRY=(-m "$PACKAGE.train")
+if [ "${SWANLAB_MODE:-cloud}" = offline ]; then
+  TRAIN_ENTRY=("$SCRIPT_DIR/swanlab_offline_train.py" "$PACKAGE.train")
+fi
+python3 -m torch.distributed.run --nproc_per_node=4 "${TRAIN_ENTRY[@]}" \
   --config configs/base.toml --config "$INPUTS/hero-$STAGE.toml" \
   --config configs/hero.toml --config "$INPUTS/h200.toml" --config "$OVERRIDE" \
   --compile_dynamic --compile_autotune --disable_ddp_compile_split \

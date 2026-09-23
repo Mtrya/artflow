@@ -101,7 +101,7 @@ def test_fresh_h200_does_not_resume_another_hero(workspace):
     assert result.returncode == 0, result.stderr
     record = json.loads(invocation.read_text())
     assert "--resume" not in record["args"]
-    assert record["args"][record["args"].index("--run_name") + 1] == "hero-h200-256p"
+    assert record["args"][record["args"].index("--run_name") + 1] == "h200-hero-256p"
     assert record["config"]["train"] == {
         "max_steps": 600000, "gradient_accumulation_steps": 1, "stop_at_step": 450000,
         "ema_decay_warmup": True,
@@ -112,7 +112,7 @@ def test_fresh_h200_does_not_resume_another_hero(workspace):
 
 def test_same_stage_uses_last_complete_h200_checkpoint(workspace):
     root, _ = workspace
-    saved = checkpoint(root, "hero-h200-256p", 2000)
+    saved = checkpoint(root, "h200-hero-256p", 2000)
     (saved.parent / "checkpoint_step_004000").mkdir()
     result, invocation = run(workspace)
     assert result.returncode == 0, result.stderr
@@ -126,7 +126,7 @@ def test_transition_requires_h200_endpoint_and_resets_sampler(workspace):
     root, _ = workspace
     result, invocation = run(workspace, "640p")
     assert result.returncode != 0 and not invocation.exists()
-    saved = checkpoint(root, "hero-h200-256p", 450000)
+    saved = checkpoint(root, "h200-hero-256p", 450000)
     result, invocation = run(workspace, "640p")
     assert result.returncode == 0, result.stderr
     record = json.loads(invocation.read_text())
@@ -166,4 +166,4 @@ def test_h200_writer_lock_prevents_concurrent_training(workspace):
         if first.poll() is None:
             os.killpg(first.pid, signal.SIGTERM)
         first.communicate(timeout=5)
-    assert subprocess.run(["flock", "-n", str(root / "runs/hero-h200-256p/.writer.lock"), "true"]).returncode == 0
+    assert subprocess.run(["flock", "-n", str(root / "runs/h200-hero-256p/.writer.lock"), "true"]).returncode == 0
