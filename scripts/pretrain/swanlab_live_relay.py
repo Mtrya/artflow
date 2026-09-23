@@ -3,7 +3,8 @@
 The training process remains offline. This reader retries partial tail records,
 preserves metric steps, and uploads images through the public SDK. It never
 marks an active source finished merely because it reached the current EOF.
-The binary reader's seek fields are version-specific; install swanlab==0.9.7.
+The binary reader's seek fields are version-specific. On the CPU relay host,
+install swanlab==0.9.7 and Pillow==12.3.0 (images require the latter).
 """
 
 import argparse
