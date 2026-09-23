@@ -1,4 +1,14 @@
-# Infrastructure pass: H200 qualification incomplete
+# Infrastructure pass
+
+Current update, September 24, 2026: the user authorized a fresh four-H200
+T=600k run. The 256p reference (accumulation 3) passed fresh training, evaluation,
+retention, full resume and numerical EMA checks. The larger-microbatch candidate
+was rejected on warmed end-to-end throughput. The fresh `h200-hero-256p-r1` job is
+allocated on four H200s; current details and separate allocation records are in
+[H200 qualification and launch](h200_smoke_0923.md). Higher-resolution tuning
+is deferred and does not block 256p. The ledger below is historical.
+
+## September 18 qualification ledger
 
 Updated September 18, 2026. **Stage 5 readiness is not established.** The user
 approved moving the hero run to eight H100 or H200 GPUs with a total budget of

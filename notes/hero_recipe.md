@@ -6,8 +6,11 @@ with a 75:20:5 optimizer-step split. All scientific recipe decisions are frozen.
 The user authorized a **fresh 4×H200 hero after qualification** on 2026-09-24:
 **600,000 steps, 20,000-step LR warmup, higher 256p D4 share, and
 bias-corrected EMA**, with endpoints 450,000 / 570,000 / 600,000.
-The four-H200 smoke retry is submitted after scheduler preemption;
-production has **not yet launched**.
+The four-H200 qualification passed on September 24; the fresh production job
+`h200-hero-256p-r1` is allocated four H200s; its SwanLab experiment name is
+`h200-hero-256p` ([board](https://swanlab.cn/@mtrya/artflow/runs/j17nrxuq)).
+GPU logging is offline, with a CPU notebook relaying metrics and evaluation
+images from shared storage to SwanLab.
 The earlier 4×4090 run (T=480k, endpoints 360k/456k/480k) is a historical
 reference, not the initialization source. See [H200 qualification](h200_smoke_0923.md)
 for current acceptance evidence and launch status. The repeatable H200 launcher
@@ -22,12 +25,12 @@ document the trained model's strengths and limitations.
 | item | value |
 |---|---|
 | Model | 1152 hidden / 16 heads, 1 double-stream + 24 single-stream blocks; 532,706,812 parameters; `configs/hero.toml` layered after `configs/base.toml` |
-| Hardware | **4×H200**, conditional on the current qualification passing; four-GPU quota is LOW/preemptible |
+| Hardware | **4×H200**, 256p qualification passed; four-GPU quota is LOW/preemptible |
 | Run length | **600,000 optimizer steps**, fresh initialization (user, 2026-09-24); historical 4090 run was 480k |
 | Resolution stages | 256p → 640p → 896p; 1024p definitively dropped, not a pending optional stage |
 | Stage step split | 75 : 20 : 5 of the finalized total optimizer steps |
 | Mean effective-batch targets | ≥640 / ≥512 / ≥400 samples per update at 256p / 640p / 896p |
-| Gradient accumulation | H200 256p candidate: **1**, tripling v93 micro-batches, pending throughput acceptance. **640p/896p are to be tuned separately** with larger micro-batches; 10/14 are conservative 4090 reference values, not required H200 settings. Higher-stage tuning does not block the 256p hero (user, 2026-09-24) |
+| Gradient accumulation | H200 256p: **3**, retaining the v93 micro-batches. The accumulation-1 candidate passed memory but lost to the warmed reference (690.65 vs 731.02 samples/s). **640p/896p are to be tuned separately** with larger micro-batches; 10/14 are conservative 4090 reference values, not required H200 settings. Higher-stage tuning does not block the 256p hero (user, 2026-09-24) |
 | Optimizer | Chunked Muon for eligible 2-D hidden weights; auxiliary AdamW for embeddings, conditioning/output layers, norms, biases and other parameters |
 | Peak LR | Muon 0.02; auxiliary AdamW 3e-4 |
 | LR schedule | **20,000-step warmup**, then cosine to 5% of peak over the 600k-step horizon; `min_learning_rate=1.5e-5` for auxiliary AdamW, proportional Muon floor 0.001 |
@@ -48,8 +51,9 @@ stay on GPU and periodic allocator cleanup is disabled in `configs/hero.toml`.
 Compiler workers are capped at two per rank; optional CPU-wall/breakdown and
 per-micro shape logging are off. FP32 parameter/gradient/EMA and communication
 policies are unchanged. These settings are selected from lower-rank comparisons;
-their H100/H200 acceptance and all-in costs are still pending. Do not use this
-launcher as a finalized H100/H200 recipe until that work is complete.
+the four-H200 256p reference is qualified. Later-resolution tuning and total
+run cost remain unmeasured. Use the separate H200 launcher and pinned inputs,
+not this historical 4090 scratch launcher.
 
 ### Dataset mix
 
