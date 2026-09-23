@@ -203,6 +203,7 @@ eval_interval = ${EVAL_INTERVAL:-2500}
 [optim]
 lr_warmup_steps = ${LR_WARMUP:-20000}
 muon_lr = ${MUON_LR:-0.02}
+learning_rate = ${ADAM_LR:-3e-4}
 [data]
 bucket_plan = "$W/repo-ascend/bucket_plans/hero/${PLAN_DIR:-ascend-0922}/hero-$STAGE-k20.json"
 [eval]
