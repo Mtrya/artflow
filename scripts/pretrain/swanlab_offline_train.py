@@ -8,19 +8,24 @@ once per ten seconds of writes, including the initial run record.
 import runpy
 from pathlib import Path
 import sys
+import threading
 import time
 
 
 def enable_periodic_flush(writer_type, interval=10.0, clock=time.monotonic):
     original = writer_type.write
+    lock = threading.Lock()
 
     def write(self, data):
-        original(self, data)
-        now = clock()
-        previous = getattr(self, "_artflow_last_flush", None)
-        if previous is None or now - previous >= interval:
-            self.ensure_flushed()
-            self._artflow_last_flush = now
+        # Training and the hardware monitor call the same SDK writer from
+        # different threads. Header, payload, indices and flush must be atomic.
+        with lock:
+            original(self, data)
+            now = clock()
+            previous = getattr(self, "_artflow_last_flush", None)
+            if previous is None or now - previous >= interval:
+                self.ensure_flushed()
+                self._artflow_last_flush = now
 
     writer_type.write = write
 

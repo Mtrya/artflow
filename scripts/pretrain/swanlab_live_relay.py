@@ -11,7 +11,40 @@ import argparse
 import fcntl
 import json
 from pathlib import Path
+import struct
 import time
+import zlib
+
+
+def recover_interleaved_records(reader, position):
+    """Recover the observed header/header/payload/payload race without edits.
+
+    Only two complete, same-block records whose original CRCs both match are
+    accepted. Unrecognized corruption and incomplete tails remain unread.
+    """
+    from swanlab.sdk.internal.core_python.store import _CRC, LEVELDBLOG_BLOCK_LEN
+
+    reader._fp.seek(position)
+    headers = reader._fp.read(14)
+    if len(headers) != 14:
+        return None
+    crc_a, size_a, type_a = struct.unpack("<IHB", headers[:7])
+    crc_b, size_b, type_b = struct.unpack("<IHB", headers[7:])
+    span = 14 + size_a + size_b
+    if type_a != 1 or type_b != 1 or not size_a or not size_b:
+        return None
+    if span > LEVELDBLOG_BLOCK_LEN - position % LEVELDBLOG_BLOCK_LEN:
+        return None
+    payloads = reader._fp.read(size_a + size_b)
+    if len(payloads) != size_a + size_b:
+        return None
+    for a, b in [(payloads[:size_a], payloads[size_a:]),
+                 (payloads[size_b:], payloads[:size_b])]:
+        if ((zlib.crc32(a, _CRC[1]) & 0xFFFFFFFF) == crc_a
+                and (zlib.crc32(b, _CRC[1]) & 0xFFFFFFFF) == crc_b):
+            reader._index = position + span
+            return a, b
+    return None
 
 
 def read_available(path, position, reader_factory, record_factory):
@@ -38,7 +71,16 @@ def read_available(path, position, reader_factory, record_factory):
                 # The pinned reader uses this for a partly written payload.
                 if type(exc).__name__ != "DataStoreError":
                     raise
-                break
+                recovered = recover_interleaved_records(reader, position)
+                if recovered is None:
+                    break
+                for payload in recovered:
+                    record = record_factory()
+                    record.ParseFromString(payload)
+                    records.append(record)
+                print("RECOVERED_LOG_INTERLEAVE", path, position, reader._index,
+                      flush=True)
+                continue
             if blob is None:
                 break
             record = record_factory()
