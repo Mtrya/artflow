@@ -1,13 +1,18 @@
 # Hero run recipe
 
-Last updated: 2026-09-18. Current configuration for the pre-NFT hero run.
+Last updated: 2026-09-24. Current configuration for the pre-NFT hero run.
 1024p is definitively dropped: the complete pre-NFT path is 256p → 640p → 896p
 with a 75:20:5 optimizer-step split. All scientific recipe decisions are frozen.
-The hero run is **launched and fixed on 4× RTX 4090** (user, 2026-09-18):
-T = 480,000 optimizer steps at priority 1 (preemptible, auto-restart), no
-GPU-hour budget; the H100/H200 variant and its 800-hour budget frame are
-dropped. Stage launches chain with `jobs/hero_stage_4090.sh <stage> 480000 4`
-(endpoints 360,000 / 456,000 / 480,000).
+The user authorized a **fresh 4×H200 hero after qualification** on 2026-09-24:
+**600,000 steps, 20,000-step LR warmup, higher 256p D4 share, and
+bias-corrected EMA**, with endpoints 450,000 / 570,000 / 600,000.
+The four-H200 smoke retry is submitted after scheduler preemption;
+production has **not yet launched**.
+The earlier 4×4090 run (T=480k, endpoints 360k/456k/480k) is a historical
+reference, not the initialization source. See [H200 qualification](h200_smoke_0923.md)
+for current acceptance evidence and launch status. The repeatable H200 launcher
+is `scripts/pretrain/hero_stage_h200.sh` with `configs/hero/h200.toml` layered
+after the base hero policy.
 There is no numerical capability
 target or inference hardware/latency gate. Image panels monitor regressions and
 document the trained model's strengths and limitations.
@@ -17,19 +22,19 @@ document the trained model's strengths and limitations.
 | item | value |
 |---|---|
 | Model | 1152 hidden / 16 heads, 1 double-stream + 24 single-stream blocks; 532,706,812 parameters; `configs/hero.toml` layered after `configs/base.toml` |
-| Hardware | **Fixed: 4× RTX 4090** (user decision 2026-09-18, after the 4-rank job scheduled and passed validation). H100/H200 variant dropped along with its 800-GPU-hour budget frame; 896p accumulation-2 H200 plan preserved on GPFS if ever revisited |
-| Budget | No GPU-hour budget on the 4090 path — fixed **480,000 optimizer steps** at priority 1 (preemptible idle-fill) until done |
+| Hardware | **4×H200**, conditional on the current qualification passing; four-GPU quota is LOW/preemptible |
+| Run length | **600,000 optimizer steps**, fresh initialization (user, 2026-09-24); historical 4090 run was 480k |
 | Resolution stages | 256p → 640p → 896p; 1024p definitively dropped, not a pending optional stage |
 | Stage step split | 75 : 20 : 5 of the finalized total optimizer steps |
 | Mean effective-batch targets | ≥640 / ≥512 / ≥400 samples per update at 256p / 640p / 896p |
-| Gradient accumulation | 4×4090 final: **256p = 3 with the v93 four-rank plan** (`fallback4r-proposal-v93/256p-acc3`, the 8-rank 256p plan OOMs 48-GB cards at four ranks), **640p = 10, 896p = 14** on the standard `batch-targets-0914` plans — all preserving the frozen mean effective-batch targets |
+| Gradient accumulation | H200 256p candidate: **1**, tripling v93 micro-batches, pending throughput acceptance. **640p/896p are to be tuned separately** with larger micro-batches; 10/14 are conservative 4090 reference values, not required H200 settings. Higher-stage tuning does not block the 256p hero (user, 2026-09-24) |
 | Optimizer | Chunked Muon for eligible 2-D hidden weights; auxiliary AdamW for embeddings, conditioning/output layers, norms, biases and other parameters |
 | Peak LR | Muon 0.02; auxiliary AdamW 3e-4 |
-| LR schedule | 5,000-step warmup, then cosine to 5% of peak over the whole run; `min_learning_rate=1.5e-5` for auxiliary AdamW, proportional Muon floor 0.001 |
+| LR schedule | **20,000-step warmup**, then cosine to 5% of peak over the 600k-step horizon; `min_learning_rate=1.5e-5` for auxiliary AdamW, proportional Muon floor 0.001 |
 | Caption selection | Exact retained-length beta selector; linear beta −1→+1 across the whole run; 0.20 reserve for captions below 256 tokens |
 | Caption loss weight | `max(1, log2(L/128))`; classifier-free dropped captions retain weight 1 |
 | Caption cap | 2048 retained tokens for training and planning |
-| EMA | Decay 0.9999, updated every optimizer step |
+| EMA | **Bias-corrected warmup**, `decay_t = min(0.9999, (1+t)/(10+t))`, updated every optimizer step; full resume retains EMA weights and global t |
 | Timestep shift | Noise→data convention: `t' = t / (s - (s-1)*t)`, `s=max(1,sqrt(image_tokens/256))` |
 | DDP | Accumulation-boundary gradient synchronization; no per-micro allreduce |
 | Activation checkpointing | Disabled; validate full-stream memory with the selected plans |
@@ -46,7 +51,13 @@ policies are unchanged. These settings are selected from lower-rank comparisons;
 their H100/H200 acceptance and all-in costs are still pending. Do not use this
 launcher as a finalized H100/H200 recipe until that work is complete.
 
-### Dataset mix (user spec 2026-09-14)
+### Dataset mix
+
+The 2026-09-24 H200 amendment uses the higher-D4 256p mixture already in
+`configs/hero/256p.toml.in`: normalized D4 share **55.4522%**, up from about
+50.9% in the earlier NVIDIA snapshot. The 640p/896p mixtures are unchanged.
+The tables below record the original 2026-09-14 reference mixture; the
+versioned H200 input TOMLs and their hashes are authoritative for the new run.
 
 Canonical form: per-resolution multipliers on **absolute row counts**,
 then normalize — weight_i ∝ rows_i × mult_i. Shard weights are split in proportion to their row counts.
