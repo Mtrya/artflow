@@ -49,6 +49,7 @@ from .caption_telemetry import CaptionTelemetry, PolicyState
 from .caption_loss_weights import CaptionLossWeights, StepLossAccumulator, weighted_mean
 from .finite_guard import require_finite_update
 from .update_ops import divide_gradients, ema_decay_at, update_ema, clear_local_cuda_cache
+from .checkpoint_retention import prune_checkpoints
 from .infra_metrics import InfraRecorder
 from ..dataset.mix import parse_dataset_mix, get_dataset_weights
 from ..utils.encode_text import encode_text
@@ -1426,6 +1427,14 @@ def main():
                 scheduler_count=len(schedulers), use_ema=ema_model is not None,
                 world_size=accelerator.num_processes,
             )
+            if args.checkpoint_keep_last:
+                removed = prune_checkpoints(
+                    save_path, keep_last=args.checkpoint_keep_last,
+                    max_steps=args.max_steps, scheduler_count=len(schedulers),
+                    use_ema=ema_model is not None, world_size=accelerator.num_processes,
+                )
+                if removed:
+                    accelerator.print(f"Pruned older complete checkpoints: {', '.join(removed)}")
         accelerator.wait_for_everyone()
 
         if infra_recorder is not None:

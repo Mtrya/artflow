@@ -221,7 +221,8 @@ def test_record_published_after_state_writes_and_barrier():
     assert source.count("accelerator.wait_for_everyone()") >= 4
 
 
-def test_actual_checkpoint_writer_produces_resumable_scheduler_files(tmp_path):
+@pytest.mark.parametrize("keep_last", [0, 3])
+def test_actual_checkpoint_writer_produces_resumable_scheduler_files(tmp_path, keep_last):
     # Execute the actual nested writer with a CPU save-state stand-in. This
     # exercises the file ordering, record, scheduler/EMA writes and preflight.
     tree = ast.parse(inspect.getsource(train.main))
@@ -234,15 +235,19 @@ def test_actual_checkpoint_writer_produces_resumable_scheduler_files(tmp_path):
         for name in ("model.safetensors", "optimizer.bin", "optimizer_1.bin", "random_states_0.pkl"):
             (Path(path) / name).write_bytes(b"cpu-stand-in")
 
+    current = {"step": 0}
+
     class Scheduler:
         def state_dict(self):
-            return {"last_epoch": 315000}
+            return {"last_epoch": current["step"]}
 
     run_dir = tmp_path / "hero-256p"
     namespace = {**vars(train),
-                 "args": SimpleNamespace(output_dir=str(tmp_path),run_name="hero-256p",max_steps=420000),
+                 "args": SimpleNamespace(output_dir=str(tmp_path),run_name="hero-256p",max_steps=420000,
+                     checkpoint_keep_last=keep_last),
                  "accelerator":SimpleNamespace(is_main_process=True,num_processes=1,
-                     save_state=save_state,wait_for_everyone=lambda:events.append("barrier")),
+                     save_state=save_state,wait_for_everyone=lambda:events.append("barrier"),
+                     print=lambda message: events.append(message)),
                  "schedulers":[Scheduler(),Scheduler()],
                  "sampler":SimpleNamespace(state_dict=lambda:{"stage":.75}),
                  "sampler_state_name":"sampler_state_rank_00000.pt",
@@ -251,13 +256,17 @@ def test_actual_checkpoint_writer_produces_resumable_scheduler_files(tmp_path):
                  "runtime_path":str(run_dir / "runtime.json")}
     exec(compile(ast.fix_missing_locations(ast.Module(body=[function],type_ignores=[])),
                  "<production writer>","exec"),namespace)
-    namespace["save_checkpoint"](315000)
+    for step in (309000, 311000, 313000, 315000):
+        current["step"] = step
+        namespace["save_checkpoint"](step)
     root = run_dir / "checkpoint_step_315000"
     assert validate_checkpoint(root,max_steps=420000,stop_at_step=315000,
         require_record=True,scheduler_count=2,use_ema=True,world_size=1) == 315000
     for name in ("scheduler.bin","scheduler_1.bin"):
         assert torch.load(root / name,weights_only=False)["last_epoch"] == 315000
     assert events[-1] == "barrier"
+    assert (run_dir / "checkpoint_step_309000").exists() == (keep_last == 0)
+    assert len(list(run_dir.glob("checkpoint_step_*"))) == (keep_last or 4)
 
 
 def test_scheduler_roundtrip_preserves_next_lr_and_global_curriculum():

@@ -106,6 +106,7 @@ def test_fresh_h200_does_not_resume_another_hero(workspace):
     assert record["config"]["train"] == {
         "max_steps": 600000, "gradient_accumulation_steps": 1, "stop_at_step": 450000,
         "ema_decay_warmup": True,
+        "checkpoint_keep_last": 3,
     }
     assert record["config"]["optim"]["lr_warmup_steps"] == 20000
 

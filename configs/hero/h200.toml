@@ -4,6 +4,7 @@
 max_steps = 600000
 # Same bias-corrected schedule as the Ascend hero; global-step based on resume.
 ema_decay_warmup = true
+checkpoint_keep_last = 3
 
 [optim]
 lr_warmup_steps = 20000

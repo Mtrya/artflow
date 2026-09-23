@@ -111,6 +111,9 @@ class TrainLoopConfig:
     logit_normal_mu: float = 0.0
     logit_normal_sigma: float = 1.0
     checkpoint_interval: int = 500
+    # Zero keeps all checkpoints. Positive values retain this many complete
+    # checkpoints per run; completed resolution endpoints stay in their runs.
+    checkpoint_keep_last: int = 0
     eval_interval: int = 100000
     steady_state_skip_steps: int = 50
     # Per-sample loss weight as a function of the caption's retained length:
@@ -238,6 +241,8 @@ def load_config(paths: Sequence[str]) -> TrainConfig:
 
 
 def _validate(config: TrainConfig) -> None:
+    if type(config.train.checkpoint_keep_last) is not int or config.train.checkpoint_keep_last < 0:
+        raise ValueError("[train].checkpoint_keep_last must be a nonnegative integer")
     if type(config.telemetry.cache_clear_interval) is not int or config.telemetry.cache_clear_interval < 0:
         raise ValueError("[telemetry].cache_clear_interval must be a nonnegative integer")
     if type(config.eval.ode_steps) is not int or config.eval.ode_steps < 1:

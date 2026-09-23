@@ -209,16 +209,20 @@ a missing scheduler or enabled EMA. File-size checks do not replace actual
 deserialization or the distributed smoke test still required by the infra pass.
 Finalize T before starting the hero; do not change it between stages.
 
-Retention is **keep all hero checkpoints** through training and post-run
-verification; the trainer does not automatically prune them. Preserve all
-three resolution endpoints and the last successfully loaded recovery point.
-At a 2,000-step cadence, 400k steps produces about 200 checkpoints; the measured
-single-rank checkpoint size of about 6.46 GB implies roughly 1.29 TB before rank
-sidecars, incomplete writes and other run artifacts. The infra pass must replace
-this estimate with eight-rank size measurements, count exact endpoints at final
-T, and verify writable capacity with headroom. Shared-pool free space is not a
-reserved project allowance. Incomplete checkpoints remain for inspection and
-must not silently become resume inputs; cleanup requires explicit target review.
+Retention (user amendment, 2026-09-24): the H200 run keeps the **latest three
+complete checkpoints per stage**, with `checkpoint_keep_last = 3`. Saving
+remains every 2,000 steps. Rank zero prunes older complete checkpoints only
+after every rank finishes writing and the new completion record passes
+inventory validation. Each closed stage retains its endpoint and two preceding
+recovery points; other stage directories are untouched. Incomplete,
+incompatible and symlinked checkpoints are left for inspection. The feature
+defaults off for other recipes.
+
+At the measured four-rank size of 6.465 GB, nine retained complete checkpoints
+across all stages need about **58.2 GB**, plus an in-progress save, incomplete
+writes, logs and evaluation artifacts. Shared-pool free space is not a reserved
+project allowance and must still be monitored. Older 4090/Ascend artifacts are
+outside the H200 launcher's retention scope.
 
 `jobs/hero_stage.sh` holds a non-blocking writer lock in the stage run directory
 before selecting a checkpoint, preventing concurrent writers from duplicate
