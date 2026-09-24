@@ -1,0 +1,9 @@
+# Layer after reference.toml and calibrated.toml for the combined fresh check.
+# The compressed warmup reaches the candidate peak LR inside this short run;
+# the future hero retains its separately requested 20k warmup.
+[model]
+timestep_factor = 1000
+
+[train]
+max_steps = 600000
+stop_at_step = 2000

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Stage-1 continuation experiment; architecture changes need a fresh experiment.
-# Usage: ARTFLOW_ROOT=... bash scripts/ascend/stability_probe.sh reference|calibrated
+# Stage-1 continuations and a fresh combined-recipe experiment.
+# Usage: ARTFLOW_ROOT=... bash scripts/ascend/stability_probe.sh reference|calibrated|fresh
 set -euo pipefail
 : "${ARTFLOW_ROOT:?Set the Ascend work root}"
-ARM=${1:?Choose reference or calibrated}
-case "$ARM" in reference|calibrated) ;; *) exit 2 ;; esac
+ARM=${1:?Choose reference, calibrated or fresh}
+case "$ARM" in reference|calibrated|fresh) ;; *) exit 2 ;; esac
 export ARM
 export PYTHONPATH="$ARTFLOW_ROOT/pylibs${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONUNBUFFERED=1 OMP_NUM_THREADS=1 TOKENIZERS_PARALLELISM=false
@@ -38,15 +38,19 @@ cfg = out / "inputs"
 cfg.mkdir(parents=True, exist_ok=True)
 source = root / "logs/bnprobe-a2/config-bnprobe-branch-a2b"
 checkpoint = root / "runs/bnprobe-branch-a2b/checkpoint_step_002000"
-validate_checkpoint(checkpoint, max_steps=200000, stop_at_step=3000,
-                    expected_step=2000, require_record=True,
-                    scheduler_count=2, use_ema=True, world_size=16)
+fresh = arm == "fresh"
+endpoint = 2000 if fresh else 3000
+horizon = 600000 if fresh else 200000
+if not fresh:
+    validate_checkpoint(checkpoint, max_steps=horizon, stop_at_step=endpoint,
+                        expected_step=2000, require_record=True,
+                        scheduler_count=2, use_ema=True, world_size=16)
 if (out / "training_metrics.jsonl").exists():
     raise RuntimeError(f"Refusing to overwrite an existing experiment: {out}")
 for name in ("inputs.toml", "plan.json"):
     (cfg / name).write_bytes((source / name).read_bytes())
 (cfg / "paths.toml").write_text('[data]\nbucket_plan = ' + json.dumps(str(cfg / "plan.json")) + '\n')
-if arm == "calibrated":
+if arm in ("calibrated", "fresh"):
     panel = root / "runs/ascend-stability-0924-reference/stability_inputs.pt"
     (out / "stability_inputs.pt").write_bytes(panel.read_bytes())
 command = [sys.executable, "-m", "torch.distributed.run", "--nproc_per_node=16",
@@ -54,13 +58,17 @@ command = [sys.executable, "-m", "torch.distributed.run", "--nproc_per_node=16",
            "--config", "configs/base.toml", "--config", str(cfg / "inputs.toml"),
            "--config", "configs/hero.toml", "--config", str(cfg / "paths.toml"),
            "--config", "configs/experiments/stability_0924/reference.toml"]
-if arm == "calibrated":
+if arm in ("calibrated", "fresh"):
     command += ["--config", "configs/experiments/stability_0924/calibrated.toml"]
+if fresh:
+    command += ["--config", "configs/experiments/stability_0924/fresh.toml"]
 command += ["--dataloader_numpy_batch", "--no-compile", "--foreach_updates",
-            "--resume", str(checkpoint), "--resume_full", "--run_name", run]
+            "--run_name", run]
+if not fresh:
+    command += ["--resume", str(checkpoint), "--resume_full"]
 (cfg / "command.json").write_text(json.dumps(command, indent=2) + "\n")
 log = out / "train.log"
-print(f"EXPERIMENT_START {run} source_step=2000 endpoint=3000", flush=True)
+print(f"EXPERIMENT_START {run} source_step={0 if fresh else 2000} endpoint={endpoint}", flush=True)
 with log.open("w") as output:
     process = subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT,
                                start_new_session=True)
@@ -77,8 +85,8 @@ with log.open("w") as output:
                                             "[stop]", "Training finished", "swanlab: View")):
                 print(line[-5000:], flush=True)
         if "Training finished" in chunk and completed_at is None:
-            validate_checkpoint(out / "checkpoint_step_003000", max_steps=200000,
-                                expected_step=3000, require_record=True,
+            validate_checkpoint(out / f"checkpoint_step_{endpoint:06d}", max_steps=horizon,
+                                expected_step=endpoint, require_record=True,
                                 scheduler_count=2, use_ema=True, world_size=16)
             completed_at = time.monotonic()
         # NPU TBE workers can hang after successful teardown. Signal only
@@ -94,11 +102,11 @@ with log.open("w") as output:
     if process.returncode and completed_at is None:
         print(log.read_text(errors="replace")[-16000:], flush=True)
         raise SystemExit(process.returncode)
-validate_checkpoint(out / "checkpoint_step_003000", max_steps=200000,
-                    expected_step=3000, require_record=True,
+validate_checkpoint(out / f"checkpoint_step_{endpoint:06d}", max_steps=horizon,
+                    expected_step=endpoint, require_record=True,
                     scheduler_count=2, use_ema=True, world_size=16)
 records = [json.loads(line) for line in (out / "stability.jsonl").read_text().splitlines()]
-if not records or records[-1]["step"] != 3000:
+if not records or records[-1]["step"] != endpoint:
     raise RuntimeError("Missing endpoint stability telemetry")
 print(f"EXPERIMENT_COMPLETE {run} observations={len(records)} panel={records[-1]['panel_id']}", flush=True)
 PY
