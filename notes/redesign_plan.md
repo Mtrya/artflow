@@ -28,11 +28,12 @@ throughput improved 33.92%, with a qualified 16×910B2C plan, full recovery and
 corrected monitoring. The roughly 2× target was not reached; measured losing
 candidates and remaining speculative opportunities satisfy the agreed stopping
 rule. See the [infra evidence and limits](infra_pass.md). Later resolutions need
-qualification before their stages launch, without gating the 256p hero. No
-hero has been launched. README remains deferred to Stage 7.
-The [evidence and selected recipe](archive/ascend_stability_stage1_0924.md) do not
-trigger an immediate hero launch. Do not require
-an exhaustive candidate A/B matrix or a separate long-validation run.
+qualification before their stages launch, without gating the 256p hero.
+The user authorized the fresh hero after fixing pretraining audit findings;
+`ascend-hero-256p-0925-r3` is launched with direct SwanLab logging. See the
+[maintenance handoff](pretrain_hero_handoff.md). README remains deferred to
+Stage 7. The hero supplies longer stability evidence; do not add an exhaustive
+candidate A/B matrix or a separate long-validation run.
 
 ## Locked decisions
 

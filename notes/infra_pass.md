@@ -1,8 +1,8 @@
 # Ascend infrastructure optimization and qualification
 
 The September 25 pass qualified native `artflow-v2` and the 256p stage of
-[`configs/hero.toml`](../configs/hero.toml) on 16×910B2C. No hero has
-been launched.
+[`configs/hero.toml`](../configs/hero.toml) on 16×910B2C. The subsequently launched hero is tracked in the
+[maintenance handoff](pretrain_hero_handoff.md).
 
 ## Current result — September 25
 
@@ -35,7 +35,8 @@ all 3,200 rank/update sample identities matched through update 600. Corrected
 48-prompt monitoring, checkpoint retention and clean launcher shutdown passed.
 The test allocation was stopped after verification. **This pass is closed**
 under the agreed stopping rule; the 2× target was not reached. Short-run health
-is qualified, not long-run or peak-LR stability. No hero has been launched.
+is qualified, not long-run or peak-LR stability. The hero launch is a separate
+record in the maintenance handoff.
 
 ## Goal and stopping rule — agreed September 25, 2026
 

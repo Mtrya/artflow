@@ -53,7 +53,8 @@ measured early-256p training rate is 878.91 samples/s; all-rank peak is
 Later-stage plans remain absent; accumulations 4/5 are candidates. These plans,
 accumulation settings, and transitions must be qualified before those stages
 run; they do not gate this pass or the 256p launch. Startup fails if the selected
-plan is missing. The September 25 infrastructure pass is closed; no hero is launched. Exact
+plan is missing. The September 25 infrastructure pass is closed. The fresh
+hero is now launched; see the [maintenance handoff](pretrain_hero_handoff.md). Exact
 full-state/RNG restoration passed on all 16 ranks, followed by a matched
 3,200-record replay, corrected prompt grids and clean shutdown. The local
 suite passes 798 tests (six NPU skips); device-specific checks passed live.
@@ -87,3 +88,14 @@ stage, and active bucket contents. Fixed mechanisms do not produce individual
 boolean fields. Older configurations and architecture variants require their
 historical Git revision. The [prior CUDA hero record](archive/cuda_hero_recipe_0924.md)
 is retained as evidence, not a current launch procedure.
+
+## September 25 launch
+
+Fresh `ascend-hero-256p` runs on 16×910B2C after the pretraining audit fixes in
+`8b4257d`. Platform job `ascend-hero-256p-0925-r3` uses the qualified HIGH
+allocation and reports directly to [SwanLab](https://swanlab.cn/@mtrya/artflow/runs/i9r8wnah).
+Its complete deployed config preserves all numerical settings above; only
+storage/output/bucket artifact paths differ. The new output root prevents
+resuming an older hero accidentally. Source/config hashes, actual progress,
+logs, full-state recovery and later-stage duties are in the
+[maintenance handoff](pretrain_hero_handoff.md).

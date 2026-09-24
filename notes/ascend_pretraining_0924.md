@@ -37,7 +37,8 @@ and the Ascend infra pass are complete as of September 25.** The selected
 recovery; the 2× target was not reached. See the [current infra evidence and
 stopping decision](infra_pass.md) and [hero recipe](hero_recipe.md). The completed
 [Stage-1 evidence](archive/ascend_stability_stage1_0924.md) remains the stability
-record. No hero has been launched.
+record. The fresh hero is now launched after the user-requested pretraining
+audit fixes; see its [maintenance handoff](pretrain_hero_handoff.md).
 Optimize for useful decisions per unit of time and compute; do not require a
 clean A/B for every candidate.
 

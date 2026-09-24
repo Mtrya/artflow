@@ -23,6 +23,9 @@ The launch follow-up fixed the issues that affect pretraining:
 Validation after these fixes: **806 passed, six NPU skips**, nine warnings,
 43.65 seconds for the complete local suite. This establishes the regressions
 above; it does not claim better generated images or long-run training stability.
+The real Ascend launch preflight also passed: an empty prompt retained five
+Qwen k20 tokens and the full hero DiT produced finite forward/backward results.
+The [maintenance handoff](pretrain_hero_handoff.md) records the running hero.
 The original findings below describe the reviewed revision.
 
 Requested follow-up to [the timestep-factor investigation](archive/timestep_factor_0924.md).
