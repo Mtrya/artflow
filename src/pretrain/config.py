@@ -61,6 +61,10 @@ class ModelConfig:
     ffn_type: str = "gated"
     qkv_bias: bool = True
     rope_centered_grid: bool = True
+    # Ablation flags from the 2026-09-24 spike investigation; both default off,
+    # i.e. off is the shipped recipe. See notes/muon_weight_growth_0924.md.
+    branch_norm: bool = False
+    cond_norm: bool = False
 
 
 @dataclass(frozen=True)
@@ -81,6 +85,10 @@ class OptimConfig:
     lr_scheduler_type: str = "linear_cosine"
     lr_warmup_steps: int = 500
     max_grad_norm: float = 1.0
+    # Skip the optimizer step entirely when the pre-clip gradient norm
+    # exceeds this value (0 disables). This guard does not diagnose the
+    # cause or establish stability; repeated skips can freeze learning.
+    grad_spike_skip: float = 0.0
     muon_lr: float = 0.02
     muon_wd: float = 0.01
     muon_momentum: float = 0.95
@@ -162,6 +170,9 @@ class TelemetryConfig:
     # Steps between model-internal health reads (update/weight ratio, QK
     # gains, EMA distance). 0 disables the probe.
     health_interval: int = 250
+    # Fixed-panel conditioning/update probe on rank zero. 0 disables it.
+    # Samples four examples at three timesteps; also writes stability.jsonl.
+    stability_interval: int = 0
 
 
 @dataclass(frozen=True)
@@ -241,6 +252,8 @@ def load_config(paths: Sequence[str]) -> TrainConfig:
 
 
 def _validate(config: TrainConfig) -> None:
+    if type(config.telemetry.stability_interval) is not int or config.telemetry.stability_interval < 0:
+        raise ValueError("[telemetry].stability_interval must be a nonnegative integer")
     if type(config.train.checkpoint_keep_last) is not int or config.train.checkpoint_keep_last < 0:
         raise ValueError("[train].checkpoint_keep_last must be a nonnegative integer")
     if type(config.telemetry.cache_clear_interval) is not int or config.telemetry.cache_clear_interval < 0:

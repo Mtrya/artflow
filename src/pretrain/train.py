@@ -51,6 +51,7 @@ from .finite_guard import require_finite_update
 from .update_ops import divide_gradients, ema_decay_at, update_ema, clear_local_cuda_cache
 from .checkpoint_retention import prune_checkpoints
 from .infra_metrics import InfraRecorder
+from .stability import StabilityMonitor, record_metrics
 from ..dataset.mix import parse_dataset_mix, get_dataset_weights
 from ..utils.encode_text import encode_text
 from ..utils.vae_codec import get_vae_stats
@@ -136,6 +137,15 @@ def build_linear_cosine_scheduler(
         return min_ratio + (1.0 - min_ratio) * cosine
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+def restore_scheduler_base_lrs(scheduler, base_lrs) -> None:
+    """Apply configured rates before the first full-resume optimizer update."""
+    scheduler.base_lrs = list(base_lrs)
+    rates = scheduler.get_lr()
+    for group, rate in zip(scheduler.optimizer.param_groups, rates):
+        group["lr"] = rate
+    scheduler._last_lr = rates
+
 
 def _device_mem_allocated(device) -> float:
     """Current allocated memory in GiB for cuda/npu; 0.0 otherwise."""
@@ -661,6 +671,8 @@ def main():
         single_stream_modulation=args.single_stream_modulation,
         ffn_type=args.ffn_type,
         rope_centered_grid=args.rope_centered_grid,
+        branch_norm=args.branch_norm,
+        cond_norm=args.cond_norm,
         # Default params
         patch_size=2,
         in_channels=16,
@@ -1020,8 +1032,7 @@ def main():
                 # would silently keep the previous peak when the recipe
                 # deliberately changed lr. Re-apply the construction-time
                 # (config) base_lrs; last_epoch stays at the resume position.
-                for pg_idx, fresh_lr in enumerate(optimizer_base_lrs[i]):
-                    sch.base_lrs[pg_idx] = fresh_lr
+                restore_scheduler_base_lrs(sch, optimizer_base_lrs[i])
         else:
             # A plain --resume carries weights+optimizer but restarts the
             # schedule from step 0: the schedulers are fresh (not restored by
@@ -1125,6 +1136,16 @@ def main():
     if global_step in args.grid_steps:
         evaluate_grid()
 
+    def evaluate_loss_metrics(eval_model):
+        metrics = eval_probe.evaluate(eval_model)
+        if args.stability_interval and ema_model is not None and accelerator.is_main_process:
+            live = eval_probe.evaluate(model_raw)
+            metrics.update({key.replace("eval/", "eval_live/", 1): value
+                            for key, value in live.items()})
+        if args.stability_interval and accelerator.is_main_process:
+            record_metrics(run_dir, global_step, metrics)
+        return metrics
+
     # Baseline probe read before the first optimizer step. For a resumed run
     # this measures the incoming checkpoint on this run's probe; for a fresh
     # run it records the random-init loss.
@@ -1132,7 +1153,7 @@ def main():
         eval_model = (
             ema_model if ema_model is not None else accelerator.unwrap_model(model)
         )
-        probe_metrics = eval_probe.evaluate(eval_model)
+        probe_metrics = evaluate_loss_metrics(eval_model)
         if accelerator.is_main_process:
             accelerator.print(
                 f"[eval-loss@{global_step}] "
@@ -1195,6 +1216,12 @@ def main():
     steady_samples_total = 0
     peak_mem_gb = 0.0
     peak_reserved_gb = 0.0
+    grad_spike_skips_total = 0
+    consecutive_skips = 0
+    stability_monitor = (
+        StabilityMonitor(model_raw, optimizers, run_dir, autocast=accelerator.autocast)
+        if args.stability_interval and accelerator.is_main_process else None
+    )
 
     infra_recorder = None
     if os.environ.get("ARTFLOW_INFRA_METRICS") == "1":
@@ -1615,6 +1642,7 @@ def main():
 
             should_optimizer_step = optimizer_step_boundary
             grad_norm = None
+            spike_skipped = False
             if should_optimizer_step:
                 if args.cpu_wall_profile:
                     _t_sync0 = time.monotonic()
@@ -1647,14 +1675,59 @@ def main():
                 step_global_samples = int(global_sample_count)
                 if args.step_breakdown:
                     bd_mark("opt")
+                stability_due = stability_monitor is not None and (
+                    global_step == resumed_step
+                    or (global_step + 1) % args.stability_interval == 0
+                )
+                if stability_due:
+                    stability_monitor.ensure_panel(z0, z1, txt, txt_pooled, txt_mask)
+                    stability_monitor.before_update()
                 grad_norm = accelerator.clip_grad_norm_(
                     model.parameters(), args.max_grad_norm
                 )
                 require_finite_update(step_global_loss, grad_norm)
+                # Optional guard: discard this update before optimizer/EMA.
+                # Large gradients do not establish a hardware fault. Record
+                # actual update execution so repeated skips cannot hide a stall.
+                if (
+                    args.grad_spike_skip > 0
+                    and grad_norm is not None
+                    and grad_norm > args.grad_spike_skip
+                ):
+                    spike_skipped = True
+                    grad_spike_skips_total += 1
+                    # Dump the spike's per-parameter gradient structure (rank 0
+                    # only; DDP-averaged grads are identical across ranks).
+                    if accelerator.is_main_process:
+                        try:
+                            per_param = sorted(
+                                (
+                                    (float(p.grad.norm()), name)
+                                    for name, p in model.named_parameters()
+                                    if p.grad is not None
+                                ),
+                                reverse=True,
+                            )
+                            spike_record = {
+                                "step": global_step + 1,
+                                "grad_norm": float(grad_norm),
+                                "loss": step_global_loss,
+                                "top_params": [
+                                    {"name": n, "norm": v}
+                                    for v, n in per_param[:10]
+                                ],
+                            }
+                            with open(
+                                os.path.join(run_dir, "grad_spikes.jsonl"), "a"
+                            ) as fh:
+                                fh.write(json.dumps(spike_record) + "\n")
+                        except Exception:
+                            pass
 
                 health_snapshot = None
                 if (
-                    args.health_interval
+                    not spike_skipped
+                    and args.health_interval
                     and (global_step + 1) % args.health_interval == 0
                 ):
                     health_snapshot = snapshot_weights(
@@ -1662,11 +1735,25 @@ def main():
                     )
 
                 for opt in optimizers:
-                    opt.step()
+                    if not spike_skipped:
+                        opt.step()
                     # NpuFusedAdamW rejects set_to_none=True.
                     opt.zero_grad(
                         set_to_none=not args.ddp_gradient_bucket_views
                         and not args.npu_fused_adamw
+                    )
+
+                stability_metrics = None
+                if stability_due:
+                    stability_metrics = stability_monitor.after_update(
+                        step=global_step + 1, applied=not spike_skipped
+                    )
+                    accelerator.print(
+                        f"[stability@{global_step + 1}] "
+                        f"c_update={stability_metrics['stability/conditioning/update_rms']:.6g} "
+                        f"c_gain={stability_metrics['stability/response/conditioning_gain']:.6g} "
+                        f"loss_delta_t050={stability_metrics['stability/response/t050/conditioning_loss_delta']:.6g} "
+                        f"probe_s={stability_metrics['stability/probe_seconds']:.2f}", flush=True,
                     )
 
                 health_metrics = None
@@ -1692,6 +1779,7 @@ def main():
             _t_post0 = time.monotonic()
 
         if should_optimizer_step:
+            consecutive_skips = consecutive_skips + 1 if spike_skipped else 0
             for sch in schedulers:
                 sch.step()
             global_step += 1
@@ -1709,7 +1797,7 @@ def main():
                 )
             policy_state = current_policy_state()
 
-            if ema_model is not None and global_step % args.ema_update_interval == 0:
+            if ema_model is not None and not spike_skipped and global_step % args.ema_update_interval == 0:
                 if args.step_breakdown:
                     bd_mark("ema")
                 update_ema_model(
@@ -1830,11 +1918,18 @@ def main():
                 log_dict = {
                     "train/loss": step_loss,
                     "train/lr": optimizers[0].param_groups[0]["lr"],
+                    "train/update_applied": float(not spike_skipped),
+                    "train/consecutive_skips": consecutive_skips,
                 }
                 if len(optimizers) > 1:
                     log_dict["train/lr_aux"] = optimizers[-1].param_groups[0]["lr"]
                 if grad_norm is not None:
                     log_dict["train/grad_norm"] = float(grad_norm)
+                if args.grad_spike_skip > 0:
+                    log_dict["train/grad_spike_skip"] = float(spike_skipped)
+                    log_dict["train/grad_spike_skips_total"] = float(
+                        grad_spike_skips_total
+                    )
                 if sps_ema is not None:
                     log_dict["train/samples_per_sec"] = sps_ema
                 peak = _device_peak_mem(accelerator.device)
@@ -1864,6 +1959,10 @@ def main():
 
                 if health_metrics is not None:
                     log_dict.update(health_metrics)
+                if stability_metrics is not None:
+                    log_dict.update(stability_metrics)
+                if stability_monitor is not None:
+                    record_metrics(run_dir, global_step, log_dict)
 
                 accelerator.log(log_dict, step=global_step)
 
@@ -1900,7 +1999,7 @@ def main():
                     if ema_model is not None
                     else accelerator.unwrap_model(model)
                 )
-                probe_metrics = eval_probe.evaluate(eval_model)
+                probe_metrics = evaluate_loss_metrics(eval_model)
                 if accelerator.is_main_process:
                     accelerator.print(
                         f"[eval-loss@{global_step}] "
