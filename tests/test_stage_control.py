@@ -17,10 +17,41 @@ import torch
 
 from src.pretrain import train
 from src.pretrain.config import flatten, load_config
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from src.pretrain.stage_control import (
     CHECKPOINT_RECORD, stage_endpoint, validate_checkpoint, write_checkpoint_record, verify_restored_rng,
 )
+
+
+def test_launcher_child_uses_qualified_runtime_policy(monkeypatch, tmp_path):
+    from scripts.pretrain import launch
+
+    recipe = Path(__file__).resolve().parents[1] / "configs/hero.toml"
+    config = load_config(recipe)
+    config = replace(config, paths=replace(config.paths, output_dir=str(tmp_path)))
+    monkeypatch.setattr(launch, "load_config", lambda _: config)
+    monkeypatch.setattr(sys, "argv", [
+        "launch", "--config", str(recipe), "--stage", "256p", "--nproc_per_node", "16",
+    ])
+    monkeypatch.setenv("PYTORCH_NPU_ALLOC_CONF", "max_split_size_mb:256")
+    monkeypatch.setenv("OMP_NUM_THREADS", "8")
+    monkeypatch.setenv("PYTHONUNBUFFERED", "0")
+    monkeypatch.setenv("TOKENIZERS_PARALLELISM", "true")
+
+    def child_environment(command, log_path):
+        # Exercise inheritance by a real child, without allocating an NPU.
+        result = subprocess.run([
+            sys.executable, "-c",
+            "import json, os; print(json.dumps([os.environ['PYTORCH_NPU_ALLOC_CONF'], "
+            "os.environ['OMP_NUM_THREADS']]))",
+        ], check=True, capture_output=True, text=True)
+        assert json.loads(result.stdout) == ["expandable_segments:True", "1"]
+        return 0
+
+    monkeypatch.setattr(launch, "watch", child_environment)
+    with pytest.raises(SystemExit) as exit_info:
+        launch.main()
+    assert exit_info.value.code == 0
 
 
 @pytest.mark.parametrize("workers", [0, 2])

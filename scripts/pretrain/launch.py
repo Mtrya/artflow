@@ -224,6 +224,11 @@ def main():
             return
         os.environ["PYTHONUNBUFFERED"] = "1"
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
+        # Variable bucket shapes need expandable segments to avoid allocator
+        # fragmentation. Set the qualified policy before child NPU runtimes
+        # initialize; a caller's environment must not silently change it.
+        os.environ["PYTORCH_NPU_ALLOC_CONF"] = "expandable_segments:True"
+        os.environ["OMP_NUM_THREADS"] = "1"
         raise SystemExit(watch(command, run / "training.log"))
 
 

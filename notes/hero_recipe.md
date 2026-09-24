@@ -9,7 +9,8 @@ source. Stage selection and checkpoint resume are operations.
 ## Selected settings
 
 - Architecture `artflow-v2`: h1152, 16 heads, 1 double-stream + 24 single-stream
-  blocks, gated MLP expansion 8/3 (width 3072). Branch RMS normalization, fused pooled-text
+  blocks, gated MLP expansion 8/3 (width 3072), 532,496,992 parameters.
+  Branch RMS normalization, fused pooled-text
   conditioning, centered RoPE, and factor-1000 timestep features are native.
   Double-stream modulation is independent; single-stream modulation is shared
   within each block. Conditioning-input LayerNorm is absent.
@@ -28,8 +29,10 @@ source. Stage selection and checkpoint resume are operations.
 ## Readiness
 
 The short stability stage passed with the preceding RMS-matched Muon recipe.
-Original scaling changes the FFN down-projection update coefficient, so the
-infrastructure pass must exercise this exact implementation and configuration.
+Original scaling changes the FFN down-projection update coefficient. The
+infrastructure pass exercised the selected convention in fresh 600-update
+runs and full-state replay, with the production 20k warmup horizon. Those
+checks cover early warmup, not peak-LR or long-run stability.
 See [the stability evidence](archive/ascend_stability_stage1_0924.md) and
 [current plan](ascend_pretraining_0924.md). This is a credible stability
 candidate, not a claim of optimality or long-run stability.
@@ -41,10 +44,19 @@ comparison measured 843.29 versus 765.34 samples/s with identical sample
 identities: 10.19% faster for 0.05% fewer total parameters. See the
 [infra evidence](infra_pass.md) for conditions and limits.
 
+Native NPU RMSNorm and SwiGLU are measured execution mechanisms. The latter
+adds 4.22% throughput on a matched-node 600-update comparison, with comparable
+short-run loss/gradient distributions and unchanged parameter layout. The
+measured early-256p training rate is 878.91 samples/s; all-rank peak is
+49.68 GiB. These are short-run measurements, not long-run stability guarantees.
+
 Later-stage plans remain absent; accumulations 4/5 are candidates. These plans,
 accumulation settings, and transitions must be qualified before those stages
 run; they do not gate this pass or the 256p launch. Startup fails if the selected
-plan is missing. The infrastructure pass is ongoing; no hero is launched.
+plan is missing. The September 25 infrastructure pass is closed; no hero is launched. Exact
+full-state/RNG restoration passed on all 16 ranks, followed by a matched
+3,200-record replay, corrected prompt grids and clean shutdown. The local
+suite passes 798 tests (six NPU skips); device-specific checks passed live.
 
 ## Launch and recovery
 
@@ -58,6 +70,10 @@ file resolves against the config file. There is no environment interpolation.
 python -m src.pretrain.train --config configs/hero.toml --stage 256p --check_config
 python -m scripts.pretrain.launch --config configs/hero.toml --stage 256p --nproc_per_node 16
 ```
+
+The launcher fixes the qualified NPU allocator policy (expandable segments)
+and one OpenMP thread per process before workers initialize. These execution
+mechanisms are not recipe switches or inherited caller choices.
 
 Select `640p` or `896p` after its predecessor finishes. The launcher finds the
 latest complete same-stage checkpoint, otherwise the predecessor's endpoint.

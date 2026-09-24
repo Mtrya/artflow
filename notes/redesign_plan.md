@@ -23,10 +23,13 @@ priors and short experiments that change decisions. The current sequence is
 **stability experiments and telemetry → repository/config/documentation cleanup
 → infrastructure pass on the selected recipe → hero**. The short stability
 stage passed on September 24; repository/config/docs cleanup passed local
-checks on September 25. Infrastructure optimization and qualification is next:
-target approximately 2× speedup over the whole curriculum, with focused
-experiments and an evidence-driven stopping rule, not a fixed time or compute
-budget. See the [agreed infra goal and measurement policy](infra_pass.md#goal-and-stopping-rule--agreed-september-25-2026).
+checks on September 25. Infrastructure optimization and qualification closed September 25: early-256p
+throughput improved 33.92%, with a qualified 16×910B2C plan, full recovery and
+corrected monitoring. The roughly 2× target was not reached; measured losing
+candidates and remaining speculative opportunities satisfy the agreed stopping
+rule. See the [infra evidence and limits](infra_pass.md). Later resolutions need
+qualification before their stages launch, without gating the 256p hero. No
+hero has been launched. README remains deferred to Stage 7.
 The [evidence and selected recipe](archive/ascend_stability_stage1_0924.md) do not
 trigger an immediate hero launch. Do not require
 an exhaustive candidate A/B matrix or a separate long-validation run.
@@ -38,7 +41,7 @@ an exhaustive candidate A/B matrix or a separate long-validation run.
 | D1 | License | Research-only OK (WikiArt, ArtBench-10, FFHQ unlocked). Per-sample `license` field; NC data in separate mix entries so a clean variant stays one mix-string away |
 | D2 | Anatomy data | Photos + paintings both; ~50/50 face vs full-body |
 | D3 | Corpus size | Fixed eligible pools per resolution; counts and source mixtures in [hero recipe](archive/cuda_hero_recipe_0924.md) |
-| D4 | Hero model | **532,766,716 parameters: h1152, 16 heads, 1 double-stream + 24 single-stream blocks**, branch normalization and timestep factor 1000 selected after the September 24 stability checks; [current decision](ascend_pretraining_0924.md) |
+| D4 | Hero model | **532,496,992 parameters: h1152, 16 heads, 1 double-stream + 24 single-stream blocks**, FFN width 3072 after measured Ascend alignment improvement; branch normalization and timestep factor 1000 are native. See the [current recipe](hero_recipe.md) and [infra evidence](infra_pass.md). |
 | D5 | Text encoder | Qwen3-0.6B, frozen, online; early-exit layer ablated k ∈ {8,16,28} + follow-up {20,24} → **k=20 (user verdict 2026-09-07**, 2.3a-followup) |
 | D6 | Resolution curriculum | **256p → 640p → 896p**, variable aspect at every stage; **75:20:5** of final optimizer steps; **1024p definitively dropped** (final recipe decision, 2026-09-14) |
 | D7 | RoPE | **Centered image grid + text pinned to fixed diagonal** (2.1 resolved 2026-09-05: 256p eval/loss+KID tie, 640p transfer tie — both arms collapse identically at 2.5× — 480p/384p/320p ladder tie → final tie-break on Qwen-Image adoption prior). Zero-shot ≥1.875× transfer fails for both variants → progressive staging mandatory |

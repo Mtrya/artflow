@@ -454,8 +454,14 @@ class GatedFeedForward(nn.Module):
         self.dropout_out = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x_gated, x_linear = self.up_proj(x).chunk(2, dim=-1)
-        x = F.silu(x_gated) * x_linear
+        x = self.up_proj(x)
+        if x.device.type == "npu":
+            import torch_npu
+
+            x = torch_npu.npu_swiglu(x, dim=-1)
+        else:
+            x_gated, x_linear = x.chunk(2, dim=-1)
+            x = F.silu(x_gated) * x_linear
         x = self.dropout(x)
         x = self.down_proj(x)
         return self.dropout_out(x)

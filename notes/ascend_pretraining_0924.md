@@ -32,9 +32,12 @@ Current sequence, explicitly clarified by the user:
 4. Launch the hero.
 
 **Stage 1 closed at 20:39 CST on September 24. Repository/config/docs cleanup
-is complete as of September 25; infrastructure qualification is next.** The completed short checks do not authorize bypassing cleanup and
-the infrastructure pass. See the
-[archived Stage-1 evidence](archive/ascend_stability_stage1_0924.md).
+and the Ascend infra pass are complete as of September 25.** The selected
+256p recipe achieved 33.92% higher training throughput, with verified full-state
+recovery; the 2× target was not reached. See the [current infra evidence and
+stopping decision](infra_pass.md) and [hero recipe](hero_recipe.md). The completed
+[Stage-1 evidence](archive/ascend_stability_stage1_0924.md) remains the stability
+record. No hero has been launched.
 Optimize for useful decisions per unit of time and compute; do not require a
 clean A/B for every candidate.
 
@@ -226,6 +229,10 @@ removal; the full model remains 532,766,716 parameters. Config validation also
 runs through the real entry point without loading models or datasets.
 
 These local checks do not qualify runtime performance or memory on Ascend.
-The [infra pass](infra_pass.md) must supply the actual three bucket artifacts,
-confirm their accumulation values and exercise full recovery on the target
-runtime. No new compute job or hero was launched by cleanup.
+The subsequent [infra pass](infra_pass.md) qualified the 256p bucket artifact,
+accumulation one and full-state recovery on the target runtime. FFN width
+3072 now gives 532,496,992 parameters; the counts above describe the cleanup
+revision before that measured alignment change. Per the user's
+September 25 clarification, 640p probes are optional when informative;
+later-stage plans and transitions are qualified before those stages launch,
+without gating this pass. No compute job or hero was launched by cleanup.
