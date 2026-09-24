@@ -172,7 +172,7 @@ every future training sample has the same activation pattern.
 
 ![Conditioning feature contraction](assets/h200_condition_saturation_0924.png)
 
-## Exact preceding-update capture (running)
+## Exact preceding-update capture (completed, 10:04 CST)
 
 `h200-predecessor-capture-0924-r1` replays from the protected 12k checkpoint
 with the original recipe, stopping at the first norm>10 or at 14k. It retains
@@ -188,3 +188,61 @@ into training tensors. Only the triggered snapshot is serialized. These
 captures still omit sampler/RNG/EMA state and are not resumable checkpoints.
 Source, patch, hashes and override are under `predecessor-0924-r1`; isolated
 source is `$W/repo-h200-0924-predecessor`. Hero and Ascend runs are untouched.
+
+The retry captured **step 12,172**, loss 1.039692, raw gradient 43.693565,
+612 samples / global weight 623.239990. Every rank's model and clipped
+gradient hashes agree. The preceding update was step 12,171, loss 0.845365,
+raw gradient 1.622501 (the preceding ten steps were mostly 0.25–0.42).
+Artifacts: `predecessor-0924-r1/capture/event_012172`.
+
+## Causal isolation of the triggering update (completed, 10:09 CST)
+
+`h200-update-counterfactual-0924` first reconstructed the preceding optimizer
+step from its saved weights, optimizer states and clipped gradients. Every
+resulting parameter matches the captured next state **bit-for-bit**:
+maximum absolute difference and total L2 difference are both **zero**.
+This includes the original compiled bf16 Muon operation and auxiliary AdamW.
+
+It then evaluated exact saved old/new parameter combinations against the
+**same next-step spike batch** (fp32 math, no further training):
+
+| Which parts of update 12,171 are applied? | Loss | Gradient norm |
+| --- | ---: | ---: |
+| None: preceding model | 0.861786 | **0.291766** |
+| All: actual next model | 1.039057 | **45.036572** |
+| Only conditioning heads (`c_mlp`, `txt_pooled_proj`) | 1.020018 | **48.753910** |
+| Everything except conditioning heads | 0.860915 | **0.212786** |
+| Only AdamW parameters | 1.019759 | 48.297610 |
+| Only Muon parameters | 0.860866 | **0.211499** |
+| Only block modulation parameters | 0.861090 | 0.246268 |
+| Only `c_mlp.2` weight and bias | 1.028974 | **55.759607** |
+
+For this captured event, the final shared-conditioning linear layer's
+AdamW update is **sufficient** to trigger a spike; the rest of the update
+without conditioning is clean on the identical batch. This is a causal
+parameter-update isolation, stronger than gradient localization or a
+precision correlation. It does not alone attribute every Ascend event.
+
+The actual AdamW LR is **0.000186465**, betas (0.9,0.95), epsilon 1e-8.
+The final conditioning weight changes by Frobenius norm 0.046210 (weight
+norm 32.9194); its bias changes by only 0.001420. Despite that modest
+relative weight displacement, its update moves the conditioning output by
+**0.206073 RMS norm**, almost exactly a common shift across all 612 samples
+(mean-shift norm 0.206073, alignment ratio 0.9999996). The previous
+between-sample conditioning spread is only **0.196283**. Thus one weight
+update moves nearly every sample's shared conditioning farther than the
+entire RMS variation separating their conditioning signals. All conditioning
+heads together move it by RMS norm **0.227869**.
+
+The final-weight AdamW update points downhill against its input gradient
+(cosine -0.6464); this is not a sign inversion or a stale-momentum ascent
+step. Its near-constant hidden features let many coordinate-wise weight
+updates combine into a large effective bias change. The downstream
+modulation path then turns that shared displacement into a spike. The
+follow-up `h200-update-scale-0924` tests the actual step-size threshold,
+weight versus bias contributions, and removal of only the weight update's
+common-input component. These are causal probes, not adopted safeguards.
+
+Results: `update-counterfactual-0924/<arm>/result.json`,
+`optimizer-reconstruction.json`, `adam-step-analysis.json`, and each arm's
+saved `conditioning.pt`.
