@@ -51,7 +51,7 @@ succeeded (09:31:55 / 09:33:50 CST). Shared artifacts under
   all parameter gradient comparisons, micro-batch losses and logs.
 - `numerical-replay-summary.json`: combined numerical results.
 
-## Conditioning-path investigation (running)
+## Conditioning-path investigation (completed, 09:43 CST)
 
 `h200-condition-path-0924` replays the same captured inputs with live weights
 from 10k, 12k, spike 12,829, and original 14k, one H200 per state. All use
@@ -69,3 +69,122 @@ eager fp32 math attention, TF32 off, no optimizer updates. It measures:
 Comparison outputs: `condition-path-0924/<state>/result.json`. These are
 observations, not proposed recipe changes. The next intervention depends
 on the measured source of amplification.
+
+The hook-instrumented spike result agrees with the uninstrumented fp32
+reference (loss 0.9727028643, norm 41.7096369). Local modulation gradients
+sum exactly to the gradient at `c`. The identical batch gives:
+
+| Weights | Loss | Total gradient norm | Median conditioning-output gradient per sample, globally weighted |
+| --- | ---: | ---: | ---: |
+| Original 10k | 0.852536 | 0.390651 | 0.0002876 |
+| Original 12k | 0.849701 | 0.263390 | 0.0003309 |
+| Replay spike 12,829 | 0.972703 | 41.709637 | 0.0136361 |
+| Original 14k | 0.846196 | 0.451796 | 0.0003625 |
+
+The 14k state is from the original trajectory, not a continuation of the
+captured replay. At the spike, the largest single sample contributes only
+**0.83%** of the sum of individual `c_mlp.2.weight` gradient norms; the top
+ten contribute **5.97%**. Contributions span all timestep quintiles. The
+large batch gradient combines broadly larger individual contributions and
+greater directional alignment (norm of summed weight gradient divided by
+sum of individual norms: **0.525**, versus **0.114** at 12k).
+
+Conditioning activation magnitudes remain moderate (`c` median norm 17.03,
+versus 16.58 at 12k; final-linear input `h` 6.23 versus 6.32). No measured
+normalization branch has a sudden backward amplification: the largest
+per-sample norm ratio is 2.64 at the spike, versus 2.66 at 12k, both in the
+first image LayerNorm. Thus neither activation overflow, a single poisoned
+sample, nor a singular normalization denominator explains this event.
+
+## Shared-conditioning sensitivity (completed, 09:49 CST)
+
+`h200-condition-geometry-0924` freezes checkpoint weights and adds a shared
+offset `alpha * d` to the conditioning vector of every sample, where `d`
+is the unit captured conditioning-bias gradient. It evaluates the same 709
+samples in fp32 math and differentiates only that offset. This directly
+measures the downstream network's loss response to conditioning changes.
+
+The centered finite-difference curvature at alpha=0 (epsilon=0.002) is:
+
+| Weights | Directional curvature |
+| --- | ---: |
+| Original 10k | 0.1334 |
+| Original 12k | 0.1902 |
+| Replay spike 12,829 | **976.15** |
+| Original 14k | 0.2191 |
+
+The spike-state curvature is **~5,130×** the 12k curvature along this same
+direction. Its loss is 0.94814 / 0.97270 / 1.09369 for alpha=-0.01 / 0 /
++0.01; a +0.05 offset raises loss to 1.97305. The conditioning vector's norm
+is ~17, so these are small absolute displacements. This is a sharply
+sensitive model state, not a faulty immediate gradient computation.
+
+The shared conditioning features have little variation compared with their
+mean: at the spike, `c` mean norm 17.0235, centered RMS norm 0.2003. Meanwhile
+Muon-routed modulation weight norms grow: block-0 text modulation Frobenius
+norm 740.97 at 10k, 858.82 at 12k, 907.31 at the spike, 948.50 at original
+14k; its estimated spectral norm is 66.16 / 77.22 / 81.38 / 87.51. The last
+block's modulation spectral norm grows 80.83 / 100.10 / 107.10 / 121.40.
+Growing modulation gain plus weak feature variation is a concrete lead;
+**these correlations alone do not establish Muon routing as the cause**.
+
+Source inspection also found that the current sinusoidal time embedding
+receives t in [0,1] without a frequency multiplier; the
+[official FLUX implementation](https://github.com/black-forest-labs/flux/blob/main/src/flux/modules/layers.py)
+uses `time_factor=1000`. This difference is an untested architectural lead,
+not proof of a bug or a reason to change the frozen recipe. In the captured
+weights, a full t=0→1 sweep at fixed pooled text still changes `c` by norm
+0.89, so timestep information is not simply absent.
+
+Raw geometry and loss-profile results: `condition-geometry-0924/<state>`;
+combined compact results: `conditioning-summary.json` in the incident root.
+
+![Conditioning loss response](assets/h200_condition_profile_0924.png)
+
+## Conditioning hidden-state contraction (10:02 CST)
+
+A CPU fp32 check loads only the conditioning weights and the same captured
+pooled features/timesteps. The qualification's fresh step-128 checkpoint is
+an early-state comparison, not a predecessor checkpoint of the hero.
+
+| Weights | Mean positive hidden neurons / 1152 | Fraction with abs(SiLU derivative)<0.01 | Centered RMS norm of `c` |
+| --- | ---: | ---: | ---: |
+| Fresh qualification 128 | 576.7 | 2.14% | 25.8845 |
+| Original 10k | **0** | 50.76% | 0.2021 |
+| Original 12k | **0** | 61.86% | 0.1920 |
+| Replay spike 12,829 | **0** | 60.55% | 0.2003 |
+| Original 14k | **0** | 68.57% | 0.2063 |
+
+All 709×1152 measured hidden preactivations are negative by 10k. Many sit
+near SiLU's minimum at -1.27846; others move far down its saturated negative
+tail. At 12k, 54.01% are below -5, and another 20.98% lie within 0.1 of the
+minimum. The timestep branch's mean-vector norm grows from 19.78 at
+qualification 128 to 163.40 at 12k, largely producing a negative offset.
+The output conditioning variation falls by ~135×, while the modulation
+weights consuming it grow. This establishes a contracted, increasingly
+insensitive upstream feature representation paired with large downstream
+gain. Its causal relationship to spikes still needs the preceding-update
+counterfactual and a controlled intervention; no production change is made.
+
+CPU result: `conditioning-hidden-saturation.json`. This reads captured
+features rather than rerunning the text encoder, and does not claim that
+every future training sample has the same activation pattern.
+
+![Conditioning feature contraction](assets/h200_condition_saturation_0924.png)
+
+## Exact preceding-update capture (running)
+
+`h200-predecessor-capture-0924-r1` replays from the protected 12k checkpoint
+with the original recipe, stopping at the first norm>10 or at 14k. It retains
+the immediately preceding pre-update model, optimizer states, clipped
+gradients and every rank's inputs, alongside the spike state and its current
+optimizers. This enables exact one-update and parameter-group counterfactuals
+instead of extrapolating across checkpoints hundreds of steps apart.
+
+The first allocation was stopped during startup to replace per-update CPU
+copies with independent device clones; training already peaks near 32 GiB,
+so the H200 has ample memory for these snapshots. The observer never writes
+into training tensors. Only the triggered snapshot is serialized. These
+captures still omit sampler/RNG/EMA state and are not resumable checkpoints.
+Source, patch, hashes and override are under `predecessor-0924-r1`; isolated
+source is `$W/repo-h200-0924-predecessor`. Hero and Ascend runs are untouched.
