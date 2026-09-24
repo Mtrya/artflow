@@ -14,6 +14,16 @@ Organized as a linear pipeline of stages, each with goal / tasks / exit criteria
 compute cap. A follow-up agent should be able to execute stage by stage from this file
 plus `notes/dataset_plan.md` (data-source detail).
 
+Current pretraining direction (user, 2026-09-24): **pure Ascend pretraining**.
+Further pretraining debugging and optimization target the Ascend stack;
+the earlier native-CUDA/H200 production direction is superseded. See
+[decision and evidence boundaries](ascend_pretraining_0924.md). Use literature
+priors and short experiments that change decisions. The current sequence is
+**stability experiments and telemetry → repository/config/documentation cleanup
+→ infrastructure pass on the selected recipe → hero**. We are in stability
+work; a short probe does not trigger an immediate hero launch. Do not require
+an exhaustive candidate A/B matrix or a separate long-validation run.
+
 ## Locked decisions
 
 | # | Decision | Choice |
@@ -26,10 +36,10 @@ plus `notes/dataset_plan.md` (data-source detail).
 | D6 | Resolution curriculum | **256p → 640p → 896p**, variable aspect at every stage; **75:20:5** of final optimizer steps; **1024p definitively dropped** (final recipe decision, 2026-09-14) |
 | D7 | RoPE | **Centered image grid + text pinned to fixed diagonal** (2.1 resolved 2026-09-05: 256p eval/loss+KID tie, 640p transfer tie — both arms collapse identically at 2.5× — 480p/384p/320p ladder tie → final tie-break on Qwen-Image adoption prior). Zero-shot ≥1.875× transfer fails for both variants → progressive staging mandatory |
 | D8 | Inspire home | Account-selected project (machine-local configuration) |
-| D9 | Compute class | **4×H200 on Inspire**, fresh hero authorized after 256p qualification (user, 2026-09-24); 640p/896p bucket tuning is deferred and does not gate 256p. Historical reference: RTX 4090 48GB, DDP over PCIe. Small ablations: local RTX 4060 Ti workstation |
+| D9 | Compute class | **Ascend for pretraining** (user pivot, 2026-09-24); debugging and optimization focus on the Ascend stack. Current probes use 16×910B. Select the hero recipe from literature, existing evidence and short checks; the hero itself is the longer validation. The earlier 4×H200 and RTX 4090 pretraining paths are historical references. See [Ascend decision](ascend_pretraining_0924.md) |
 | D10 | VLM captioning | **Via API** (Qwen-VL-class), not self-hosted — caption cost is money + rate limits, not GPU-hours. No GPU-with-internet workspace needed |
 | D11 | Modulation | **Shared per-layer modulation MLP (`mod=layer`)** — 2.2a resolved 2026-09-05: layer wins eval/loss@end (0.9437 vs 0.9441) with a persistent t040 advantage (5/5 probes from 3K, -0.0002→-0.0010), KID agrees (0.0190 vs 0.0195), +0.6% faster, -8% peak mem; tie-break prior (PixArt/DiT-Air) points the same way. All stage-2+ arms use it |
-| D12 | Optimizer | **Muon (chunked orthogonalization), LR 0.02** — 2.5 resolved 2026-09-06: 16K confirm muon 0.91127 vs AdamW 0.92134 eval/loss (-1.1%), KID 0.00699 vs 0.00922, +10% step time (<15% bar); AdamW leads early, muon overtakes by 8K and pulls away (CMuon-style late gain) |
+| D12 | Optimizer | **Muon (chunked orthogonalization)**. Historical Stage-2 winner: LR 0.02, 16k eval/loss 0.91127 vs AdamW 0.92134, KID 0.00699 vs 0.00922. **Rates reopened for the September 24 stability work**: current candidate Muon 0.003 / auxiliary AdamW 1e-4; see [measured tradeoff and fresh check](ascend_stability_stage1.md). |
 | D13 | Quality monitoring | Small bilingual panels inspect anatomy, architecture, style and layout; no numerical capability target or forecast gate. Report observed strengths and limitations; [Stage-4 plan](archive/stage4_plan.md) |
 | D14 | Inference scope | No prescribed inference device, VRAM ceiling, or latency launch gate; use reproducible evaluation settings. Deployment optimization and distillation are optional later work |
 
@@ -51,7 +61,7 @@ experiments. Stage-2 arms below implement column C.
 | CFG caption dropout | 0.1 | convention |
 | VAE | Qwen-Image VAE (16ch f8) | physically locked by stage-1 256p precompute; switching (e.g. DC-AE) = full re-precompute, out of scope |
 | Text encoder | Qwen3-0.6B frozen (exit layer ablated in 2.3) | encoder-size gains saturate early (DeepFloyd IF et al.); params go to the DiT |
-| Optimizer after Stage 2 | **Muon (chunked orthogonalization), LR 0.02; auxiliary AdamW for parameters routed outside Muon** | Stage-2 D12 winner; fixed for Stage 3–5; the Stage-2 comparison is recorded in §2.5 |
+| Optimizer after original Stage 2 | **Muon (chunked orthogonalization); auxiliary AdamW for parameters routed outside Muon** | Historical LR 0.02 won §2.5. Rates are being recalibrated in the September 24 stability work; see D12. |
 | Evaluation inference knobs (solver/steps/CFG/precision/offload) | **recorded and correctness-checked in Stage 4** for reproducible comparisons | No deployment-speed gate; distillation is optional later work |
 
 ### B. Considered and excluded
