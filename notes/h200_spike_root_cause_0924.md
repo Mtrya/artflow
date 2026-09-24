@@ -5,6 +5,18 @@ hardware switch. The H200 hero remains stopped; independent Ascend jobs are
 not modified. Launch, incident, and trajectory-replay history:
 [H200 operational record](h200_smoke_0923.md).
 
+**Confirmed mechanism (10:21 CST):** at captured H200 step 12,172, AdamW's
+update to `c_mlp.2.weight` produces a coherent conditioning shift amplified
+**144×** relative to the explicit bias update. Its almost constant hidden
+features turn coordinate-wise weight updates into a large effective bias
+update shared by every block. The weight update alone produces gradient
+norm **55.82**; removing only its mean-input component from the otherwise
+complete update gives **0.248**, versus **45.04** for the full update.
+Exact optimizer reconstruction is bit-identical. The immediate causal
+mechanism is established for this event. The origins of feature contraction,
+all Ascend events, and a durable training fix are not yet experimentally
+settled; no production remedy or hero restart has been performed.
+
 ## Same-state numerical and cross-card test (09:39 CST)
 
 An observer captured the first >10 gradient event in a replay from the
@@ -246,3 +258,66 @@ common-input component. These are causal probes, not adopted safeguards.
 Results: `update-counterfactual-0924/<arm>/result.json`,
 `optimizer-reconstruction.json`, `adam-step-analysis.json`, and each arm's
 saved `conditioning.pt`.
+
+## Mean-input component and step-size counterfactual (completed, 10:14 CST)
+
+The last eight-arm fp32 replay isolates the final layer's **weight** update:
+weight alone gives norm **55.8181**, whereas bias alone gives **0.2921**.
+Let `h_bar` be the mean final-linear input on the fixed spike batch evaluated
+with the preceding weights. For this forensic ablation, remove only the
+weight update component acting on that mean:
+
+```
+delta_W_projected = delta_W - (delta_W @ h_bar)[:, None]
+                            * h_bar[None, :] / (h_bar @ h_bar)
+```
+
+Applying the complete captured update with only this one component removed
+gives **loss 0.861532, gradient norm 0.247787**. Applying only the projected
+final-layer update gives norm 0.292111, effectively the same as bias alone.
+This confirms the shared conditioning displacement as the decisive part of
+the weight update for this captured event. The reference mean uses the next
+batch for a controlled forensic decomposition; this is **not** yet an online
+training algorithm or a validation of a deployable projection safeguard.
+
+The optimizer mechanism is measurable. The hidden features are negative and
+almost constant across samples. Then approximately
+`grad_W[i,j] = grad_bias[i] * h_bar[j]`. Adam's coordinate normalization
+largely removes the magnitude of `h_bar[j]`, so many columns contribute in
+the same direction to `delta_W @ h_bar`, amplifying the bias-like motion:
+
+- `||h_bar||_1 = 146.58295`.
+- `||delta_W @ h_bar|| = 0.2046534`.
+- `||delta_bias|| = 0.00141963`; their norm ratio is **144.1594**.
+- The weight-induced shift and explicit bias update have cosine **0.999872**.
+- The actual weight update has cosine **0.94237** to a matrix formed by
+  repeating the negative bias update across all columns. This is an
+  approximation, not an exact factorization (relative residual 0.3496).
+
+Keeping all other parameters at their updated values and interpolating only
+the conditioning-head update gives:
+
+| Fraction of actual conditioning update | Next-batch loss | Gradient norm |
+| --- | ---: | ---: |
+| 0 | 0.860915 | 0.212786 |
+| 0.1 | 0.861023 | 0.218953 |
+| 0.25 | 0.861384 | 0.248686 |
+| 0.5 | 0.863065 | 0.841935 |
+| 0.75 | 0.908917 | **28.6570** |
+| 1 | 1.039057 | **45.0366** |
+
+Reducing the conditioner step avoids this particular crossing. It does not
+remove the near-constant feature representation or downstream gain growth;
+therefore delayed recurrence after an LR reduction is consistent with the
+mechanism. The experiment does not prove the long-term outcome of a new LR.
+The remedy should be tested at the conditioning parameterization/update
+level, with a trajectory replay and EMA evaluation, rather than adopted
+from this single-update success. Neither fp32 Muon nor global spike skipping
+addresses the demonstrated amplification directly.
+
+Artifacts: `update-scale-0924/<arm>/result.json`,
+`update-counterfactual-0924/common-mode-adam-analysis.json`, and
+`causal-update-summary.json` (all 16 counterfactual arms). All GPU diagnostic
+jobs have finished successfully. Completed temporary launchers and isolated
+observer source are removed after retaining patches, hashes, raw captures,
+results and this evidence. The frozen production source remains unchanged.
