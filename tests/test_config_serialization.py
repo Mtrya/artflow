@@ -1,68 +1,53 @@
-"""Topology round-trip for `ArtFlow.get_config()` / state-dict inference.
+"""Checkpoints carry architecture metadata instead of guessing it from shapes."""
 
-The hero recipe is 1 double-stream block followed by 24 single-stream blocks,
-so the double-stream path is the one that actually ships. Both serialisation
-paths used to disagree with it:
-
-  * `get_config()` read `attn.qkv` off the first block, but the double-stream
-    attention splits QKV into `qkv_img`/`qkv_txt` -- AttributeError;
-  * both `get_config()` and `_infer_config_from_state_dict()` detected
-    double-stream blocks by looking for `txt_mlp`, a name that exists in
-    neither the module (`mlp_img`/`mlp_txt`) nor the state dict
-    (`mlp_txt`/`mlp`), so the depth was always reported as 0.
-"""
-
-import sys
-import os
-
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
+import json
+import pytest
+import torch
 from src.models.artflow import ArtFlow
 
-TINY = dict(
-    hidden_size=64,
-    num_heads=4,
-    single_stream_depth=2,
-    mlp_ratio=2.0,
-    conditioning_scheme="fused",
-    txt_in_features=32,
-    patch_size=2,
-    in_channels=4,
-)
 
-
-def _build(double_stream_depth, **kwargs):
-    return ArtFlow(**TINY, double_stream_depth=double_stream_depth, **kwargs)
-
-
-def test_get_config_reports_double_stream_depth():
-    for depth in (0, 1, 2):
-        config = _build(depth).get_config()
-        assert config["double_stream_depth"] == depth, config
-        assert config["single_stream_depth"] == 2, config
-
-
-def test_get_config_reads_qkv_bias_from_the_double_stream_split_projection():
-    assert _build(1).get_config()["qkv_bias"] is True
-    assert _build(1, qkv_bias=False).get_config()["qkv_bias"] is False
-
-
-def test_state_dict_inference_recovers_the_double_stream_depth():
-    for depth in (0, 1, 2):
-        inferred = ArtFlow._infer_config_from_state_dict(_build(depth).state_dict())
-        assert inferred["double_stream_depth"] == depth, inferred
-        assert inferred["single_stream_depth"] == 2, inferred
-
-
-def test_config_rebuild_preserves_every_parameter_key():
-    model = _build(1)
-    config = model.get_config()
-    rebuilt = ArtFlow(
-        **{
-            **TINY,
-            "double_stream_depth": config["double_stream_depth"],
-            "single_stream_depth": config["single_stream_depth"],
-        }
+@pytest.mark.parametrize("double,single", [(0, 2), (1, 2), (2, 0)])
+def test_model_file_roundtrip_preserves_all_weights_and_capacity(
+    tmp_path, double, single
+):
+    model = ArtFlow(
+        hidden_size=32,
+        num_heads=4,
+        double_stream_depth=double,
+        single_stream_depth=single,
+        mlp_ratio=2.25,
     )
-    assert set(rebuilt.state_dict()) == set(model.state_dict())
-    rebuilt.load_state_dict(model.state_dict())
+    config = model.get_config()
+    assert config["architecture"] == "artflow-v2"
+    assert set(config) == {
+        "architecture",
+        "hidden_size",
+        "num_heads",
+        "double_stream_depth",
+        "single_stream_depth",
+        "mlp_ratio",
+    }
+    path = tmp_path / "ema_weights.pt"
+    torch.save(model.state_dict(), path)
+    (tmp_path / "transformer_config.json").write_text(json.dumps(config))
+    rebuilt = ArtFlow.from_single_file(str(path))
+    assert rebuilt.get_config() == config
+    for key, value in model.state_dict().items():
+        assert torch.equal(value, rebuilt.state_dict()[key])
+
+
+def test_unknown_architecture_rejected():
+    with pytest.raises(ValueError, match="unsupported architecture"):
+        ArtFlow(
+            hidden_size=32,
+            num_heads=4,
+            double_stream_depth=1,
+            single_stream_depth=1,
+            mlp_ratio=2,
+            architecture="old-experiment",
+        )
+
+
+def test_missing_metadata_is_not_guessed(tmp_path):
+    with pytest.raises(FileNotFoundError, match="transformer_config"):
+        ArtFlow.from_single_file(str(tmp_path / "weights.pt"))

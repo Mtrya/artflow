@@ -80,7 +80,7 @@ def write_sidecar(root, rows):
 
 
 def write_sweep(path, *, shapes=None):
-    """A calibration file in the shape transformer_ceiling.py writes."""
+    """A calibration file with explicit measured shapes."""
     shapes = shapes or {
         (32, 32): {"img_tokens": 256, "txt_lens": (128, 512), "micros": (8, 16)},
         (80, 80): {"img_tokens": 1600, "txt_lens": (128, 512), "micros": (4, 8)},

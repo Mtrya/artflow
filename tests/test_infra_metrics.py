@@ -62,3 +62,22 @@ def test_checkpoint_cost_is_separate_from_update_timings(tmp_path):
     assert json.loads((tmp_path / "infra/checkpoint-rank-1.jsonl").read_text()) == {
         "step": 30, "rank": 1, "seconds": 12.5,
     }
+
+
+def test_npu_trace_uses_native_profiler_handler(tmp_path, monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    native = MagicMock()
+    native.ProfilerActivity = SimpleNamespace(CPU='cpu', NPU='npu')
+    monkeypatch.setitem(sys.modules, 'torch_npu', SimpleNamespace(profiler=native))
+    with patch('torch.profiler.profile', side_effect=AssertionError('wrong backend')):
+        recorder = InfraRecorder(tmp_path, 3, device_type='npu', trace_start=0, trace_steps=1)
+        recorder.begin_update(0)
+        recorder.end_update(step=1, seconds=1, global_samples=8, loss=.5, progress=.5,
+                            peak_allocated=100, peak_reserved=120)
+        recorder.close()
+    assert native.profile.call_args.kwargs['activities'] == ['cpu', 'npu']
+    native.tensorboard_trace_handler.assert_called_once_with(str(tmp_path / 'infra/rank-3-trace'))
+    native.profile.return_value.start.assert_called_once()
+    native.profile.return_value.stop.assert_called_once()
+    native.profile.return_value.key_averages.assert_not_called()

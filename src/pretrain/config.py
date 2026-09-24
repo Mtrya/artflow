@@ -1,319 +1,359 @@
-"""Training configuration: TOML files plus run-time overrides.
+"""One explicit TOML recipe for a complete resolution curriculum.
 
-An experiment is defined by a config file (see ``configs/base.toml`` for the
-shipped recipe), optionally layered with more config files that override it.
-The command line carries only run-time control: which configs to load, where
-to write, whether to resume, and whether to profile.
-
-``load_config`` merges the files in order and validates the result.
-``flatten`` turns the nested dataclass into the flat attribute names the
-training loop reads, so the loop itself does not care how the values were
-grouped for readability.
+Every dataclass field is required. There are no inherited configs, environment
+substitutions, or hyperparameter overrides. Selecting a stage only projects its
+inputs into the trainer; the optimizer and caption schedules retain the final
+stage's endpoint as their horizon.
 """
 
 from __future__ import annotations
 
+import math
 import tomllib
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, fields, is_dataclass
 from pathlib import Path
-from typing import Any, Dict, Mapping, Sequence
-
-from .caption_loss_weights import CaptionLossWeights
-from .stage_control import stage_endpoint
+from typing import Any, get_args, get_origin, get_type_hints
 
 
 @dataclass(frozen=True)
 class DataConfig:
-    """What is trained on, and how rows are drawn from it."""
-
-    mix: str = ""
-    bucket_plan: str = ""
-    caption_dropout_prob: float = 0.1
-    # Which caption inside a drawn row is used. "legacy" keeps the original
-    # heuristic short-to-long curriculum; "beta" selects on exact retained
-    # lengths with a length preference and a short-caption reserve.
-    caption_policy: str = "legacy"
-    curriculum_start: float = 0.0
-    curriculum_end: float = 1.0
-    caption_beta_start: float = -1.0
-    caption_beta_end: float = 1.0
-    # "linear" ramps beta over the run, "early" reaches beta_end earlier and
-    # holds it, "stationary" uses each row's schedule-averaged probabilities.
-    caption_schedule: str = "linear"
-    caption_early_at: float = 0.5
-    caption_short_reserve: float = 0.20
-    caption_short_threshold: int = 256
-    stage_sync_interval: int = 1
+    caption_dropout_prob: float
+    curriculum_start: float
+    curriculum_end: float
+    caption_beta_start: float
+    caption_beta_end: float
+    caption_short_reserve: float
+    caption_short_threshold: int
 
 
 @dataclass(frozen=True)
 class ModelConfig:
-    """Transformer shape and conditioning."""
-
-    hidden_size: int = 1152
-    num_heads: int = 16
-    double_stream_depth: int = 0
-    single_stream_depth: int = 24
-    mlp_ratio: float = 2.67
-    conditioning_scheme: str = "fused"
-    double_stream_modulation: str = "none"
-    single_stream_modulation: str = "layer"
-    ffn_type: str = "gated"
-    qkv_bias: bool = True
-    rope_centered_grid: bool = True
-    # Ablation flags from the 2026-09-24 spike investigation; both default off,
-    # i.e. off is the shipped recipe. See notes/muon_weight_growth_0924.md.
-    branch_norm: bool = False
-    cond_norm: bool = False
-    timestep_factor: int = 1
+    hidden_size: int
+    num_heads: int
+    double_stream_depth: int
+    single_stream_depth: int
+    mlp_ratio: float
 
 
 @dataclass(frozen=True)
 class TextEncoderConfig:
-    """Frozen encoder used for conditioning features."""
-
-    path: str = ""
-    exit_layer: int = 20
+    path: str
+    exit_layer: int
 
 
 @dataclass(frozen=True)
 class OptimConfig:
-    """Learning rates and the Muon plus auxiliary AdamW schedule."""
-
-    learning_rate: float = 3e-4
-    start_learning_rate: float = 1e-5
-    min_learning_rate: float = 0.5e-4
-    lr_scheduler_type: str = "linear_cosine"
-    lr_warmup_steps: int = 500
-    max_grad_norm: float = 1.0
-    # Skip the optimizer step entirely when the pre-clip gradient norm
-    # exceeds this value (0 disables). This guard does not diagnose the
-    # cause or establish stability; repeated skips can freeze learning.
-    grad_spike_skip: float = 0.0
-    muon_lr: float = 0.02
-    muon_wd: float = 0.01
-    muon_momentum: float = 0.95
+    learning_rate: float
+    start_learning_rate: float
+    min_learning_rate: float
+    lr_warmup_steps: int
+    max_grad_norm: float
+    adam_wd: float
+    adam_eps: float
+    adam_betas: list[float]
+    muon_lr: float
+    muon_wd: float
+    muon_momentum: float
 
 
 @dataclass(frozen=True)
 class TrainLoopConfig:
-    """How long the loop runs, and how it accumulates, weights and averages."""
-
-    max_steps: int = 50000
-    # Clean-exit step boundary for a stage that must stop before the schedule
-    # horizon: the loop checkpoints and exits at stop_at_step, while the LR
-    # and caption-length schedules keep max_steps as their horizon so a
-    # follow-up stage resumes mid-schedule. 0 disables it.
-    stop_at_step: int = 0
-    seed: int = 42
-    gradient_accumulation_steps: int = 16
-    num_workers: int = 8
-    use_ema: bool = True
-    ema_decay: float = 0.999
-    # Bias-corrected EMA schedule: decay_t = min(ema_decay, (1+t)/(10+t))
-    # (ADM/EDM warmup). Early steps average over a short window so the EMA
-    # tracks the live weights instead of initialization residue; pure function
-    # of the step, so crash-resume reproduces it exactly.
-    ema_decay_warmup: bool = False
-    ema_update_interval: int = 1
-    use_logit_normal_sampling: bool = True
-    logit_normal_mu: float = 0.0
-    logit_normal_sigma: float = 1.0
-    checkpoint_interval: int = 500
-    # Zero keeps all checkpoints. Positive values retain this many complete
-    # checkpoints per run; completed resolution endpoints stay in their runs.
-    checkpoint_keep_last: int = 0
-    eval_interval: int = 100000
-    steady_state_skip_steps: int = 50
-    # Per-sample loss weight as a function of the caption's retained length:
-    # "none" (every weight 1.0, the default) or "log2" for
-    # max(1, log2(L / caption_loss_weight_reference)).  A curve the trainer
-    # does not know is a configuration error, not something to repair on the
-    # way in.  See src/pretrain/caption_loss_weights.py for what the weights act
-    # on, what they are normalized by, and why.
-    caption_loss_weight_curve: str = "none"
-    caption_loss_weight_reference: int = 128
+    run_name: str
+    seed: int
+    num_workers: int
+    ema_decay: float
+    ema_update_interval: int
+    logit_normal_mu: float
+    logit_normal_sigma: float
+    checkpoint_interval: int
+    checkpoint_keep_last: int
+    eval_interval: int
+    steady_state_skip_steps: int
+    caption_loss_weight_reference: int
 
 
 @dataclass(frozen=True)
 class EvalConfig:
-    """Probes used to compare runs."""
-
-    dataset_path: str = ""
-    batch_size: int = 8
-    loss_interval: int = 50
-    loss_samples: int = 512
-    prompts_file: str = "assets/eval/prompts_v1.jsonl"
-    ode_steps: int = 50
-    # Absolute global steps: stage baseline, +2k transition check, endpoint.
-    grid_steps: list[int] = field(default_factory=list)
-    # End of global max_steps, not an intermediate stop_at_step boundary.
-    kid_at_end: bool = False
-    kid_num_fake: int = 2000
+    batch_size: int
+    loss_interval: int
+    loss_samples: int
+    prompts_file: str
+    ode_steps: int
+    kid_num_fake: int
 
 
 @dataclass(frozen=True)
 class PathConfig:
-    """Model and output locations."""
-
-    vae: str = ""
-    output_dir: str = "output"
+    storage_root: str
+    vae: str
+    output_dir: str
 
 
 @dataclass(frozen=True)
 class TelemetryConfig:
-    """Logging and allocator housekeeping."""
+    log_interval: int
+    swanlab_project: str
+    health_interval: int
+    stability_interval: int
 
-    log_interval: int = 25
-    # Zero disables periodic garbage collection / CUDA cache release.
-    cache_clear_interval: int = 100
-    swanlab_project: str = "artflow"
-    # Steps between model-internal health reads (update/weight ratio, QK
-    # gains, EMA distance). 0 disables the probe.
-    health_interval: int = 250
-    # Fixed-panel conditioning/update probe on rank zero. 0 disables it.
-    # Samples four examples at three timesteps; also writes stability.jsonl.
-    stability_interval: int = 0
+
+@dataclass(frozen=True)
+class DatasetConfig:
+    path: str
+    weight: float
+
+
+@dataclass(frozen=True)
+class StageConfig:
+    name: str
+    end_step: int
+    gradient_accumulation_steps: int
+    bucket_plan: str
+    eval_dataset_path: str
+    grid_steps: list[int]
+    datasets: list[DatasetConfig]
 
 
 @dataclass(frozen=True)
 class TrainConfig:
-    """The complete experiment definition."""
+    data: DataConfig
+    model: ModelConfig
+    text_encoder: TextEncoderConfig
+    optim: OptimConfig
+    train: TrainLoopConfig
+    eval: EvalConfig
+    paths: PathConfig
+    telemetry: TelemetryConfig
+    stages: list[StageConfig]
 
-    data: DataConfig = field(default_factory=DataConfig)
-    model: ModelConfig = field(default_factory=ModelConfig)
-    text_encoder: TextEncoderConfig = field(default_factory=TextEncoderConfig)
-    optim: OptimConfig = field(default_factory=OptimConfig)
-    train: TrainLoopConfig = field(default_factory=TrainLoopConfig)
-    eval: EvalConfig = field(default_factory=EvalConfig)
-    paths: PathConfig = field(default_factory=PathConfig)
-    telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
+    @property
+    def max_steps(self) -> int:
+        return self.stages[-1].end_step
+
+    def stage(self, name: str) -> StageConfig:
+        for stage in self.stages:
+            if stage.name == name:
+                return stage
+        raise ValueError(
+            f"unknown stage {name!r}; choose from {[s.name for s in self.stages]}"
+        )
+
+    def stage_start(self, name: str) -> int:
+        index = self.stages.index(self.stage(name))
+        return self.stages[index - 1].end_step if index else 0
 
 
-# Config keys whose flat name differs from the field name, because the flat
-# name is what the training loop reads. Everything else keeps its field name.
+def _decode(kind, value, location):
+    if is_dataclass(kind):
+        if not isinstance(value, dict):
+            raise ValueError(f"{location}: expected a table")
+        types = get_type_hints(kind)
+        unknown, missing = value.keys() - types.keys(), types.keys() - value.keys()
+        if unknown:
+            raise ValueError(f"{location}: unknown fields {sorted(unknown)}")
+        if missing:
+            raise ValueError(f"{location}: missing required fields {sorted(missing)}")
+        return kind(
+            **{
+                key: _decode(typ, value[key], f"{location}.{key}")
+                for key, typ in types.items()
+            }
+        )
+    if get_origin(kind) is list:
+        if not isinstance(value, list):
+            raise ValueError(f"{location}: expected a list")
+        return [
+            _decode(get_args(kind)[0], item, f"{location}[{i}]")
+            for i, item in enumerate(value)
+        ]
+    if kind is float:
+        if type(value) not in (int, float) or not math.isfinite(value):
+            raise ValueError(f"{location}: expected a finite number")
+        return float(value)
+    if type(value) is not kind:
+        raise ValueError(f"{location}: expected {kind.__name__}")
+    if kind is str and (not value.strip() or "${" in value):
+        raise ValueError(
+            f"{location}: use a nonempty explicit value, not an environment template"
+        )
+    return value
+
+
+def load_config(path: str | Path) -> TrainConfig:
+    """Read exactly one complete run file; paths are resolved from that file."""
+    if not isinstance(path, (str, Path)):
+        raise ValueError(
+            "exactly one config path is required; config layering is unsupported"
+        )
+    path = Path(path).resolve()
+    try:
+        with path.open("rb") as handle:
+            config = _decode(TrainConfig, tomllib.load(handle), str(path))
+    except OSError as exc:
+        raise ValueError(f"cannot read config {path}: {exc}") from exc
+    _validate(config)
+    # Path resolution changes locations only, never fills in missing settings.
+    payload = asdict(config)
+    storage = (path.parent / config.paths.storage_root).resolve()
+    payload["paths"]["storage_root"] = str(storage)
+    for key in ("vae", "output_dir"):
+        payload["paths"][key] = str(storage / payload["paths"][key])
+    payload["text_encoder"]["path"] = str(storage / config.text_encoder.path)
+    payload["eval"]["prompts_file"] = str(
+        (path.parent / config.eval.prompts_file).resolve()
+    )
+    for stage in payload["stages"]:
+        for key in ("bucket_plan", "eval_dataset_path"):
+            stage[key] = str(storage / stage[key])
+        for dataset in stage["datasets"]:
+            dataset["path"] = str(storage / dataset["path"])
+    return _decode(TrainConfig, payload, str(path))
+
+
+def _validate(config: TrainConfig) -> None:
+    def require(test, message):
+        if not test:
+            raise ValueError(message)
+
+    m, o, t, d, e = config.model, config.optim, config.train, config.data, config.eval
+    require(m.hidden_size > 0 and m.num_heads > 0, "model dimensions must be positive")
+    require(
+        m.hidden_size % (4 * m.num_heads) == 0,
+        "model.hidden_size must be divisible by 4 * num_heads for two RoPE axes",
+    )
+    require(
+        m.double_stream_depth >= 0
+        and m.single_stream_depth >= 0
+        and m.double_stream_depth + m.single_stream_depth > 0,
+        "invalid model depths",
+    )
+    require(m.mlp_ratio > 0, "model.mlp_ratio must be positive")
+    require(
+        config.text_encoder.exit_layer > 0, "text_encoder.exit_layer must be positive"
+    )
+    require(bool(config.stages), "at least one stage is required")
+    names = [s.name for s in config.stages]
+    require(len(names) == len(set(names)), "stage names must be unique")
+    previous = 0
+    for stage in config.stages:
+        require(
+            stage.name.replace("-", "").replace("_", "").isalnum(), "invalid stage name"
+        )
+        require(
+            stage.end_step > previous, "stage end_step values must strictly increase"
+        )
+        require(
+            stage.gradient_accumulation_steps > 0,
+            "gradient_accumulation_steps must be positive",
+        )
+        require(
+            bool(stage.datasets) and all(d.weight > 0 for d in stage.datasets),
+            f"{stage.name}: datasets must have positive weights",
+        )
+        require(
+            len({d.path for d in stage.datasets}) == len(stage.datasets),
+            f"{stage.name}: duplicate dataset paths",
+        )
+        require(
+            all(previous <= step <= stage.end_step for step in stage.grid_steps),
+            f"{stage.name}: grid_steps must lie within this stage",
+        )
+        previous = stage.end_step
+    require(
+        o.learning_rate > 0 and o.muon_lr > 0,
+        "optimizer learning rates must be positive",
+    )
+    require(
+        0 <= o.start_learning_rate <= o.learning_rate
+        and 0 <= o.min_learning_rate <= o.learning_rate,
+        "invalid learning rate schedule bounds",
+    )
+    require(
+        0 <= o.lr_warmup_steps < config.max_steps, "warmup must be shorter than the run"
+    )
+    require(
+        o.max_grad_norm > 0 and o.muon_wd >= 0 and o.adam_wd >= 0 and o.adam_eps > 0,
+        "invalid clipping, decay or Adam epsilon",
+    )
+    require(
+        len(o.adam_betas) == 2 and all(0 <= b < 1 for b in o.adam_betas),
+        "invalid adam_betas",
+    )
+    require(0 <= o.muon_momentum < 1, "muon_momentum must be within [0, 1)")
+    for key in (
+        "caption_dropout_prob",
+        "curriculum_start",
+        "curriculum_end",
+        "caption_short_reserve",
+    ):
+        require(0 <= getattr(d, key) <= 1, f"data.{key} must be within [0, 1]")
+    require(d.caption_short_threshold > 0, "caption_short_threshold must be positive")
+    require(0 <= t.ema_decay < 1, "ema_decay must be within [0, 1)")
+    require(0 <= t.seed < 2**32, "seed must fit an unsigned 32-bit integer")
+    require(t.logit_normal_sigma > 0, "logit_normal_sigma must be positive")
+    require(
+        t.caption_loss_weight_reference >= 2,
+        "caption_loss_weight_reference must be >= 2",
+    )
+    require(
+        Path(t.run_name).name == t.run_name and t.run_name not in (".", ".."),
+        "invalid run_name",
+    )
+    for section, keys in (
+        (
+            t,
+            (
+                "num_workers",
+                "checkpoint_keep_last",
+                "eval_interval",
+                "steady_state_skip_steps",
+            ),
+        ),
+        (e, ("loss_interval", "kid_num_fake")),
+        (config.telemetry, ("health_interval", "stability_interval")),
+    ):
+        for key in keys:
+            require(getattr(section, key) >= 0, f"{key} must be nonnegative")
+    for section, keys in (
+        (t, ("checkpoint_interval", "ema_update_interval")),
+        (e, ("batch_size", "loss_samples", "ode_steps")),
+        (config.telemetry, ("log_interval",)),
+    ):
+        for key in keys:
+            require(getattr(section, key) > 0, f"{key} must be positive")
+
+
 _RENAMES = {
-    ("data", "mix"): "dataset_mix",
     ("text_encoder", "path"): "text_encoder_path",
     ("text_encoder", "exit_layer"): "text_encoder_exit_layer",
-    ("eval", "dataset_path"): "eval_dataset_path",
     ("eval", "batch_size"): "eval_batch_size",
     ("eval", "loss_interval"): "eval_loss_interval",
     ("eval", "loss_samples"): "eval_loss_samples",
-    ("eval", "kid_at_end"): "kid_eval_at_end",
     ("paths", "vae"): "vae_path",
     ("telemetry", "log_interval"): "telemetry_log_interval",
 }
 
 
-def _merge(base: Dict[str, Any], override: Mapping[str, Any], origin: str) -> Dict[str, Any]:
-    for key, value in override.items():
-        if key not in base:
-            raise ValueError(f"{origin}: unknown config section [{key}]")
-        if not isinstance(value, Mapping):
-            raise ValueError(f"{origin}: [{key}] must be a table")
-        for sub_key, sub_value in value.items():
-            if sub_key not in base[key]:
-                raise ValueError(f"{origin}: unknown key [{key}].{sub_key}")
-            if isinstance(base[key][sub_key], bool) != isinstance(sub_value, bool):
-                raise ValueError(
-                    f"{origin}: [{key}].{sub_key} must be "
-                    f"{'a boolean' if isinstance(base[key][sub_key], bool) else 'a number or string'}"
-                )
-            base[key][sub_key] = sub_value
-    return base
-
-
-def load_config(paths: Sequence[str]) -> TrainConfig:
-    """Load and merge config files in order; later files override earlier ones."""
-    if not paths:
-        raise ValueError("at least one config file is required")
-
-    merged = asdict(TrainConfig())
-    for path in paths:
-        file_path = Path(path)
-        if not file_path.exists():
-            raise ValueError(f"config file not found: {path}")
-        with file_path.open("rb") as handle:
-            payload = tomllib.load(handle)
-        merged = _merge(merged, payload, str(file_path))
-
-    config = TrainConfig(
-        data=DataConfig(**merged["data"]),
-        model=ModelConfig(**merged["model"]),
-        text_encoder=TextEncoderConfig(**merged["text_encoder"]),
-        optim=OptimConfig(**merged["optim"]),
-        train=TrainLoopConfig(**merged["train"]),
-        eval=EvalConfig(**merged["eval"]),
-        paths=PathConfig(**merged["paths"]),
-        telemetry=TelemetryConfig(**merged["telemetry"]),
-    )
-    _validate(config)
-    return config
-
-
-def _validate(config: TrainConfig) -> None:
-    if type(config.model.timestep_factor) is not int or config.model.timestep_factor < 1:
-        raise ValueError("[model].timestep_factor must be a positive integer")
-    if type(config.telemetry.stability_interval) is not int or config.telemetry.stability_interval < 0:
-        raise ValueError("[telemetry].stability_interval must be a nonnegative integer")
-    if type(config.train.checkpoint_keep_last) is not int or config.train.checkpoint_keep_last < 0:
-        raise ValueError("[train].checkpoint_keep_last must be a nonnegative integer")
-    if type(config.telemetry.cache_clear_interval) is not int or config.telemetry.cache_clear_interval < 0:
-        raise ValueError("[telemetry].cache_clear_interval must be a nonnegative integer")
-    if type(config.eval.ode_steps) is not int or config.eval.ode_steps < 1:
-        raise ValueError("[eval].ode_steps must be a positive integer")
-    if not isinstance(config.eval.grid_steps, list) or any(
-        type(step) is not int or step < 0 for step in config.eval.grid_steps
-    ):
-        raise ValueError("[eval].grid_steps must be a list of nonnegative integer global steps")
-    if config.train.gradient_accumulation_steps < 1:
-        raise ValueError("[train].gradient_accumulation_steps must be >= 1")
-    stage_endpoint(config.train.max_steps, config.train.stop_at_step)
-    # A loss-weight curve that is not usable is a configuration error, not
-    # something to repair on the way in.
-    CaptionLossWeights(
-        curve=config.train.caption_loss_weight_curve,
-        reference=config.train.caption_loss_weight_reference,
-    )
-    for name in ("curriculum_start", "curriculum_end"):
-        value = getattr(config.data, name)
-        if not 0.0 <= value <= 1.0:
-            raise ValueError(f"[data].{name} must be within [0, 1]")
-    if config.data.caption_policy not in ("legacy", "beta"):
-        raise ValueError('[data].caption_policy must be "legacy" or "beta"')
-    if config.data.caption_schedule not in ("linear", "stationary", "early"):
-        raise ValueError('[data].caption_schedule must be "linear", "stationary" or "early"')
-    if not 0.0 < config.data.caption_early_at <= 1.0:
-        raise ValueError("[data].caption_early_at must be within (0, 1]")
-    if not 0.0 <= config.data.caption_short_reserve <= 1.0:
-        raise ValueError("[data].caption_short_reserve must be within [0, 1]")
-    if config.data.caption_short_threshold < 1:
-        raise ValueError("[data].caption_short_threshold must be positive")
-    if not 0.0 <= config.data.caption_dropout_prob <= 1.0:
-        raise ValueError("[data].caption_dropout_prob must be within [0, 1]")
-    if config.model.hidden_size % config.model.num_heads:
-        raise ValueError("[model].hidden_size must be divisible by num_heads")
-    if not 0.0 <= config.train.ema_decay < 1.0:
-        raise ValueError("[train].ema_decay must be within [0, 1)")
-    if config.model.double_stream_depth + config.model.single_stream_depth < 1:
-        raise ValueError("the model needs at least one transformer block")
-    if config.text_encoder.exit_layer < 1:
-        raise ValueError("[text_encoder].exit_layer must be >= 1")
-
-
-def flatten(config: TrainConfig) -> Dict[str, Any]:
-    """Return {flat name: value} for every config field.
-
-    Section names are dropped; the handful of fields whose flat name differs
-    are listed in ``_RENAMES``. The training loop reads these names directly.
-    """
-    flat: Dict[str, Any] = {}
+def flatten(config: TrainConfig, stage_name: str) -> dict[str, Any]:
+    """Project the selected stage for the loop without overriding any values."""
+    flat = {}
     for section in fields(config):
-        section_name = section.name
-        section_value = getattr(config, section_name)
-        for item in fields(section_value):
-            flat[_RENAMES.get((section_name, item.name), item.name)] = getattr(
-                section_value, item.name
-            )
+        if section.name == "stages":
+            continue
+        for key, value in asdict(getattr(config, section.name)).items():
+            flat[_RENAMES.get((section.name, key), key)] = value
+    stage = config.stage(stage_name)
+    flat.update(asdict(stage))
+    flat.pop("datasets")
+    flat.pop("name")
+    flat.pop("end_step")
+    # parse_dataset_mix is also used by offline tooling. Keep its string
+    # representation at this boundary; the run file stores structured entries.
+    import shlex
+
+    flat["dataset_mix"] = shlex.join(f"{d.path}:{d.weight}" for d in stage.datasets)
+    flat["run_name"] = f"{config.train.run_name}-{stage_name}"
+    flat["max_steps"] = config.max_steps
+    flat["stop_at_step"] = stage.end_step
+    flat["stage_start"] = config.stage_start(stage_name)
     return flat

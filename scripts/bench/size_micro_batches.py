@@ -151,7 +151,7 @@ def parse_oom_log(path: str) -> Tuple[float, float, Tuple[int, int, int]]:
 
     The shape is the last ``[shape]`` line before the OOM - the micro-batch
     whose work was in flight - as (resolution id, bucket text ceiling, batch).
-    The trainer only emits those lines with ARTFLOW_LOG_SHAPES set; without
+    The trainer only emits those lines with --log_shapes enabled; without
     them the offending bucket cannot be attributed, so their absence is an
     error, not a guess.
     """
@@ -178,7 +178,7 @@ def parse_oom_log(path: str) -> Tuple[float, float, Tuple[int, int, int]]:
     if shape is None:
         raise ValueError(
             f"{path}: no [shape] lines before the OOM; rerun the validation "
-            f"with ARTFLOW_LOG_SHAPES=1 so the offending bucket is attributed")
+            f"with --log_shapes so the offending bucket is attributed")
     return live, tried, shape
 
 

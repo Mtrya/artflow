@@ -6,11 +6,17 @@ import sys
 import json
 import tempfile
 from pathlib import Path
-from typing import Callable, List, Optional, Union
+from typing import TYPE_CHECKING, Callable, List, Optional, Union
 
 import torch
 from PIL import Image
 import numpy as np
+
+
+if TYPE_CHECKING:
+    from diffusers import AutoencoderKLQwenImage
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from ..models.artflow import ArtFlow
 
 
 class ArtFlowPipelineOutput:
@@ -122,19 +128,7 @@ class ArtFlowPipeline:
         device = kwargs.get("device", "cuda" if torch.cuda.is_available() else "cpu")
         offload = kwargs.get("offload", True)
 
-        # Load weights
-        checkpoint_path = Path(checkpoint_path).resolve()
-        if checkpoint_path.suffix == ".safetensors":
-            from safetensors.torch import load_file
-            state_dict = load_file(checkpoint_path)
-        else:
-            state_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-            if isinstance(state_dict, dict) and "module" in state_dict:
-                state_dict = state_dict["module"]
-
-        # Build transformer with default config and load weights
-        transformer = ArtFlow()
-        transformer.load_state_dict(state_dict)
+        transformer = ArtFlow.from_single_file(str(checkpoint_path))
 
         # Load VAE
         vae_repo = "REPA-E/e2e-qwenimage-vae"
@@ -422,7 +416,7 @@ class ArtFlowPipeline:
         """Encode text prompts using the text encoder."""
         from artflow.utils.encode_text import encode_text
 
-        pooling = self.transformer.conditioning_scheme == "fused"
+        pooling = True
         txt_emb, txt_mask, txt_pooled = encode_text(
             prompts, self.text_encoder, self.tokenizer, pooling=pooling
         )

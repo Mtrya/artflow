@@ -522,12 +522,11 @@ def probe_env(tmp_path):
         hidden_size=64,
         num_heads=4,
         double_stream_depth=0,
-        single_stream_depth=2,
-        conditioning_scheme="pure",
-        qkv_bias=False,
-        ffn_type="gated",
+        single_stream_depth=2, mlp_ratio=2,
     )
-    return model, _probe_kwargs(path, num_samples=8, batch_size=4)
+    kwargs = _probe_kwargs(path, num_samples=8, batch_size=4)
+    kwargs["pooling"] = True
+    return model, kwargs
 
 
 def test_probe_is_deterministic(probe_env):

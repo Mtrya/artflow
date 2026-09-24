@@ -22,7 +22,7 @@ The pipeline
    dataset weight / row count, split by within-row caption probability.
 2. **Batch sizes are solved, never scanned.**  Two models are fitted by least
    squares on a calibration sweep of DiT forward+backward points
-   (``scripts/bench/transformer_ceiling.py``), grouped by the image-token count
+   (calibration JSON), grouped by the image-token count
    of the measured latent shape:
 
        peak_mem(B, L) = m0 + B * m1 * L
@@ -175,7 +175,7 @@ def _point_from_entry(entry: Mapping[str, Any], keys: Sequence[str],
                       patch_size: int) -> Optional[CalibrationPoint]:
     """One leaf of a sweep file as a point, from its fields or its key path.
 
-    A sweep written by the current ``transformer_ceiling.py`` repeats the shape
+    A calibration sweep with explicit shape fields repeats the shape
     on every leaf, so the fields alone identify the point.  An older sweep file
     nests latent -> micro-batch -> text length and carries no shape fields, so
     the keys the walk passed through are the fallback, read in that order.
@@ -253,8 +253,7 @@ def calibration_points(payload: Any, *, patch_size: int = 2) -> List[Calibration
     if not points:
         raise ValueError(
             "no calibration points found: the file needs entries with a peak "
-            "memory field (peak_mem_gb) and a time field (ms_per_step), as "
-            "scripts/bench/transformer_ceiling.py writes them")
+            "memory field (peak_mem_gb) and a time field (ms_per_step)")
     return points
 
 
@@ -1276,7 +1275,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                              "':WEIGHT' to set that dataset's mix weight (default 1)")
     parser.add_argument("--calibration", required=True, metavar="JSON",
                         help="calibration sweep written by "
-                             "scripts/bench/transformer_ceiling.py")
+                             "a measured DiT forward/backward sweep")
     parser.add_argument("--image-tokens", required=True, metavar="N|JSON",
                         help="image tokens per resolution id: one integer for all "
                              "resolutions, or a JSON object (or a path to one) "

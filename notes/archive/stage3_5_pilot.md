@@ -1591,7 +1591,7 @@ directories (relaion is split into five parts), using the 896p bucket family
 Counts below are the retained rows read from each `length_metadata.npz` sidecar
 by the [current 896p plan report](../../bucket_plans/hero/batch-targets-0914/hero-896p-k20.report.md),
 not source-manifest counts before resolution filtering. This is the training
-pool selected in [hero_recipe.md](../hero_recipe.md); zero-weight sources, including
+pool selected in [hero_recipe.md](cuda_hero_recipe_0924.md); zero-weight sources, including
 `d3-synth-v2`, and evaluation rows are not included in its total.
 
 | dataset | rows |

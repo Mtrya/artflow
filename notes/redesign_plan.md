@@ -22,7 +22,8 @@ the earlier native-CUDA/H200 production direction is superseded. See
 priors and short experiments that change decisions. The current sequence is
 **stability experiments and telemetry → repository/config/documentation cleanup
 → infrastructure pass on the selected recipe → hero**. The short stability
-stage passed on September 24; repository/config/docs cleanup is next. The
+stage passed on September 24; repository/config/docs cleanup passed local
+checks on September 25. Infrastructure qualification is next. The
 [evidence and selected recipe](archive/ascend_stability_stage1_0924.md) do not
 trigger an immediate hero launch. Do not require
 an exhaustive candidate A/B matrix or a separate long-validation run.
@@ -33,7 +34,7 @@ an exhaustive candidate A/B matrix or a separate long-validation run.
 |---|---|---|
 | D1 | License | Research-only OK (WikiArt, ArtBench-10, FFHQ unlocked). Per-sample `license` field; NC data in separate mix entries so a clean variant stays one mix-string away |
 | D2 | Anatomy data | Photos + paintings both; ~50/50 face vs full-body |
-| D3 | Corpus size | Fixed eligible pools per resolution; counts and source mixtures in [hero recipe](hero_recipe.md) |
+| D3 | Corpus size | Fixed eligible pools per resolution; counts and source mixtures in [hero recipe](archive/cuda_hero_recipe_0924.md) |
 | D4 | Hero model | **532,766,716 parameters: h1152, 16 heads, 1 double-stream + 24 single-stream blocks**, branch normalization and timestep factor 1000 selected after the September 24 stability checks; [current decision](ascend_pretraining_0924.md) |
 | D5 | Text encoder | Qwen3-0.6B, frozen, online; early-exit layer ablated k ∈ {8,16,28} + follow-up {20,24} → **k=20 (user verdict 2026-09-07**, 2.3a-followup) |
 | D6 | Resolution curriculum | **256p → 640p → 896p**, variable aspect at every stage; **75:20:5** of final optimizer steps; **1024p definitively dropped** (final recipe decision, 2026-09-14) |
@@ -41,8 +42,8 @@ an exhaustive candidate A/B matrix or a separate long-validation run.
 | D8 | Inspire home | Account-selected project (machine-local configuration) |
 | D9 | Compute class | **Ascend for pretraining** (user pivot, 2026-09-24); debugging and optimization focus on the Ascend stack. Current probes use 16×910B. Select the hero recipe from literature, existing evidence and short checks; the hero itself is the longer validation. The earlier 4×H200 and RTX 4090 pretraining paths are historical references. See [Ascend decision](ascend_pretraining_0924.md) |
 | D10 | VLM captioning | **Via API** (Qwen-VL-class), not self-hosted — caption cost is money + rate limits, not GPU-hours. No GPU-with-internet workspace needed |
-| D11 | Modulation | **Shared per-layer modulation MLP (`mod=layer`)** — 2.2a resolved 2026-09-05: layer wins eval/loss@end (0.9437 vs 0.9441) with a persistent t040 advantage (5/5 probes from 3K, -0.0002→-0.0010), KID agrees (0.0190 vs 0.0195), +0.6% faster, -8% peak mem; tie-break prior (PixArt/DiT-Air) points the same way. All stage-2+ arms use it |
-| D12 | Optimizer | **Muon (chunked orthogonalization), LR 0.003 / auxiliary AdamW 1e-4**, decay 0.01, selected after the [September 24 stability checks](archive/ascend_stability_stage1_0924.md). Historical Stage-2 LR 0.02 won at 16k (eval/loss 0.91127 vs AdamW 0.92134, KID 0.00699 vs 0.00922); the newer short experiments do not establish the eventual quality ranking. |
+| D11 | Modulation | **Independent double-stream modulation; shared per-layer single-stream modulation** — 2.2a resolved 2026-09-05: layer wins eval/loss@end (0.9437 vs 0.9441) with a persistent t040 advantage (5/5 probes from 3K, -0.0002→-0.0010), KID agrees (0.0190 vs 0.0195), +0.6% faster, -8% peak mem; tie-break prior (PixArt/DiT-Air) points the same way. The selected 1+24 model uses independent image/text and attention/MLP modulation in its double-stream block, and shared attention/MLP modulation in single-stream blocks |
+| D12 | Optimizer | **Muon (chunked orthogonalization, original scaling), LR 0.02 / auxiliary AdamW 1e-4**, Muon decay 0.0015 / AdamW decay 0.01, per the user's September 24 convention change. The [short stability checks](archive/ascend_stability_stage1_0924.md) used RMS matching at LR 0.003; those results do not directly validate every aspect of the changed scaling and decay. See [current decision](ascend_pretraining_0924.md). Historical Stage-2 RMS-matched LR 0.02 won at 16k (eval/loss 0.91127 vs AdamW 0.92134, KID 0.00699 vs 0.00922). |
 | D13 | Quality monitoring | Small bilingual panels inspect anatomy, architecture, style and layout; no numerical capability target or forecast gate. Report observed strengths and limitations; [Stage-4 plan](archive/stage4_plan.md) |
 | D14 | Inference scope | No prescribed inference device, VRAM ceiling, or latency launch gate; use reproducible evaluation settings. Deployment optimization and distillation are optional later work |
 
@@ -64,7 +65,7 @@ experiments. Stage-2 arms below implement column C.
 | CFG caption dropout | 0.1 | convention |
 | VAE | Qwen-Image VAE (16ch f8) | physically locked by stage-1 256p precompute; switching (e.g. DC-AE) = full re-precompute, out of scope |
 | Text encoder | Qwen3-0.6B frozen (exit layer ablated in 2.3) | encoder-size gains saturate early (DeepFloyd IF et al.); params go to the DiT |
-| Optimizer after original Stage 2 | **Muon (chunked orthogonalization); auxiliary AdamW for parameters routed outside Muon** | Historical LR 0.02 won §2.5; September 24 stability checks selected 0.003 / 1e-4. See D12. |
+| Optimizer after original Stage 2 | **Muon (chunked orthogonalization); auxiliary AdamW for parameters routed outside Muon** | Original scaling with Muon LR 0.02 / AdamW 1e-4 is current. Earlier experiments used RMS-matching scaling; see D12. |
 | Evaluation inference knobs (solver/steps/CFG/precision/offload) | **recorded and correctness-checked in Stage 4** for reproducible comparisons | No deployment-speed gate; distillation is optional later work |
 
 ### B. Considered and excluded
@@ -366,7 +367,7 @@ establish the required capabilities.
   solver/steps/guidance/precision/offload settings; deployment hardware and
   inference latency do not gate the hero launch.
 - **Size, exposure, and effective batch:** the 533M model and per-stage mixtures
-  are selected in [hero_recipe.md](hero_recipe.md). Validate its bucket plans and
+  are selected in [hero_recipe.md](archive/cuda_hero_recipe_0924.md). Validate its bucket plans and
   accumulation 1/5/7 against mean effective-batch targets 640/512/400 on eight
   ranks. Distinguish actual draws from unique rows and measure realized exposure;
   no additional model-size, corpus-size, or mixture sweep is a launch requirement.
@@ -379,7 +380,7 @@ establish the required capabilities.
   efficiency and feasible training exposure. Record the trained model's strengths
   and limitations; do not claim a capability guarantee from the chosen recipe or
   require a small-run capability forecast before launch.
-- **Executable handoff:** write `notes/hero_recipe.md`, runnable configs and
+- **Executable handoff:** write `notes/archive/cuda_hero_recipe_0924.md`, runnable configs and
   launch/resume commands, pinned data/metadata, precompute and storage plan,
   evaluation/telemetry, evaluation sampling configuration, and complete cost/uncertainty
   ledger. Required implementation and relevant tests/smokes finish inside Stage 4.
@@ -395,7 +396,7 @@ is no capability-accuracy threshold to predict or certify before or after traini
 
 **Goal**: execute and verify the complete Stage-4 recipe, starting directly after
 its go handoff. All resolution allocations, mixtures, optimization, evaluation sampling
-settings, and operational checks come from `notes/hero_recipe.md`, not the earlier
+settings, and operational checks come from `notes/archive/cuda_hero_recipe_0924.md`, not the earlier
 guessed step counts. The selected path is 256p → 640p → 896p, with a 75:20:5
 optimizer-step split and no 1024p stage. Eight-GPU throughput must be measured;
 the selected topology alone does not establish the wall-clock budget.

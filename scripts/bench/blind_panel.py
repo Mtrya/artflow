@@ -24,7 +24,7 @@ same blinding; keep ``answer_key.json`` closed until the ballot is complete.
 Usage:
     python scripts/bench/blind_panel.py generate \
         --checkpoint <run>/checkpoint_step_000500 --out review/arm-a \
-        --config configs/base.toml --config <run>.toml
+        --config <run>.toml --stage 256p
     python scripts/bench/blind_panel.py panel \
         --arm a=review/arm-a --arm b=review/arm-b --out review/panel --seed 7
     python scripts/bench/blind_panel.py tally \
@@ -386,28 +386,18 @@ def cmd_generate(args: argparse.Namespace) -> int:
     from src.pretrain.config import flatten, load_config
     from src.utils.vae_codec import get_vae_stats
 
-    config = flatten(load_config(args.config))
+    config = flatten(load_config(args.config), args.stage)
     model_config = {
         "hidden_size": config["hidden_size"],
         "num_heads": config["num_heads"],
         "double_stream_depth": config["double_stream_depth"],
         "single_stream_depth": config["single_stream_depth"],
         "mlp_ratio": config["mlp_ratio"],
-        "conditioning_scheme": config["conditioning_scheme"],
-        "qkv_bias": config["qkv_bias"],
-        "double_stream_modulation": config["double_stream_modulation"],
-        "single_stream_modulation": config["single_stream_modulation"],
-        "ffn_type": config["ffn_type"],
-        "rope_centered_grid": config["rope_centered_grid"],
-        # Fixed architecture constants, as in the training entry point.
-        "patch_size": 2,
-        "in_channels": 16,
-        "txt_in_features": 1024,
     }
     vae_path = config["vae_path"]
     text_encoder_path = config["text_encoder_path"]
     exit_layer = config["text_encoder_exit_layer"]
-    pooling = config["conditioning_scheme"] == "fused"
+    pooling = True
     dataset_path = args.dataset or config["eval_dataset_path"]
     if not dataset_path:
         raise ValueError(
@@ -550,12 +540,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     generate.add_argument(
         "--config",
-        action="append",
-        default=None,
+        required=True,
         metavar="TOML",
-        help="TOML config chain, later files win (default: configs/base.toml); "
-        "pass the same chain the arm was trained with",
+        help="Complete run file used for training",
     )
+    generate.add_argument("--stage", required=True)
     generate.add_argument(
         "--prompts",
         default=DEFAULT_PROMPTS,
@@ -632,8 +621,6 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command == "generate" and args.config is None:
-        args.config = ["configs/base.toml"]
     try:
         return args.func(args)
     except (ValueError, FileNotFoundError, OSError) as error:

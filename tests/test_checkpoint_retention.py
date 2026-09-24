@@ -74,14 +74,14 @@ def test_incompatible_old_checkpoint_does_not_count_as_a_recovery_copy(tmp_path)
 
 def test_disabled_retention_does_not_read_or_prune(tmp_path):
     assert prune(tmp_path / "absent", keep_last=0) == []
-    config = tmp_path / "base.toml"
-    config.write_text("[train]\nmax_steps = 600000\n")
-    assert load_config([str(config)]).train.checkpoint_keep_last == 0
+    config = tmp_path / "run.toml"
+    config.write_text(Path("configs/hero.toml").read_text().replace("checkpoint_keep_last = 2", "checkpoint_keep_last = 0"))
+    assert load_config(config).train.checkpoint_keep_last == 0
 
 
 @pytest.mark.parametrize("value", ["-1", "true", "1.5"])
 def test_invalid_retention_config_is_rejected(tmp_path, value):
     path = tmp_path / "retention.toml"
-    path.write_text(f"[train]\ncheckpoint_keep_last = {value}\n")
+    path.write_text(Path("configs/hero.toml").read_text().replace("checkpoint_keep_last = 2", f"checkpoint_keep_last = {value}"))
     with pytest.raises(ValueError, match="checkpoint_keep_last"):
-        load_config([str(path)])
+        load_config(path)

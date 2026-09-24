@@ -1,5 +1,9 @@
 # H200 spike root-cause investigation — 2026-09-24
 
+> Archived record. Current pretraining decisions and status are in
+> [the Ascend plan](../ascend_pretraining_0924.md); old launch commands and
+> configuration switches require the source revision used for that run.
+
 The user requested a mechanism, rather than further LR reductions or a
 hardware switch. The H200 hero remains stopped; independent Ascend jobs are
 not modified. Launch, incident, and trajectory-replay history:
@@ -143,15 +147,19 @@ Growing modulation gain plus weak feature variation is a concrete lead;
 Source inspection also found that the current sinusoidal time embedding
 receives t in [0,1] without a frequency multiplier; the
 [official FLUX implementation](https://github.com/black-forest-labs/flux/blob/main/src/flux/modules/layers.py)
-uses `time_factor=1000`. This difference is an untested architectural lead,
-not proof of a bug or a reason to change the frozen recipe. In the captured
+uses `time_factor=1000`. This difference was an untested architectural lead
+at the time of the H200 probes. Later on September 24, the user reported that
+the fresh Ascend `tf1000-256p` experiment did not resolve the issue; the
+factor change alone is therefore insufficient. See the
+[Ascend pretraining decision](../ascend_pretraining_0924.md) for the evidence
+boundary and the current experiment direction. In the captured
 weights, a full t=0→1 sweep at fixed pooled text still changes `c` by norm
 0.89, so timestep information is not simply absent.
 
 Raw geometry and loss-profile results: `condition-geometry-0924/<state>`;
 combined compact results: `conditioning-summary.json` in the incident root.
 
-![Conditioning loss response](assets/h200_condition_profile_0924.png)
+![Conditioning loss response](../assets/h200_condition_profile_0924.png)
 
 ## Conditioning hidden-state contraction (10:02 CST)
 
@@ -182,7 +190,7 @@ CPU result: `conditioning-hidden-saturation.json`. This reads captured
 features rather than rerunning the text encoder, and does not claim that
 every future training sample has the same activation pattern.
 
-![Conditioning feature contraction](assets/h200_condition_saturation_0924.png)
+![Conditioning feature contraction](../assets/h200_condition_saturation_0924.png)
 
 ## Exact preceding-update capture (completed, 10:04 CST)
 

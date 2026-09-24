@@ -8,7 +8,7 @@ longer validation.
 
 ## What is established
 
-The accumulation-matched 2k-step [probe](../muon_weight_growth_0924.md) improves
+The accumulation-matched 2k-step [probe](muon_weight_growth_0924.md) improves
 evaluation loss from 0.92154 to 0.91259 and last-block activation RMS from
 12001 to 73.58. This supports adopting `branch_norm`. It does not measure
 the new model's response to an actual conditioning update or its future spike
@@ -35,7 +35,7 @@ rate. These activation probes use four captions at fixed `t=0.5`.
    the [current explanation](../ascend_pretraining_0924.md#selected-model-and-optimizer-for-cleanup).
 
 2. **The conditioning-update mechanism is not yet checked after branch norm.**
-   The [H200 replay](../h200_spike_root_cause_0924.md) causally isolated the
+   The [H200 replay](h200_spike_root_cause_0924.md) causally isolated the
    shared displacement `delta_W @ mean(h)` from the final conditioning linear
    layer. Branch norm is before the learned gates, so gates and affine norm
    gains remain possible amplification paths. Aggregate modulation RMS rises

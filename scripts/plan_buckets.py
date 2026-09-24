@@ -51,7 +51,7 @@ Usage:
         --mix "path/to/ds_a:0.7 path/to/ds_b:0.3" \
         --image-tokens '{"1": 256, "2": 640}' \
         --buckets 10 --out plan.json
-    .venv/bin/python -m scripts.plan_buckets --config configs/base.toml \
+    .venv/bin/python -m scripts.plan_buckets --config configs/hero.toml \
         --dataset path/to/ds_a --weight 0.7 --dataset path/to/ds_b --weight 0.3 \
         --out plan.json
 """
@@ -81,7 +81,8 @@ from src.dataset.length_buckets import (
 )
 from src.dataset.length_metadata import RowLengthMetadata, sidecar_path
 from src.dataset.mix import DatasetEntry, parse_dataset_mix
-from src.pretrain.config import DataConfig, ModelConfig
+from src.pretrain.config import load_config
+from dataclasses import asdict
 from src.utils.prompt_contract import MAX_SEQUENCE_LENGTH
 
 PHASES = ("early", "middle", "late")
@@ -342,21 +343,14 @@ def load_sidecars(entries: Sequence[DatasetEntry]) -> List[RowLengthMetadata]:
     return metadatas
 
 
-def read_config(paths: Sequence[str]) -> Dict[str, Dict[str, Any]]:
-    """Merge the sections this planner reads from the given TOML configs.
-
-    Later files override earlier ones, the same order the training
-    configuration loader uses. Only flat sections are read; the planner needs
-    the caption policy and the model shape, not the whole recipe.
-    """
-    merged: Dict[str, Dict[str, Any]] = {}
-    for path in paths:
-        with open(path, "rb") as handle:
-            payload = tomllib.load(handle)
-        for section, values in payload.items():
-            if isinstance(values, Mapping):
-                merged.setdefault(section, {}).update(values)
-    return merged
+def read_config(path) -> Dict[str, Any]:
+    """Read a complete recipe for offline analysis, without config overlays."""
+    if path is None:
+        return {}
+    config = load_config(path)
+    result = asdict(config)
+    result['train']['max_steps'] = config.max_steps
+    return result
 
 
 def pick(cli_value: Any, section: Mapping[str, Any], key: str, fallback: Any) -> Any:
@@ -825,9 +819,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--layers", type=int, default=None,
                         help="transformer depth for the cost model (default: [model] "
                              "depths of the config, else the shipped recipe)")
-    parser.add_argument("--config", action="append", default=[], metavar="TOML",
+    parser.add_argument("--config", default=None, metavar="TOML",
                         help="training config to read the caption policy and model "
-                             "shape from; repeatable, later files override earlier ones")
+                             "shape from; one complete run file")
     parser.add_argument("--beta-start", type=float, default=None,
                         help="caption length preference at the start of the run")
     parser.add_argument("--beta-end", type=float, default=None,
@@ -883,9 +877,9 @@ def run(args: argparse.Namespace, argv: Sequence[str] = ()) -> int:
                              "caption_short_threshold", defaults.short_threshold),
     )
     curriculum_start = float(pick(args.curriculum_start, data_section, "curriculum_start",
-                                  DataConfig().curriculum_start))
+                                  0.0))
     curriculum_end = float(pick(args.curriculum_end, data_section, "curriculum_end",
-                                DataConfig().curriculum_end))
+                                1.0))
     phases = phase_points(policy, curriculum_start, curriculum_end)
 
     if args.phase_weights is None:
@@ -897,18 +891,17 @@ def run(args: argparse.Namespace, argv: Sequence[str] = ()) -> int:
         total = sum(phase_weights)
         phase_weights = [weight / total for weight in phase_weights]
 
-    model_defaults = ModelConfig()
-    width = int(pick(args.width, model_section, "hidden_size", model_defaults.hidden_size))
+    width = int(pick(args.width, model_section, "hidden_size", 1152))
     if args.layers is not None:
         layers = int(args.layers)
     elif "single_stream_depth" in model_section or "double_stream_depth" in model_section:
         # The cost model wants total depth, while the config splits it into the
         # single- and double-stream stacks.
         layers = int(model_section.get("single_stream_depth",
-                                       model_defaults.single_stream_depth)) + int(
-            model_section.get("double_stream_depth", model_defaults.double_stream_depth))
+                                       24)) + int(
+            model_section.get("double_stream_depth", 1))
     else:
-        layers = model_defaults.single_stream_depth + model_defaults.double_stream_depth
+        layers = 24 + 1
     image_tokens = resolve_image_tokens(args.image_tokens, resolutions)
 
     if args.image_tokens is None and len(resolutions) > 1:
@@ -990,7 +983,7 @@ def run(args: argparse.Namespace, argv: Sequence[str] = ()) -> int:
         image_tokens_spec=args.image_tokens,
         batch_sizes_measured=measured,
         batch_size_source=batch_size_source,
-        config_paths=list(args.config),
+        config_paths=[args.config] if args.config else [],
         warnings=warnings,
         empty_rows=histograms.empty_rows,
     )

@@ -44,7 +44,7 @@ def validate(measurements):
 def stage_counts(start, end, *, incoming):
     """Scalar or NumPy-array arithmetic; overlaps trigger once, as in the trainer.
 
-    Launch policy is jobs/hero_stage.sh plus configs/hero.toml: checkpoint 2k,
+    Launch policy is configs/hero.toml: checkpoint 2k,
     grid 10k/end/incoming/+2k, loss probe 500 plus one baseline per stage.
     Incoming image baseline is distinct
     from the previous stage's endpoint image because the resolution differs.

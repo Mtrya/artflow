@@ -380,7 +380,7 @@ infallibility.
 
 ## 9. Required Stage-4 handoff
 
-Stage 4 produces `notes/hero_recipe.md` and the executable artifacts it references.
+Stage 4 produces `notes/archive/cuda_hero_recipe_0924.md` and the executable artifacts it references.
 This design document is not that result. The handoff must contain:
 
 | Deliverable | Required content |
@@ -423,7 +423,7 @@ allocation. Preparation and monitoring are normal execution, not Stage 4.5.
       revisions are incorporated into the hero recipe and wall-clock estimates.
 - [ ] All recipe decisions, executable configs, operational paths, and relevant
       validation are complete; measured and extrapolated numbers are distinguished.
-- [ ] `notes/hero_recipe.md` and supporting artifacts are versioned and reviewed.
+- [ ] `notes/archive/cuda_hero_recipe_0924.md` and supporting artifacts are versioned and reviewed.
 - [ ] An explicit go verdict allows Stage 5 to proceed directly; otherwise identify
       the unresolved evidence or the redesign decision requiring user agreement.
 

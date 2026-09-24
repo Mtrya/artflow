@@ -142,7 +142,7 @@ def test_gan_losses_non_saturating_direction():
 
 def _tiny_model():
     torch.manual_seed(3)
-    return ArtFlow(in_channels=4, txt_in_features=16, hidden_size=32,
+    return ArtFlow(hidden_size=32,
                    num_heads=4, double_stream_depth=2, single_stream_depth=1,
                    mlp_ratio=2)
 
@@ -150,11 +150,11 @@ def _tiny_model():
 def test_bottleneck_capture_and_head_on_tiny_model():
     model = _tiny_model()
     head = DiscriminatorHead(dim=32)
-    x = torch.randn(2, 4, 8, 8)
+    x = torch.randn(2, 16, 8, 8)
     t = torch.tensor([0.3, 0.7])
-    txt = torch.randn(2, 5, 16)
+    txt = torch.randn(2, 5, 1024)
     with BottleneckCapture(model) as cap:
-        out = model(x, t, txt)
+        out = model(x, t, txt, txt.mean(1))
         feats = cap.features
     assert feats is not None and feats.shape == (2, 16, 32)
     assert out.shape == x.shape
@@ -170,8 +170,8 @@ def test_bottleneck_capture_and_head_on_tiny_model():
 def test_bottleneck_capture_hook_removal():
     model = _tiny_model()
     with BottleneckCapture(model) as cap:
-        model(torch.randn(1, 4, 8, 8), torch.tensor([0.5]), torch.randn(1, 5, 16))
+        model(torch.randn(1, 16, 8, 8), torch.tensor([0.5]), torch.randn(1, 5, 1024), torch.randn(1, 1024))
         assert cap.features is not None
     cap.features = None
-    model(torch.randn(1, 4, 8, 8), torch.tensor([0.5]), torch.randn(1, 5, 16))
+    model(torch.randn(1, 16, 8, 8), torch.tensor([0.5]), torch.randn(1, 5, 1024), torch.randn(1, 1024))
     assert cap.features is None  # hook no longer fires

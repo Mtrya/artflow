@@ -17,6 +17,7 @@ import torch
 
 from src.pretrain import train
 from src.pretrain.config import flatten, load_config
+from dataclasses import asdict
 from src.pretrain.stage_control import (
     CHECKPOINT_RECORD, stage_endpoint, validate_checkpoint, write_checkpoint_record, verify_restored_rng,
 )
@@ -81,17 +82,6 @@ def test_invalid_stop_rejected(stop):
         stage_endpoint(400, stop)
 
 
-def test_zero_disabled_and_config_flattening(tmp_path):
-    assert stage_endpoint(400, 0) == 400
-    assert stage_endpoint(0, 0) == 0  # Existing eval-only mode.
-    path = tmp_path / "stage.toml"
-    path.write_text("[train]\nmax_steps = 420000\nstop_at_step = 315000\n")
-    args = flatten(load_config([str(path)]))
-    assert args["max_steps"] == 420000
-    assert args["stop_at_step"] == 315000
-    path.write_text("[train]\nmax_steps = 400\nstop_at_step = true\n")
-    with pytest.raises(ValueError, match="stop_at_step"):
-        load_config([str(path)])
 
 
 def checkpoint(tmp_path, step=300000, total=400000):
@@ -245,13 +235,16 @@ def test_actual_checkpoint_writer_produces_resumable_scheduler_files(tmp_path, k
     namespace = {**vars(train),
                  "args": SimpleNamespace(output_dir=str(tmp_path),run_name="hero-256p",max_steps=420000,
                      checkpoint_keep_last=keep_last),
-                 "accelerator":SimpleNamespace(is_main_process=True,num_processes=1,
+                 "accelerator":SimpleNamespace(is_main_process=True,num_processes=1,process_index=0,device=torch.device("cpu"),
                      save_state=save_state,wait_for_everyone=lambda:events.append("barrier"),
                      print=lambda message: events.append(message)),
                  "schedulers":[Scheduler(),Scheduler()],
                  "sampler":SimpleNamespace(state_dict=lambda:{"stage":.75}),
                  "sampler_state_name":"sampler_state_rank_00000.pt",
-                 "infra_recorder":None,
+                 "infra_recorder":None, "bucket_contents":{},
+                 "device_api":SimpleNamespace(get_rng_state=lambda device:torch.get_rng_state()),
+                 "config":load_config(Path("configs/hero.toml")),
+                 "model_raw":SimpleNamespace(get_config=lambda:{"architecture":"artflow-v2"}),
                  "ema_model":torch.nn.Linear(1,1),"run_dir":str(run_dir),
                  "runtime_path":str(run_dir / "runtime.json")}
     exec(compile(ast.fix_missing_locations(ast.Module(body=[function],type_ignores=[])),
@@ -320,105 +313,19 @@ def test_resume_base_lrs_follow_config_not_checkpoint():
     assert sch_new.get_last_lr()[0] == pytest.approx(.016, rel=1e-6)
 
 
-def launcher_env(tmp_path):
-    repo = Path(__file__).resolve().parents[1]
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / "repo").symlink_to(repo, target_is_directory=True)
-    (workspace / "jobs").mkdir()
-    (workspace / "jobs/swanlab_login.sh").write_text("# No external login in tests.\n")
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
-    # Real CPU preflight, fake torchrun: capture the resolved launcher arguments
-    # and its temporary override without loading models or starting a GPU job.
-    python = bindir / "python3"
-    python.write_text(f"#!{sys.executable}\n" + '''import json, os, pathlib, runpy, sys, tomllib
-if sys.argv[1:3] in (["-m", "src.pretrain.stage_control"], ["-m", "scripts.bench.render_hero_stage"]):
-    sys.argv = [sys.argv[2], *sys.argv[3:]]
-    runpy.run_module(sys.argv[0], run_name="__main__")
-else:
-    paths = [sys.argv[i+1] for i,a in enumerate(sys.argv) if a == "--config"]
-    config = tomllib.loads(pathlib.Path(paths[-1]).read_text())
-    inputs = tomllib.loads(pathlib.Path(paths[1]).read_text())
-    pathlib.Path(os.environ["CAPTURE"]).write_text(json.dumps({"args":sys.argv,"config":config,"inputs":inputs}))
-''')
-    python.chmod(0o755)
-    env = {**os.environ, "ARTFLOW_ROOT": str(workspace), "PYTHONPATH": str(repo),
-           "PATH": str(bindir) + os.pathsep + os.environ["PATH"],
-           "CAPTURE": str(tmp_path / "captured.json")}
-    return repo, workspace, env
 
-
-@pytest.mark.parametrize("total", [400000, 420000])
-@pytest.mark.parametrize("stage,start_frac,end_frac,accum,prev", [
-    ("256p",0,75,1,None), ("640p",75,95,5,"256p"), ("896p",95,100,7,"640p"),
-])
-def test_actual_launcher_preflight_and_overrides(tmp_path, total, stage, start_frac, end_frac, accum, prev):
-    repo, workspace, env = launcher_env(tmp_path)
-    before = None
-    if prev:
-        run = workspace / "runs" / f"hero-{prev}"
-        run.mkdir(parents=True)
-        predecessor = checkpoint(run, step=total * start_frac // 100, total=total)
-        before = {p.name:p.read_bytes() for p in predecessor.iterdir()}
-    result = subprocess.run(["bash", str(repo / "jobs/hero_stage.sh"), stage, str(total)],
-                            env=env, capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
-    captured = json.loads(Path(env["CAPTURE"]).read_text())
-    config = captured["config"]
-    assert config["train"]["max_steps"] == total
-    assert config["train"]["stop_at_step"] == total * end_frac // 100
-    assert config["train"]["gradient_accumulation_steps"] == accum
-    config_paths = [captured["args"][i+1] for i, value in enumerate(captured["args"])
-                    if value == "--config"]
-    assert "configs/hero.toml" in config_paths
-    assert not any("ladder-" in path for path in config_paths)
-    assert captured["inputs"]["eval"]["dataset_path"] == str(
-        workspace / "precomputed_dataset" / f"light-eval@{stage}")
-    assert "d4-relaion" in captured["inputs"]["data"]["mix"]
-    hero_train_flags = ("--compile_dynamic", "--disable_ddp_compile_split",
-                        "--hoist_double_rope", "--native_flash_varlen", "--real_rope",
-                        "--muon_compile_square_ns", "--gpu_health_snapshot", "--local_cache_clear")
-    assert set(hero_train_flags) | {"--compile_autotune"} <= set(captured["args"])
-    assert "--step_breakdown" not in captured["args"]
-    assert "--cpu_wall_profile" not in captured["args"]
-    assert ("--reset_sampler" in captured["args"]) is bool(prev)
-    if prev:
-        assert {p.name:p.read_bytes() for p in predecessor.iterdir()} == before
-
-
-def test_versioned_hero_policy_matches_frozen_recipe():
-    repo = Path(__file__).resolve().parents[1]
-    config = load_config([repo / "configs/base.toml", repo / "configs/hero.toml"])
-    assert config.telemetry.cache_clear_interval == 0
-    assert (config.model.hidden_size, config.model.num_heads,
-            config.model.double_stream_depth, config.model.single_stream_depth) == (1152, 16, 1, 24)
-    assert config.data.caption_policy == "beta"
-    assert config.data.curriculum_start == 0.0 and config.data.curriculum_end == 1.0
-    assert config.data.caption_beta_start == -1 and config.data.caption_beta_end == 1
-    assert config.data.caption_short_reserve == .2
-    assert config.train.caption_loss_weight_curve == "log2"
-    assert config.train.caption_loss_weight_reference == 128
-    assert config.train.ema_decay == .9999 and config.train.ema_update_interval == 1
-    assert config.optim.muon_lr == .02 and config.optim.learning_rate == .0003
-    assert config.optim.lr_warmup_steps == 5000
-    assert config.optim.min_learning_rate == .000015
-    assert config.train.checkpoint_interval == 2000 and config.train.eval_interval == 2500
-    assert config.eval.loss_interval == 500 and config.eval.kid_at_end
-    assert config.eval.prompts_file == "assets/eval/hero_monitor_v1.jsonl"
-    assert config.eval.ode_steps == 50
-
-
-@pytest.mark.parametrize("fault", ["step", "horizon", "incomplete", "own_past_end"])
-def test_launcher_rejects_bad_checkpoint_before_torchrun(tmp_path, fault):
-    repo, workspace, env = launcher_env(tmp_path)
-    run = workspace / "runs" / ("hero-640p" if fault == "own_past_end" else "hero-256p")
-    run.mkdir(parents=True)
-    step = {"step":298000,"own_past_end":380001}.get(fault,300000)
-    root = checkpoint(run, step=step, total=420000 if fault == "horizon" else 400000)
-    if fault == "incomplete":
-        (root / CHECKPOINT_RECORD).unlink()
-    result = subprocess.run(["bash",str(repo / "jobs/hero_stage.sh"),"640p","400000"],
-                            env=env,capture_output=True,text=True)
-    assert result.returncode != 0
-    assert not Path(env["CAPTURE"]).exists()
+def test_npu_rng_verification_uses_rank_local_sidecar(tmp_path, monkeypatch):
+    state = dict(random_state=random.getstate(), numpy_random_seed=np.random.get_state(),
+                 torch_manual_seed=torch.get_rng_state())
+    torch.save(state, tmp_path / 'random_states_2.pkl')
+    expected = torch.tensor([1, 3, 5], dtype=torch.uint8)
+    torch.save(expected, tmp_path / 'npu_rng_state_rank_00002.pt')
+    device = SimpleNamespace(type='npu', index=2)
+    reads = []
+    monkeypatch.setattr(torch, 'npu', SimpleNamespace(
+        get_rng_state=lambda selected: (reads.append(selected), expected.clone())[-1]), raising=False)
+    verify_restored_rng(tmp_path, process_index=2, device=device)
+    assert reads == [device]
+    torch.save(expected+1, tmp_path / 'npu_rng_state_rank_00002.pt')
+    with pytest.raises(ValueError, match='NPU RNG was not restored'):
+        verify_restored_rng(tmp_path, process_index=2, device=device)

@@ -3,21 +3,16 @@ Muon optimizer (MomentUm Orthogonalized by Newton-Schulz) with chunked
 orthogonalization for fused matrices.
 
 Adapted from Keller Jordan's reference implementation
-(https://github.com/KellerJordan/Muon) with two changes:
+(https://github.com/KellerJordan/Muon). Update scaling matches PyTorch Muon's
+`original` convention: sqrt(max(1, rows / cols)) for each orthogonalized
+matrix. Square and wide matrices use multiplier 1; tall matrices receive
+an aspect-ratio correction. The default base LR is 0.02 in this convention.
+Decoupled weight decay uses the base LR, without the shape multiplier.
 
-1. Chunked orthogonalization (CMuon, arXiv:2608.02502): DiTs fuse functionally
-   distinct weights into single tensors (fused QKV, 6xdim AdaLN modulation,
-   gated-FFN up projections). Orthogonalizing the fused tensor couples the
-   subspaces and causes a late-stage convergence plateau. Groups can carry a
-   `chunks` hint; the momentum/grad is split into that many row-chunks and each
-   chunk is orthogonalized independently.
-
-2. Update scaling follows Moonlight (arXiv:2502.16982), matching PyTorch Muon's
-   `match_rms_adamw` convention. An ideal full-rank orthogonalized update has
-   RMS 1/sqrt(max(m, n)); scaling each chunk by 0.2*sqrt(max(m, n)) targets
-   update RMS ~0.2 before LR multiplication. Finite NS iterations make this
-   approximate. This convention does not prescribe the optimal base LR or
-   guarantee architecture-independent behavior. Decay uses the base LR.
+Fused QKV, AdaLN modulation and gated-FFN projections contain functionally
+distinct matrices. The `chunks` group field splits them into row chunks for
+independent orthogonalization (CMuon, arXiv:2608.02502). Each chunk's own shape
+determines its update multiplier; same-shaped chunks are batched for execution.
 
 Param routing convention (see build_param_groups):
 - Muon: 2D hidden weights (attention projections, FFN, modulation/QKV with
@@ -38,7 +33,7 @@ from torch import nn
 
 @torch.no_grad()
 def _zeropower_via_newtonschulz5(G: torch.Tensor, steps: int = 5) -> torch.Tensor:
-    """Orthogonalize G via quintic Newton-Schulz iteration (bf16 internally)."""
+    """Orthogonalize G via quintic Newton-Schulz iteration (bf16 by default)."""
     assert G.ndim == 2
     a, b, c = (3.4445, -4.7750, 2.0315)
     X = G.to(torch.bfloat16)
@@ -71,20 +66,14 @@ def _zeropower_via_newtonschulz5_batched(G: torch.Tensor, steps: int = 5):
         X = X.mT
     norms = X.flatten(1).norm(dim=1).clamp_min(1e-7).view(-1, 1, 1)
     X = X / norms
-    X = _newtonschulz5_batched_iterations(X, steps)
-    if transposed:
-        X = X.mT
-    return list(X.unbind(0))
-
-
-def _newtonschulz5_batched_iterations(X: torch.Tensor, steps: int = 5):
-    """Iteration-only compiler boundary; preserve eager norm reduction order."""
     a, b, c = (3.4445, -4.7750, 2.0315)
     for _ in range(steps):
         A = X @ X.mT
         B = b * A + c * (A @ A)
         X = a * X + B @ X
-    return X
+    if transposed:
+        X = X.mT
+    return list(X.unbind(0))
 
 
 class Muon(torch.optim.Optimizer):
@@ -104,7 +93,6 @@ class Muon(torch.optim.Optimizer):
         nesterov: bool = True,
         ns_steps: int = 5,
         weight_decay: float = 0.0,
-        compile_square_ns: bool = False,
     ):
         defaults = dict(
             lr=lr,
@@ -115,10 +103,6 @@ class Muon(torch.optim.Optimizer):
             chunks=1,
         )
         super().__init__(params, defaults)
-        # Execution policy, not optimizer state: checkpoint loading must not
-        # silently replace the launch's measured kernel selection.
-        self.compile_square_ns = compile_square_ns
-        self._compiled_square_ns = None
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -157,15 +141,15 @@ class Muon(torch.optim.Optimizer):
                     assert m % chunks == 0, f"chunks={chunks} does not divide {m}"
                     rows = m // chunks
                     gs = g.reshape(chunks, rows, n)
-                    scale = 0.2 * math.sqrt(max(rows, n))
+                    scale = math.sqrt(max(1.0, rows / n))
                     for index in range(chunks):
                         entries.append(
                             (p.narrow(0, index * rows, rows), gs[index], scale)
                         )
                 else:
-                    entries.append((p, g, 0.2 * math.sqrt(max(m, n))))
+                    entries.append((p, g, math.sqrt(max(1.0, m / n))))
 
-            if group.get("batched_ns", True) and len(entries) > 1:
+            if len(entries) > 1:
                 # Pass 2: one bmm chain per distinct matrix shape. Same NS math
                 # per matrix, without a serial chain of tiny GEMM launches.
                 by_shape = {}
@@ -173,28 +157,9 @@ class Muon(torch.optim.Optimizer):
                     by_shape.setdefault(tuple(entry[1].shape), []).append(entry)
                 for items in by_shape.values():
                     stacked = torch.stack([item[1] for item in items])
-                    if self.compile_square_ns and stacked.shape[-2] == stacked.shape[-1]:
-                        # The target-runtime probe found exact, faster square
-                        # batches initially; a full-update probe subsequently
-                        # found rare drift. Keep norm reduction eager, since
-                        # cast emulation does not fix reduction ordering.
-                        # Rectangular batches stay entirely eager.
-                        if self._compiled_square_ns is None:
-                            self._compiled_square_ns = torch.compile(
-                                _newtonschulz5_batched_iterations,
-                                fullgraph=True, dynamic=False,
-                                options={"emulate_precision_casts": True,
-                                         "shape_padding": False},
-                            )
-                        X = stacked.to(torch.bfloat16)
-                        norms = X.flatten(1).norm(dim=1).clamp_min(1e-7).view(-1, 1, 1)
-                        updates = list(self._compiled_square_ns(
-                            X / norms, group["ns_steps"]
-                        ).unbind(0))
-                    else:
-                        updates = _zeropower_via_newtonschulz5_batched(
-                            stacked, group["ns_steps"]
-                        )
+                    updates = _zeropower_via_newtonschulz5_batched(
+                        stacked, group["ns_steps"]
+                    )
                     for (dest, _, scale), updated in zip(items, updates):
                         dest.add_(updated.to(dest.dtype), alpha=-lr * scale)
                 continue
@@ -221,14 +186,12 @@ def _chunk_hint(name: str, shape: torch.Size) -> int:
 def build_param_groups(
     model: nn.Module,
     muon_lr: float,
-    muon_wd: float = 0.01,
-    adam_lr: float = 3e-4,
-    adam_wd: float = 0.01,
-    adam_betas=(0.9, 0.95),
-    muon_momentum: float = 0.95,
-    batched_ns: bool = True,
-    compile_square_ns: bool = False,
-    fused_adamw: bool = False,
+    muon_wd: float,
+    adam_lr: float,
+    adam_wd: float,
+    adam_eps: float,
+    adam_betas: tuple[float, float],
+    muon_momentum: float,
 ) -> List[torch.optim.Optimizer]:
     """
     Split model parameters into Muon (2D hidden) and AdamW (everything else)
@@ -253,10 +216,7 @@ def build_param_groups(
     for name, p in model.named_parameters():
         if not p.requires_grad:
             continue
-        is_adam = (
-            p.ndim != 2
-            or any(pat in name for pat in adam_name_patterns)
-        )
+        is_adam = p.ndim != 2 or any(pat in name for pat in adam_name_patterns)
         if is_adam:
             adam_params.append(p)
             continue
@@ -265,7 +225,6 @@ def build_param_groups(
             muon_groups[chunks] = {
                 "params": [],
                 "chunks": chunks,
-                "batched_ns": batched_ns,
             }
         muon_groups[chunks]["params"].append(p)
 
@@ -277,22 +236,16 @@ def build_param_groups(
                 lr=muon_lr,
                 momentum=muon_momentum,
                 weight_decay=muon_wd,
-                compile_square_ns=compile_square_ns,
             )
         )
     if adam_params:
-        adamw_cls = torch.optim.AdamW
-        if fused_adamw:
-            # torch_npu's fused AdamW runs the whole update as one kernel
-            # instead of ~6 small ops per parameter — a large host-dispatch
-            # saving on NPU, where Python dispatch dominates. Same AdamW
-            # math and per-param state layout as torch.optim.AdamW.
-            from torch_npu.optim import NpuFusedAdamW
-
-            adamw_cls = NpuFusedAdamW
         optimizers.append(
-            adamw_cls(
-                adam_params, lr=adam_lr, weight_decay=adam_wd, betas=adam_betas
+            torch.optim.AdamW(
+                adam_params,
+                lr=adam_lr,
+                weight_decay=adam_wd,
+                betas=adam_betas,
+                eps=adam_eps,
             )
         )
     return optimizers

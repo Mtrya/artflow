@@ -91,7 +91,7 @@ consequential uncertainty or systematic disagreement to the user.
 Compare the incoming new-resolution baseline with subsequent checkpoints at
 that resolution. A raw loss change across resolutions is not by itself a
 regression. Preserve review notes and uncertainty flags with the images.
-Follow [hero_recipe.md](hero_recipe.md)'s operational stop/review rules.
+Follow [hero_recipe.md](archive/cuda_hero_recipe_0924.md)'s operational stop/review rules.
 
 No thousands-image confirmation, minimum pass rate, confidence-bound gate,
 judge-calibration quota, or per-capability scaling fit is required. Loss/KID and

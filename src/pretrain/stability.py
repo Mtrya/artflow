@@ -145,7 +145,7 @@ class StabilityMonitor:
         zt = ((1 - t[:, None, None, None]) * values["z0"]
               + t[:, None, None, None] * values["z1"]).to(p["z0"].dtype)
         kwargs = dict(txt=values["txt"], txt_pooled=values["txt_pooled"],
-                      txt_mask=values["txt_mask"], fast_attn=True)
+                      txt_mask=values["txt_mask"])
         return zt, t, kwargs, (values["z1"] - values["z0"]).float(), rows
 
     def _forward(self, replace_condition=None, inspect=False):

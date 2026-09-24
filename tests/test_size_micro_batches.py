@@ -86,7 +86,7 @@ def test_parse_oom_log_accepts_mib_allocation(tmp_path):
 def test_parse_oom_log_requires_shape_attribution(tmp_path):
     log = tmp_path / "run.log"
     log.write_text(OOM_LOG.split("Traceback")[1])
-    with pytest.raises(ValueError, match="ARTFLOW_LOG_SHAPES"):
+    with pytest.raises(ValueError, match="--log_shapes"):
         parse_oom_log(str(log))
 
 

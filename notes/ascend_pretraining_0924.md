@@ -14,7 +14,7 @@ branch. The temporary `ascend-pretraining` branch was fast-forwarded into
 were preserved.
 
 The rationale is the cross-card evidence in the
-[H200 investigation](h200_spike_root_cause_0924.md): the captured spike
+[H200 investigation](archive/h200_spike_root_cause_0924.md): the captured spike
 reproduces in full fp32 on both H200 and RTX 4090, and a captured AdamW
 conditioning-weight update causally triggers it. An Ascend-specific arithmetic
 fault is not required for that failure. This does not prove that every
@@ -27,12 +27,12 @@ Current sequence, explicitly clarified by the user:
 
 1. Establish stability through shorter experiments and internal-metric monitoring.
 2. Clean the repository, consolidate configuration into the chosen architecture
-   and sensible defaults, and remove stale documentation.
+   with explicit run settings, and remove stale documentation.
 3. Run an infrastructure pass on that model and configuration.
 4. Launch the hero.
 
 **Stage 1 closed at 20:39 CST on September 24. Repository/config/docs cleanup
-is next.** The completed short checks do not authorize bypassing cleanup and
+is complete as of September 25; infrastructure qualification is next.** The completed short checks do not authorize bypassing cleanup and
 the infrastructure pass. See the
 [archived Stage-1 evidence](archive/ascend_stability_stage1_0924.md).
 Optimize for useful decisions per unit of time and compute; do not require a
@@ -73,11 +73,11 @@ is running and no useful independent work remains, monitor sleep is authorized.
   `ascend-tf1000-256p` is stopped and its startup log confirms the factor 1000
   patch. Platform stdout contains no completed training metrics, so exact
   failure steps and severity are not independently established by this read.
-  The local [timestep note](timestep_factor_0924.md) still records early-run
+  The local [timestep note](archive/timestep_factor_0924.md) still records early-run
   status. Treat factor 1000 as **insufficient on its own**, not as proof that
   embedding bandwidth has no effect on the trajectory.
 - The completed Ascend growth/normalization probes are recorded in
-  [the Muon note](muon_weight_growth_0924.md). Its final accumulation-matched
+  [the Muon note](archive/muon_weight_growth_0924.md). Its final accumulation-matched
   2k-step comparison reports baseline/branch evaluation loss 0.92154/0.91259
   and last-block activation RMS 12001/73.58; weight RMS and the fraction of
   conditioning preactivations below -5 are higher with branch normalization.
@@ -97,33 +97,49 @@ is running and no useful independent work remains, monitor sleep is authorized.
 ## Selected model and optimizer for cleanup
 
 - Branch normalization on; conditioning-input normalization off; timestep factor 1000.
-- Muon LR 0.003, auxiliary AdamW LR 1e-4, Muon decay 0.01; gradient clip 1.0.
+- Muon **original scaling, LR 0.02**, auxiliary AdamW LR 1e-4, Muon decay 0.0015;
+  gradient clip 1.0. The user requested the scaling change on September 24.
 - h1152, 16 heads, 1 double-stream + 24 single-stream blocks: **532,766,716 parameters**.
   Double-stream modulation none, single-stream modulation layer, as actually tested.
 - Bias-corrected EMA retained. Fresh hero remains 600k steps with 20k warmup;
   the short check's 200-step warmup is not the production schedule.
 
-Muon LR convention clarified on September 24: our per-chunk scale
-`0.2*sqrt(max(rows, cols))` matches PyTorch's `match_rms_adamw` option.
-For an ideal full-rank orthogonalized update, RMS is
-`1/sqrt(max(rows, cols))`, so this multiplier removes the direct matrix-size
-dependence of per-entry update RMS. Finite Newton–Schulz iterations make this
-approximate. It does not guarantee invariant relative weight changes or
-model-output changes across architectures. See the
+Muon now uses `sqrt(max(1, rows / cols))` on each independently orthogonalized
+chunk, matching PyTorch's `original` convention. Square and wide chunks use
+multiplier 1; tall chunks retain the aspect-ratio correction. LR 0.02 is the
+base LR in this convention. See the
 [official PyTorch Muon documentation](https://docs.pytorch.org/docs/2.14/generated/torch.optim.Muon.html)
 and [implementation](https://github.com/pytorch/pytorch/blob/v2.14.0/torch/optim/_muon.py).
 
-The earlier 6.79× example compares our convention with `original` for a
-1152×1152 matrix, holding the NS result fixed. It is a conversion between
-conventions, not evidence that our multiplier is erroneous or that width
-determines the optimal LR. Converting the update multiplier alone also does
-not preserve decay, which uses the base LR. LR 0.003 is a selected empirical
-candidate supported by the short checks, not a theoretically derived optimum.
-Those checks changed auxiliary AdamW LR too, so their conditioning improvements
-cannot be attributed to Muon LR alone. Keep the scaling convention explicit
-during cleanup; do not silently switch to PyTorch's default `original` mode.
+This supersedes the accepted `match_rms_adamw` candidate at LR 0.003. The
+completed stability experiments used that previous convention; their archived
+measurements remain unchanged. The change makes the LR convention explicit
+and follows the original reference, without asserting a new optimal LR.
 
-The fresh check applied all 2000 updates, with no post-warmup clipping. Its last
+Concrete conversion for a 1152×1152 matrix, holding the orthogonalized update
+`Q` fixed and omitting weight decay:
+
+| Convention | Base LR | Shape multiplier | Update |
+|---|---:|---:|---|
+| Original, selected | 0.02 | `sqrt(max(1, 1152/1152)) = 1` | `-0.02000 * Q` |
+| RMS matching, historical baseline | 0.02 | `0.2 * sqrt(1152) = 6.7882` | `-0.13576 * Q` |
+| RMS matching, stability candidate | 0.003 | `0.2 * sqrt(1152) = 6.7882` | `-0.02036 * Q` |
+
+Thus 6.79× compares the first two rows at the **same numerical LR**. The
+new coefficient is close to the tested candidate for this shape, but this is
+not an exact whole-optimizer conversion. Other input widths change by different
+ratios. The user accepted Muon decay **0.0015**, preserving the tested peak
+shrinkage: `0.02 * 0.0015 = 0.003 * 0.01 = 0.00003` per update. This preserves
+decay throughout a schedule with the same multiplicative LR factors. Auxiliary
+AdamW decay is a separate setting and remains 0.01.
+The implementation changes existing checkpoint continuation behavior too;
+use the source snapshot recorded for an experiment to reproduce its old
+trajectory. The next infrastructure pass will exercise the new convention.
+The continuation experiments also changed auxiliary AdamW LR, so their
+conditioning improvements cannot be attributed to Muon LR alone.
+
+The fresh check of the previous RMS-matching candidate applied all 2000 updates,
+with no post-warmup clipping. Its last
 500 steps have maximum gradient norm 0.40657. Final EMA/live loss is
 **0.85689331/0.86698182**, versus **0.85988654/0.87153464** for the earlier
 branch-norm checkpoint at the same training age and on the same evaluation panel.
@@ -163,3 +179,53 @@ variation/saturation, shared conditioning displacement per update, modulation
 and gate scales, sensitivity to conditioning perturbations, and sustained
 loss/EMA/sample quality. Short probes can identify candidates; preventing one
 spike or lowering activation maxima alone does not establish long-run health.
+
+## Configuration contract — clarified September 24–25
+
+The cleanup is a reduction in actual choices and configuration sources, not
+merely a relocation of model construction or dashboard filtering.
+
+- One complete run file contains shared capacity/optimizer/training settings
+  and explicit per-stage datasets, bucket plans, accumulation, and endpoints.
+  Missing fields are errors; there is no base config, layered fallback, or
+  environment/CLI hyperparameter override.
+- Settled architecture and execution choices become native code, with old
+  switches and superseded implementations removed. No `pretrain/model.py`.
+- Capacity, optimizer/EMA numbers, data weights, and the numeric parameters of
+  caption selection/loss weighting remain tunables. SwanLab displays all of
+  them, all stages, the architecture identifier, and the active bucket table.
+- Breaking obsolete configs, model variants and checkpoints is accepted.
+  Historical source revisions preserve historical experiments.
+- The interview established these choices one question at a time. Do not
+  restart it or use asynchronous questions for dependent decisions.
+
+The selected production candidate remains original Muon LR 0.02, decay 0.0015,
+AdamW LR 1e-4/decay 0.01. The actual-update ratio versus the tested RMS-matched
+0.003 candidate is about 0.982 for most matrices and 0.601 for the FFN down
+projection. The latter is a meaningful change, to be exercised in the infra
+pass. The 1000-update continuation tradeoff was 0.46% worse EMA loss and 1.51%
+better live loss for the conservative rates, with smaller sampled conditioning
+response. This gives no reliable estimate of distance to a global optimum.
+Do not add a low-information optimizer sweep or a separate long-validation
+stage before infrastructure qualification.
+
+
+## Cleanup verification — September 25
+
+The single-file schema, native architecture, trainer, checkpoint path and
+launcher are implemented on `main`, without a new pretraining model wrapper.
+Legacy pretraining overlays/launchers and completed probe scripts are removed;
+closed records moved to `notes/archive/`. README work remains deferred to
+Stage 7; the current recipe and launch instructions live in `notes/`.
+
+Validation: 781 tests passed, including strict missing-field/type checks,
+full-checkpoint writing and retention, stage horizons, launcher locking,
+NPU RNG verification and profiler routing. A saved nonzero forward/backward
+reference for the selected architecture matches exactly on CPU after switch
+removal; the full model remains 532,766,716 parameters. Config validation also
+runs through the real entry point without loading models or datasets.
+
+These local checks do not qualify runtime performance or memory on Ascend.
+The [infra pass](infra_pass.md) must supply the actual three bucket artifacts,
+confirm their accumulation values and exercise full recovery on the target
+runtime. No new compute job or hero was launched by cleanup.

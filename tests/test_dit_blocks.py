@@ -19,8 +19,6 @@ from src.models.dit_blocks import (
     SingleStreamDiTBlock,
     DoubleStreamAttention,
     DoubleStreamDiTBlock,
-    UnconditionalAttention,
-    UnconditionalDiTBlock,
     GatedFeedForward,
     modulate,
 )
@@ -67,7 +65,7 @@ def test_timestep_embeddings():
     deterministic = torch.allclose(output, output2)
     print_test_result(deterministic, "Output is deterministic")
 
-    return shape_correct and non_zero and deterministic
+    assert shape_correct and non_zero and deterministic
 
 
 def test_apply_rotary_emb():
@@ -96,7 +94,7 @@ def test_apply_rotary_emb():
     modified = not torch.allclose(output, x)
     print_test_result(modified, "Rotation was applied (output differs from input)")
 
-    return shape_correct and dtype_correct and modified
+    assert shape_correct and dtype_correct and modified
 
 
 def test_apply_rotary_emb_variants_equivalent():
@@ -160,7 +158,7 @@ def test_msrope():
     )
     print_test_result(cache_works, "Caching works correctly")
 
-    return (
+    assert (
         img_shape_correct
         and txt_shape_correct
         and img_complex
@@ -193,7 +191,7 @@ def test_feedforward():
     modified = not torch.allclose(output, x)
     print_test_result(modified, "MLP transformation applied")
 
-    return shape_correct and modified
+    assert shape_correct and modified
 
 
 def test_modulate():
@@ -224,7 +222,7 @@ def test_modulate():
     identity = torch.allclose(output_zero, x)
     print_test_result(identity, "Identity test (zero shift/scale)")
 
-    return shape_correct and modified and identity
+    assert shape_correct and modified and identity
 
 
 def test_single_stream_attention():
@@ -260,7 +258,7 @@ def test_single_stream_attention():
     mask_applied = not torch.allclose(output, output_masked)
     print_test_result(mask_applied, "Attention mask affects output")
 
-    return shape_correct and modified and mask_applied
+    assert shape_correct and modified and mask_applied
 
 
 def test_single_stream_dit_block():
@@ -313,7 +311,7 @@ def test_single_stream_dit_block():
     mask_affects = not torch.allclose(out_txt, out_txt_masked)
     print_test_result(mask_affects, "Attention mask affects text output")
 
-    return (
+    assert (
         img_shape_correct
         and txt_shape_correct
         and img_modified
@@ -368,7 +366,7 @@ def test_double_stream_attention():
     mask_affects = not torch.allclose(out_txt, out_txt_masked)
     print_test_result(mask_affects, "Attention mask affects text output")
 
-    return (
+    assert (
         img_shape_correct
         and txt_shape_correct
         and img_modified
@@ -427,7 +425,7 @@ def test_double_stream_dit_block():
     mask_affects = not torch.allclose(out_txt, out_txt_masked)
     print_test_result(mask_affects, "Attention mask affects text output")
 
-    return (
+    assert (
         img_shape_correct
         and txt_shape_correct
         and img_modified
@@ -436,64 +434,8 @@ def test_double_stream_dit_block():
     )
 
 
-def test_unconditional_attention():
-    """Test UnconditionalAttention module"""
-    print_test_header("UnconditionalAttention")
-
-    dim = 512
-    num_heads = 4  # head_dim = 128
-    batch_size = 2
-    img_hw = (16, 16)
-    seq_len = img_hw[0] * img_hw[1]
-
-    model = UnconditionalAttention(dim=dim, num_heads=num_heads, rope_axes_dim=[64, 64])
-    x = torch.randn(batch_size, seq_len, dim)
-
-    output = model(x, img_hw)
-
-    # Check shape preservation
-    shape_correct = output.shape == x.shape
-    print_test_result(
-        shape_correct, f"Output shape: {output.shape} (expected: {x.shape})"
-    )
-
-    # Check attention was applied
-    modified = not torch.allclose(output, x)
-    print_test_result(modified, "Attention transformation applied")
-
-    return shape_correct and modified
 
 
-def test_unconditional_dit_block():
-    """Test UnconditionalDiTBlock module"""
-    print_test_header("UnconditionalDiTBlock")
-
-    dim = 512
-    num_heads = 4  # head_dim = 128
-    c_dim = 256
-    batch_size = 2
-    img_hw = (16, 16)
-
-    model = UnconditionalDiTBlock(
-        dim=dim, num_heads=num_heads, c_dim=c_dim, rope_axes_dim=[64, 64]
-    )
-
-    img_tokens = torch.randn(batch_size, img_hw[0] * img_hw[1], dim)
-    c = torch.randn(batch_size, c_dim)
-
-    out = model(img_tokens, c, img_hw)
-
-    # Check shape
-    shape_correct = out.shape == img_tokens.shape
-    print_test_result(
-        shape_correct, f"Output shape: {out.shape} (expected: {img_tokens.shape})"
-    )
-
-    # Check transformation was applied
-    modified = not torch.allclose(out, img_tokens)
-    print_test_result(modified, "Tokens were transformed")
-
-    return shape_correct and modified
 
 
 def run_all_tests():
@@ -536,9 +478,4 @@ def run_all_tests():
     else:
         print(f"\n⚠️  {total - passed} test(s) failed")
 
-    return passed == total
-
-
-if __name__ == "__main__":
-    success = run_all_tests()
-    sys.exit(0 if success else 1)
+    assert passed == total

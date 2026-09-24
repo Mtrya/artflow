@@ -25,9 +25,8 @@ each resolution id to one value per bucket of the plan's resolution, the
 bucket's share of the draws the mix makes.  It is required.  Without the draw
 mass the alignment cannot be simulated, and this script stops rather than
 falling back to picking each bucket's own fastest candidate, which is the rule
-it replaced.  Generate the file on the machine that holds the corpus with
-``batch_size_screen.py --bucket-mass-out``, which derives it from the same mix
-and the same plan.
+it replaced.  Derive this file on the machine holding the corpus, using the measured
+run's mix, caption policy, progress interval and bucket boundaries.
 
 A bucket with no finished run takes no part in the choice: it keeps the batch
 size the plan declares for it (the fallback), and the simulation gives it the
@@ -104,8 +103,8 @@ def read_bucket_mass(path: str) -> Dict[str, List[float]]:
     The file maps a resolution id to one value per bucket of the plan's
     resolution: the bucket's share of the draws the mix makes.  Only the ratios
     between the values matter, since ``share_by_bucket`` renormalizes them over
-    the whole table.  ``batch_size_screen.py --bucket-mass-out`` writes the file
-    from the same mix and plan, using the sampler's own draw rule.
+    the whole table. The values must describe the same mix and plan as the
+    measurements, using the sampler's draw rule.
     """
     with open(path) as handle:
         raw = json.load(handle)
@@ -429,7 +428,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                              "plan resolution; required because the alignment is "
                              "simulated over the bucket mix, and there is no "
                              "sensible default without it (write it with "
-                             "batch_size_screen.py --bucket-mass-out)")
+                             "measured run corpus/plan)")
     parser.add_argument("--out", required=True,
                         help="plan to write with the aligned sizes")
     parser.add_argument("--targets", nargs="+", default=[], metavar="MS",

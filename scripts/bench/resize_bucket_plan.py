@@ -20,7 +20,7 @@ from scripts.bench.plan_buckets import (
 )
 from src.dataset.captions import CaptionPolicy
 from src.dataset.mix import parse_dataset_mix
-from src.pretrain.config import load_config
+from src.pretrain.config import load_config, flatten
 
 
 def resize(sizes, shares, *, old_accumulation, new_accumulation, ranks, target):
@@ -64,7 +64,8 @@ def resize(sizes, shares, *, old_accumulation, new_accumulation, ranks, target):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", action="append", required=True)
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--stage", required=True)
     parser.add_argument("--old-accumulation", type=int, required=True)
     parser.add_argument("--new-accumulation", type=int, required=True)
     parser.add_argument("--ranks", type=int, required=True)
@@ -75,14 +76,12 @@ def main():
     args = parser.parse_args()
     cfg = load_config(args.config)
     data = cfg.data
-    if data.caption_policy != "beta":
-        raise ValueError("this candidate generator requires the frozen beta caption policy")
+    stage = cfg.stage(args.stage)
     policy = CaptionPolicy(kind="beta", beta_start=data.caption_beta_start,
         beta_end=data.caption_beta_end, short_reserve=data.caption_short_reserve,
-        short_threshold=data.caption_short_threshold, schedule=data.caption_schedule,
-        early_at=data.caption_early_at)
-    raw = json.loads(Path(data.bucket_plan).read_text())
-    pooled = resolution_lengths(load_sidecar_lengths(parse_dataset_mix(data.mix),
+        short_threshold=data.caption_short_threshold, schedule="linear")
+    raw = json.loads(Path(stage.bucket_plan).read_text())
+    pooled = resolution_lengths(load_sidecar_lengths(parse_dataset_mix(flatten(cfg, args.stage)["dataset_mix"]),
         policy=policy, progress_start=args.progress_start,
         progress_end=args.progress_end, progress_grid=8))
     if set(map(int, raw)) != set(pooled):
@@ -109,7 +108,7 @@ def main():
     for (aspect, i), size in zip(keys, proposed):
         result[aspect][i]["batch_size"] = size
     report = dict(accepted=False, memory_validated=False, throughput_measured=False,
-        source_plan=data.bucket_plan, configs=args.config,
+        source_plan=stage.bucket_plan, configs=args.config,
         old_accumulation=args.old_accumulation, new_accumulation=args.new_accumulation,
         ranks=args.ranks, target_global_batch=args.target_global_batch,
         estimated_reference_global_batch=mean_emitted_batch(shares, sizes)*args.ranks*args.old_accumulation,

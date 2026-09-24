@@ -4,7 +4,7 @@ import copy
 
 from src.models.dit_blocks import (
     apply_rotary_emb, apply_rotary_emb_real, set_real_rope,
-    DoubleStreamAttention, SingleStreamAttention, UnconditionalAttention,
+    DoubleStreamAttention, SingleStreamAttention,
 )
 
 
@@ -27,11 +27,11 @@ def test_real_rope_preserves_rotation_and_input_gradient(dtype, strided):
         torch.testing.assert_close(candidate, reference, rtol=1e-5, atol=1e-6)
 
 
-@pytest.mark.parametrize("kind", ["double", "single_split", "single_hoisted", "unconditional"])
+@pytest.mark.parametrize("kind", ["double", "single_split", "single_hoisted"])
 def test_real_rope_policy_is_instance_local_and_preserves_attention(kind):
     torch.manual_seed(9)
     cls = (DoubleStreamAttention if kind == "double" else
-           UnconditionalAttention if kind == "unconditional" else SingleStreamAttention)
+           SingleStreamAttention)
     reference = cls(32, 4, rope_axes_dim=[4, 4])
     candidate = copy.deepcopy(reference)
     set_real_rope(candidate, True)
@@ -44,8 +44,6 @@ def test_real_rope_policy_is_instance_local_and_preserves_attention(kind):
     def forward(model):
         if kind == "double":
             return model(image, text, (2, 3), 5)
-        if kind == "unconditional":
-            return (model(image, (2, 3)),)
         freqs = model.rope.prepare_freqs((2, 3), 5, image.device) if kind.endswith("hoisted") else None
         if freqs is not None and model.real_rope:
             # The real-rope contract: the hoisted table is materialized in

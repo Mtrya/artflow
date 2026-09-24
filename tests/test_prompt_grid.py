@@ -192,28 +192,6 @@ def test_absolute_transition_triggers(total):
     assert not prompt_grid.grid_due(10000, 0, [])
 
 
-@pytest.mark.parametrize("total", [400000, 420000])
-@pytest.mark.parametrize("stage,accum,fractions", [
-    ("256p", 1, (0, 75)), ("640p", 5, (75, 95)), ("896p", 7, (95, 100)),
-])
-def test_launcher_derives_global_eval_steps(total, stage, accum, fractions):
-    import os
-    import subprocess
-
-    launcher = (Path(__file__).resolve().parents[1] / "jobs/hero_stage.sh").read_text()
-    # Execute only the pure stage-selection block, not a job or training process.
-    case = "case $STAGE in" + launcher.split("case $STAGE in", 1)[1].split("esac", 1)[0] + "esac"
-    result = subprocess.run(
-        ["bash", "-c", case + '\nprintf "%s\\n%s\\n%s\\n" "$ACCUM" "$GRID_STEPS" "$END"'],
-        env={**os.environ, "STAGE": stage, "TOTAL_STEPS": str(total)},
-        check=True, capture_output=True, text=True,
-    )
-    actual_accum, steps, endpoint = result.stdout.strip().splitlines()
-    start, end = (total * x // 100 for x in fractions)
-    expected = [end] if stage == "256p" else [start, start + 2000, end]
-    assert int(actual_accum) == accum
-    assert int(endpoint) == end
-    assert [int(s) for s in steps.split(",")] == expected
 
 
 def test_training_grid_wiring_preserves_rng_and_has_preloop_baseline():

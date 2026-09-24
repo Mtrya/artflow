@@ -1,5 +1,9 @@
 # Ascend 910B 可行性探针（2026-09-21）
 
+> Archived record. Current pretraining decisions and status are in
+> [the Ascend plan](../ascend_pretraining_0924.md); old launch commands and
+> configuration switches require the source revision used for that run.
+
 ## 结论：可用，且值得开一个昇腾分支做 infra pass
 
 ## 资源

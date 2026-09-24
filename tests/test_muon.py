@@ -1,5 +1,6 @@
 """Tests for the Muon optimizer (chunked orthogonalization, param routing)."""
 
+import pytest
 import torch
 
 from src.models.artflow import ArtFlow
@@ -13,12 +14,7 @@ def _tiny_model():
         double_stream_depth=1,
         single_stream_depth=1,
         mlp_ratio=2.67,
-        conditioning_scheme="fused",
-        qkv_bias=True,
-        double_stream_modulation="none",
-        single_stream_modulation="none",
-        ffn_type="gated",
-    )
+        )
 
 
 def test_newtonschulz_orthogonalizes():
@@ -38,48 +34,6 @@ def test_newtonschulz_orthogonalizes():
     assert off_diag.abs().max() < 0.2
 
 
-def test_square_compile_routing_preserves_updates_and_state(monkeypatch):
-    """Exercise optimizer routing, not GPU compiler numerical equivalence."""
-    compiled_shapes = []
-    compiler_options = []
-
-    def compile_spy(function, **options):
-        compiler_options.append(options)
-
-        def call(matrix, steps):
-            compiled_shapes.append(tuple(matrix.shape))
-            return function(matrix, steps)
-
-        return call
-
-    monkeypatch.setattr(torch, "compile", compile_spy)
-    torch.manual_seed(52)
-    params = [torch.nn.Parameter(torch.randn(*shape))
-              for shape in [(8, 8), (8, 8), (16, 8), (8, 16), (24, 8)]]
-    candidate = [torch.nn.Parameter(p.detach().clone()) for p in params]
-
-    def groups(values):
-        return [dict(params=values[:4], chunks=1), dict(params=values[4:], chunks=3)]
-
-    baseline = Muon(groups(params), weight_decay=.1)
-    optimized = Muon(groups(candidate), weight_decay=.1, compile_square_ns=True)
-    for _ in range(3):
-        for p, q in zip(params, candidate):
-            p.grad = torch.randn_like(p)
-            q.grad = p.grad.clone()
-        baseline.step()
-        optimized.step()
-        for p, q in zip(params, candidate):
-            assert torch.equal(p, q)
-            assert torch.equal(baseline.state[p]["momentum_buffer"],
-                               optimized.state[q]["momentum_buffer"])
-    assert compiled_shapes == [(2, 8, 8), (3, 8, 8)] * 3
-    assert compiler_options == [dict(fullgraph=True, dynamic=False,
-                                    options={"emulate_precision_casts": True,
-                                             "shape_padding": False})]
-    # Runtime execution policy survives loading a legacy optimizer state.
-    optimized.load_state_dict(baseline.state_dict())
-    assert optimized.compile_square_ns is True
 
 
 def test_chunk_hint_rules():
@@ -90,9 +44,48 @@ def test_chunk_hint_rules():
     assert _chunk_hint("blocks.0.attn.proj.weight", torch.Size([64, 64])) == 1
 
 
+@pytest.mark.parametrize("shape,chunks", [
+    ((16, 16), 1),
+    ((64, 16), 1),
+    ((16, 64), 1),
+    ((48, 16), 3),
+    ((128, 16), 2),
+    ((32, 64), 2),
+])
+def test_original_scaling_matches_pytorch_per_chunk(shape, chunks):
+    # Zero NS iterations isolate scaling, chunk partitioning, momentum and
+    # decay from fused-vs-unfused bf16 polynomial rounding. Orthogonalization
+    # and compiled routing are covered separately.
+    params = [torch.nn.Parameter(torch.full(shape, value)) for value in (0.0, 1.0)]
+    reference = [
+        [torch.nn.Parameter(part.clone()) for part in param.detach().chunk(chunks)]
+        for param in params
+    ]
+    actual_opt = Muon(
+        [dict(params=params, chunks=chunks)],
+        ns_steps=0, weight_decay=0.01,
+    )
+    reference_opt = torch.optim.Muon(
+        [part for parts in reference for part in parts],
+        lr=0.02, ns_steps=0, weight_decay=0.01, adjust_lr_fn="original",
+    )
+    for step in range(3):
+        for param, parts in zip(params, reference):
+            grad = torch.zeros_like(param)
+            for index, chunk in enumerate(grad.chunk(chunks)):
+                chunk[step, step] = (index + 1) * (step + 1)
+            param.grad = grad.clone()
+            for part, chunk_grad in zip(parts, grad.chunk(chunks)):
+                part.grad = chunk_grad.clone()
+        actual_opt.step()
+        reference_opt.step()
+        for param, parts in zip(params, reference):
+            torch.testing.assert_close(param, torch.cat(parts), rtol=1e-6, atol=1e-7)
+
+
 def test_param_groups_cover_each_param_once():
     model = _tiny_model()
-    opts = build_param_groups(model, muon_lr=0.02, adam_lr=3e-4)
+    opts = build_param_groups(model, muon_lr=0.02, adam_lr=3e-4, muon_wd=.0015, adam_wd=.01, adam_eps=1e-8, adam_betas=(.9,.95), muon_momentum=.95)
     assert len(opts) == 2
     muon, adam = opts
     assert isinstance(muon, Muon) and isinstance(adam, torch.optim.AdamW)

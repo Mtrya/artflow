@@ -1,5 +1,6 @@
 """The observer must explain real updates without changing the training state."""
 import json
+from pathlib import Path
 
 import pytest
 import torch
@@ -13,9 +14,7 @@ from src.pretrain.stability import StabilityMonitor, feature_metrics, update_met
 def observation(tmp_path):
     torch.manual_seed(82)
     model = ArtFlow(hidden_size=32, num_heads=4, double_stream_depth=1,
-                    single_stream_depth=1, txt_in_features=16, in_channels=4,
-                    mlp_ratio=2, conditioning_scheme="fused",
-                    single_stream_modulation="layer", branch_norm=True)
+                    single_stream_depth=1, mlp_ratio=2, )
     # Nonzero final output and modulation expose conditioning changes that
     # adaLN-zero deliberately hides at initialization.
     with torch.no_grad():
@@ -25,8 +24,8 @@ def observation(tmp_path):
             param.grad = torch.full_like(param, 0.01)
     opt = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=0.01)
     monitor = StabilityMonitor(model, [opt], tmp_path)
-    monitor.ensure_panel(torch.randn(4, 4, 8, 8), torch.randn(4, 4, 8, 8),
-                         torch.randn(4, 5, 16), torch.randn(4, 16), torch.ones(4, 5))
+    monitor.ensure_panel(torch.randn(4, 16, 8, 8), torch.randn(4, 16, 8, 8),
+                         torch.randn(4, 5, 1024), torch.randn(4, 1024), torch.ones(4, 5))
     return model, opt, monitor
 
 
@@ -127,9 +126,9 @@ def test_probe_restores_hooks_modes_and_compile_wrapper_on_error(observation):
 @pytest.mark.parametrize("value", [-1, True, 1.5])
 def test_stability_cadence_validation(tmp_path, value):
     config = tmp_path / "invalid.toml"
-    config.write_text("[telemetry]\nstability_interval = " + str(value).lower())
+    config.write_text(Path("configs/hero.toml").read_text().replace("stability_interval = 100", "stability_interval = " + str(value).lower()))
     with pytest.raises(ValueError, match="stability_interval"):
-        load_config([config])
+        load_config(config)
 
 
 def test_first_resumed_update_uses_new_configured_lr():

@@ -11,8 +11,9 @@ progress live in `notes/`; consult them before acting, never from here.
 - Adopt a lever only when its measured end-to-end gain is material; revert
   levers that aimed at the wrong segment (profile the step breakdown first:
   data / forward / backward / sync / optimizer).
-- Platform-specific code must be opt-in flags, default-off, with zero cost
-  and zero behavior change on the main (NVIDIA) path.
+- Pretraining targets Ascend. Settled execution mechanisms belong in code,
+  not optional training flags. Keep platform setup separate from the recipe;
+  inference and post-training hardware choices have their own scope.
 - One-off probes are deleted once their evidence is written into `notes/`.
   The note is the archive; never keep a script "just in case".
 - Don't ship speculative generality: three similar lines beat a premature
@@ -20,6 +21,9 @@ progress live in `notes/`; consult them before acting, never from here.
 
 ## How to debug
 
+- Point out mistaken assumptions and material tradeoffs before acting on a
+  suggested change. Explain the evidence and recommend a correction; user
+  suggestions do not establish that a technical choice is sound.
 - Get the real traceback before theorizing. Training stdout may not reach
   platform logs — know where the actual log lives and how to read it; make
   crashes self-report (first traceback, error files) instead of eyeballing
@@ -42,11 +46,25 @@ progress live in `notes/`; consult them before acting, never from here.
 - No secrets in any artifact. Keys come from env vars or platform secret
   files; internal-only operational detail goes in gitignored docs.
 
+## Training configuration
+
+- One complete run config covers the resolution curriculum. Every training
+  tunable is explicit; reject missing or unknown fields. Do not add base-config
+  merging, environment hyperparameters, or CLI recipe overrides.
+- Settled model architecture and execution mechanisms live in code. Delete
+  their switches and superseded paths. Model capacity and numerical training
+  hyperparameters remain tunable.
+- SwanLab records the complete actual recipe, all stages, and the architecture
+  version. Reduce the number of choices rather than hiding tunable values.
+- Checkpoints carry the complete run config and explicit model metadata. Use
+  historical source revisions for historical experiments.
+
 ## How to keep the repo clean
 
 - Delete dead code and its tests in the same change; don't leave superseded
   paths flag-disabled "for later".
-- Commit in small logical chunks, English messages stating what and why;
+- Commit at meaningful logical checkpoints, not after every small edit.
+  Group related small changes; use English messages stating what and why;
   the test suite (`.venv/bin/python -m pytest tests/ -q`) is green before
   committing; add tests for new src code.
 - `jobs/` is untracked local scratch — never rely on its contents; repeatable
@@ -63,7 +81,7 @@ progress live in `notes/`; consult them before acting, never from here.
   re-deriving known baselines or re-diagnosing known phenomena.
 - `INSPIRE.md` — platform operations (Inspire): job submission, storage
   layout, quotas, gotchas. Read before any platform action.
-- `notes/ascend_probe_0921.md` — Ascend bring-up chronicle; check before
+- `notes/archive/ascend_probe_0921.md` — Ascend bring-up chronicle; check before
   touching NPU code or re-running a concluded probe.
 - `git log` — recent decisions and their rationale; check before undoing or
   re-adding something.

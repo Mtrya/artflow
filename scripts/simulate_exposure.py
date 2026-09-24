@@ -75,7 +75,7 @@ on the machine that holds the data looks like:
     .venv/bin/python -m scripts.simulate_exposure \\
         --mix "path/to/painting:0.6 path/to/photo:0.4" \\
         --steps 50000 --samples-per-step 16 \\
-        --config configs/base.toml \\
+        --config configs/hero.toml \\
         --out exposure.json --report exposure.report.md
 
 ``--samples-per-step`` is the number of draws one optimizer step makes, i.e.
@@ -109,7 +109,7 @@ from scripts.plan_buckets import (
 from src.dataset.captions import CaptionPolicy, average_caption_probabilities
 from src.dataset.length_metadata import RowLengthMetadata
 from src.dataset.mix import DatasetEntry
-from src.pretrain.config import DataConfig, TrainLoopConfig
+from types import SimpleNamespace
 
 # Retained-length bands the exposure is reported in.  The first band is
 # everything below the short-caption threshold the reserve protects.  These
@@ -138,7 +138,7 @@ DEFAULT_CHECK_POINTS = 21
 # sampler's stationary construction uses.
 DEFAULT_STATIONARY_GRID = 64
 DEFAULT_BETA_SHIFT = 0.5
-DEFAULT_STEPS = TrainLoopConfig().max_steps
+DEFAULT_STEPS = 600000  # Standalone simulation horizon; never feeds training.
 
 
 def progress_grid(points: int) -> np.ndarray:
@@ -1275,9 +1275,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--out", required=True, help="JSON with the machine-readable numbers")
     parser.add_argument("--report", default=None,
                         help="report path (default: <out>.report.md, next to the JSON)")
-    parser.add_argument("--config", action="append", default=[], metavar="TOML",
+    parser.add_argument("--config", default=None, metavar="TOML",
                         help="training config to read the caption policy and run length "
-                             "from; repeatable, later files override earlier ones")
+                             "from; one complete run file")
     parser.add_argument("--beta-start", type=float, default=None,
                         help="length preference at the start of arm B (default from the "
                              "config, else -1.0)")
@@ -1308,7 +1308,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 def run(args: argparse.Namespace, argv: Sequence[str] = ()) -> int:
     config = read_config(args.config)
     data_section = config.get("data", {})
-    defaults = DataConfig()
+    defaults = SimpleNamespace(curriculum_start=0.0, curriculum_end=1.0, caption_short_reserve=0.2, caption_short_threshold=256, caption_beta_start=-1.0, caption_beta_end=1.0, caption_early_at=0.5)
 
     if args.progress_points < 2:
         raise ValueError("--progress-points must be at least 2")

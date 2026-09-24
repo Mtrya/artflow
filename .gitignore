@@ -16,6 +16,7 @@ settings*json
 !README.md
 !AGENTS.md
 !notes/*.md
+!notes/archive/*.md
 notes/dataset_plan.md
 test*
 
@@ -53,15 +54,14 @@ swanlog
 /refs/
 /scored_images/
 /bucket_plans/*
-!/bucket_plans/hero/
-/bucket_plans/hero/*
-!/bucket_plans/hero/batch-targets-0914/
-!/bucket_plans/hero/batch-targets-0914/*.report.md
+!/bucket_plans/ascend/
+/bucket_plans/ascend/*
+!/bucket_plans/ascend/hero-*-k20.json
+!/bucket_plans/ascend/*.report.md
 
 # Local cluster job wrappers and exploratory analysis are retained on disk,
-# not shipped as supported launch tooling. The hero entry point is versioned.
+# not shipped as supported launch tooling. Repeatable launchers live in scripts/.
 /jobs/*
-!/jobs/hero_stage.sh
 /scripts/bench/boundary_waste_analysis.py
 /scripts/bench/check_calib_896p.py
 /scripts/bench/inspect_calib.py
