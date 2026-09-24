@@ -128,12 +128,31 @@ def pad_bias_from_mask(attn_mask: torch.Tensor, dtype: torch.dtype) -> torch.Ten
 
 
 class TimestepEmbeddings(nn.Module):
-    """Sinusoidal timestep embeddings"""
+    """Sinusoidal features; scaling applies here, never to the flow path."""
 
-    def __init__(self, hidden_size: int, max_period: int = 10000):
+    def __init__(self, hidden_size: int, max_period: int = 10000, time_factor: int = 1):
         super().__init__()
+        if type(time_factor) is not int or time_factor < 1:
+            raise ValueError("time_factor must be a positive integer")
         self.hidden_size = hidden_size
         self.max_period = max_period
+        self.time_factor = time_factor
+        # Legacy checkpoints used factor 1 and have no embedder state. Keep
+        # that format intact; new frequencies must travel with the weights.
+        if time_factor != 1:
+            self.register_buffer("factor", torch.tensor(time_factor, dtype=torch.int64))
+
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs):
+        saved = state_dict.get(prefix + "factor")
+        saved_factor = 1 if saved is None else int(saved.item())
+        if saved_factor != self.time_factor:
+            error_msgs.append(
+                f"{prefix}time_factor mismatch: checkpoint={saved_factor}, "
+                f"model={self.time_factor}; changing time features requires a fresh run"
+            )
+        super()._load_from_state_dict(state_dict, prefix, local_metadata, strict,
+                                     missing_keys, unexpected_keys, error_msgs)
 
     def forward(self, timesteps: torch.Tensor) -> torch.Tensor:
         """
@@ -152,7 +171,10 @@ class TimestepEmbeddings(nn.Module):
         )
 
         emb = torch.exp(exponent)
-        emb = timesteps.unsqueeze(1).float() * emb.unsqueeze(0)
+        times = timesteps.float()
+        if self.time_factor != 1:
+            times = times * self.time_factor
+        emb = times.unsqueeze(1) * emb.unsqueeze(0)
 
         return torch.cat([torch.sin(emb), torch.cos(emb)], dim=-1)
 

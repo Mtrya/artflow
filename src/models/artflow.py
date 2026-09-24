@@ -64,6 +64,7 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
         # (notes/muon_weight_growth_0924.md). Both default off = shipped recipe.
         branch_norm: bool = False,
         cond_norm: bool = False,
+        timestep_factor: int = 1,
     ):
         super().__init__()
         self.patch_size = patch_size
@@ -81,7 +82,7 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
         self.txt_embedder = nn.Linear(txt_in_features, hidden_size)
 
         # 2. Conditioning (Timestep + Optional Text)
-        self.t_embedder = TimestepEmbeddings(hidden_size)
+        self.t_embedder = TimestepEmbeddings(hidden_size, time_factor=timestep_factor)
 
         if conditioning_scheme == "pure":
             # MLP(t)
@@ -334,6 +335,7 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
             "rope_centered_grid": getattr(first_rope, 'centered', False),
             "branch_norm": self.branch_norm,
             "cond_norm": self.cond_norm is not None,
+            "timestep_factor": self.t_embedder.time_factor,
         }
 
     @classmethod
@@ -459,6 +461,8 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
         # be loaded into a model built with the other setting.
         config["branch_norm"] = any(k.endswith(".norm_msa_out.weight") for k in state_dict)
         config["cond_norm"] = "cond_norm.weight" in state_dict
+        factor = state_dict.get("t_embedder.factor")
+        config["timestep_factor"] = 1 if factor is None else int(factor.item())
 
         # Set defaults
         config["mlp_ratio"] = 2.67

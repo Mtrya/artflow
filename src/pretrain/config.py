@@ -65,6 +65,7 @@ class ModelConfig:
     # i.e. off is the shipped recipe. See notes/muon_weight_growth_0924.md.
     branch_norm: bool = False
     cond_norm: bool = False
+    timestep_factor: int = 1
 
 
 @dataclass(frozen=True)
@@ -252,6 +253,8 @@ def load_config(paths: Sequence[str]) -> TrainConfig:
 
 
 def _validate(config: TrainConfig) -> None:
+    if type(config.model.timestep_factor) is not int or config.model.timestep_factor < 1:
+        raise ValueError("[model].timestep_factor must be a positive integer")
     if type(config.telemetry.stability_interval) is not int or config.telemetry.stability_interval < 0:
         raise ValueError("[telemetry].stability_interval must be a nonnegative integer")
     if type(config.train.checkpoint_keep_last) is not int or config.train.checkpoint_keep_last < 0:

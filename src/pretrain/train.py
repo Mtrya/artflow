@@ -673,6 +673,7 @@ def main():
         rope_centered_grid=args.rope_centered_grid,
         branch_norm=args.branch_norm,
         cond_norm=args.cond_norm,
+        timestep_factor=args.timestep_factor,
         # Default params
         patch_size=2,
         in_channels=16,
