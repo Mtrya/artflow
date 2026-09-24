@@ -12,10 +12,12 @@ Adapted from Keller Jordan's reference implementation
    `chunks` hint; the momentum/grad is split into that many row-chunks and each
    chunk is orthogonalized independently.
 
-2. Update scaling follows Moonlight (arXiv:2502.16982): the orthogonalized
-   update has RMS 1/sqrt(max(m, n)); scaling by 0.2*sqrt(max(m, n)) matches the
-   typical AdamW update RMS (~0.2), so Muon LRs in the 0.01-0.05 range behave
-   intuitively. Decoupled weight decay uses the base LR.
+2. Update scaling follows Moonlight (arXiv:2502.16982), matching PyTorch Muon's
+   `match_rms_adamw` convention. An ideal full-rank orthogonalized update has
+   RMS 1/sqrt(max(m, n)); scaling each chunk by 0.2*sqrt(max(m, n)) targets
+   update RMS ~0.2 before LR multiplication. Finite NS iterations make this
+   approximate. This convention does not prescribe the optimal base LR or
+   guarantee architecture-independent behavior. Decay uses the base LR.
 
 Param routing convention (see build_param_groups):
 - Muon: 2D hidden weights (attention projections, FFN, modulation/QKV with

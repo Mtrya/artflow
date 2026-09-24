@@ -7,6 +7,12 @@ Ascend stack in the already authorized 昇腾卡公共空间. This supersedes th
 four-H200 production direction in earlier September 24 records. It is a
 pretraining decision; inference/deployment hardware is outside its scope.
 
+Branch policy clarified by the user on September 24: **`main` itself pivots
+to Ascend-flavored pretraining**. Do not maintain a separate Ascend pretraining
+branch. The temporary `ascend-pretraining` branch was fast-forwarded into
+`main` and removed; its completed work and the existing working-tree edits
+were preserved.
+
 The rationale is the cross-card evidence in the
 [H200 investigation](h200_spike_root_cause_0924.md): the captured spike
 reproduces in full fp32 on both H200 and RTX 4090, and a captured AdamW
@@ -96,6 +102,26 @@ is running and no useful independent work remains, monitor sleep is authorized.
   Double-stream modulation none, single-stream modulation layer, as actually tested.
 - Bias-corrected EMA retained. Fresh hero remains 600k steps with 20k warmup;
   the short check's 200-step warmup is not the production schedule.
+
+Muon LR convention clarified on September 24: our per-chunk scale
+`0.2*sqrt(max(rows, cols))` matches PyTorch's `match_rms_adamw` option.
+For an ideal full-rank orthogonalized update, RMS is
+`1/sqrt(max(rows, cols))`, so this multiplier removes the direct matrix-size
+dependence of per-entry update RMS. Finite Newton–Schulz iterations make this
+approximate. It does not guarantee invariant relative weight changes or
+model-output changes across architectures. See the
+[official PyTorch Muon documentation](https://docs.pytorch.org/docs/2.14/generated/torch.optim.Muon.html)
+and [implementation](https://github.com/pytorch/pytorch/blob/v2.14.0/torch/optim/_muon.py).
+
+The earlier 6.79× example compares our convention with `original` for a
+1152×1152 matrix, holding the NS result fixed. It is a conversion between
+conventions, not evidence that our multiplier is erroneous or that width
+determines the optimal LR. Converting the update multiplier alone also does
+not preserve decay, which uses the base LR. LR 0.003 is a selected empirical
+candidate supported by the short checks, not a theoretically derived optimum.
+Those checks changed auxiliary AdamW LR too, so their conditioning improvements
+cannot be attributed to Muon LR alone. Keep the scaling convention explicit
+during cleanup; do not silently switch to PyTorch's default `original` mode.
 
 The fresh check applied all 2000 updates, with no post-warmup clipping. Its last
 500 steps have maximum gradient norm 0.40657. Final EMA/live loss is

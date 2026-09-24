@@ -15,6 +15,7 @@ compute cap. A follow-up agent should be able to execute stage by stage from thi
 plus `notes/dataset_plan.md` (data-source detail).
 
 Current pretraining direction (user, 2026-09-24): **pure Ascend pretraining**.
+This pivot happens on **`main`**, with no separate Ascend pretraining branch.
 Further pretraining debugging and optimization target the Ascend stack;
 the earlier native-CUDA/H200 production direction is superseded. See
 [decision and evidence boundaries](ascend_pretraining_0924.md). Use literature

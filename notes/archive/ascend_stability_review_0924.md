@@ -26,9 +26,13 @@ rate. These activation probes use four captions at fixed `t=0.5`.
    to reuse AdamW-like LRs. [CMuon Table 8](https://arxiv.org/html/2608.02502v1)
    uses the same base scaling with LRs 2e-4–3e-4, with an additional chunk
    rescaling absent here. Our code's claim that RMS matching justifies LRs
-   0.01–0.05 is unsupported. This is a convention mismatch worth investigating,
-   not proof of an optimizer implementation bug: our Stage-2 LR 0.02 also has
-   positive 16k-step quality evidence. Proposed first candidate: Muon LR 0.003.
+   0.01–0.05 is unsupported. This comparison is a reason to investigate update
+   scale, not proof of an optimizer implementation bug: our Stage-2 LR 0.02
+   also has positive 16k-step quality evidence. Proposed first candidate:
+   Muon LR 0.003. **September 24 clarification:** our scaling is PyTorch's
+   supported `match_rms_adamw` convention and compensates per-entry update RMS
+   for matrix size. The 6.79× conversion is not an optimal-LR derivation; see
+   the [current explanation](../ascend_pretraining_0924.md#selected-model-and-optimizer-for-cleanup).
 
 2. **The conditioning-update mechanism is not yet checked after branch norm.**
    The [H200 replay](../h200_spike_root_cause_0924.md) causally isolated the
