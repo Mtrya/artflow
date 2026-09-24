@@ -1,7 +1,0 @@
-# Layer after reference.toml. Same checkpoint, panel and data order; adjust
-# both optimizer rates together to test the proposed combined intervention.
-[optim]
-muon_lr = 0.003
-learning_rate = 1e-4
-start_learning_rate = 3.3333333333333333e-6
-min_learning_rate = 5e-6

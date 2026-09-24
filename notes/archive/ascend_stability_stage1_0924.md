@@ -1,5 +1,8 @@
 # Ascend stability, Stage 1 — 2026-09-24
 
+Completed at 20:39 CST. Current work and the selected configuration live in
+[the Ascend pretraining plan](../ascend_pretraining_0924.md).
+
 The user set the sequence: **stability → repository/config/docs cleanup →
 infrastructure pass → hero**. This stage establishes a credible stable model
 and configuration through short informative experiments. A successful probe
@@ -29,7 +32,9 @@ represent the complete training distribution.
 The conditioning counterfactual holds the **updated trunk fixed**. It replaces
 the conditioning vector with its pre-update value, then with old + 2×actual
 displacement. It is a local response measurement, not a universal spike
-predictor or a deployed optimizer safeguard. All probes are detached, eager,
+predictor or a deployed optimizer safeguard. The gain is a dimension-dependent
+RMS ratio, not a Jacobian bound; a value below one is not a stability criterion.
+All probes are detached, eager,
 and outside DDP; gradients, optimizer state and training RNG must be unchanged.
 Per-layer/tensor detail goes to `stability.jsonl`; a smaller summary goes to
 SwanLab. `training_metrics.jsonl` retains every update and evaluation independent
@@ -130,12 +135,11 @@ Source archive SHA-256:
 (70-file manifest verified at startup). Run directories:
 `ascend-stability-0924-reference` and `ascend-stability-0924-calibrated`.
 
-## Fresh combined-recipe check (running; launched 19:47 CST)
+## Fresh combined-recipe check (completed 20:39 CST)
 
-Question: does a fresh model with the combined choices learn while maintaining
-small functional conditioning-update responses through early training at peak
-LR? The continuation cannot answer this initialization question. Its midpoint
-results justified starting this bounded check while its final 500 updates ran.
+Question: does the combined recipe learn from random initialization while
+maintaining small functional conditioning-update responses at peak LR?
+The continuation cannot answer this initialization question.
 
 - Branch norm on, conditioning-input norm off, timestep factor **1000**.
 - Muon **0.003**, auxiliary AdamW **1e-4**, Muon decay **0.01**.
@@ -146,21 +150,91 @@ results justified starting this bounded check while its final 500 updates ran.
   The horizon also governs caption progression, so this is not an exact A/B
   against the old 200k-horizon probe.
 - Same saved diagnostic inputs, cadence 100; live/EMA evaluation every 500 on
-  the same 147 examples. No spike skipping; coordinated nonfinite guard retained.
-  Checkpoint every 500, latest two retained. No continuation beyond 2000.
-- Initial live/EMA loss **1.98811152**. Through step **1200**, all updates applied,
-  maximum gradient 1.37057 during early learning (ordinary clipping, no skips);
-  latest sampled conditioning loss effect at most .00012517. EMA/live loss:
-  step 500 **.91275436/.92416462**; step 1000 **.88123242/.89200708**.
-  Too early to judge the final recipe.
+  the same 147 examples. Spike skipping disabled, nonfinite guard retained.
+  Checkpoint every 500, latest two retained.
 
-Job **`ascend-stability-fresh-0924`**, HIGH priority, on a second 16-card node.
-The original job completed and released its allocation. Fresh source SHA-256:
+**All 2000 updates applied, zero skipped updates.** All 2000 gradient records
+were collected in order and all 21 observations have the same panel identifier.
+There were 31 ordinary clipping events during the first 200 warmup steps and
+**none after warmup**.
+
+| Updates | Median gradient norm | Maximum gradient norm |
+|---|---:|---:|
+| 1–200 | .66555 | 1.37057 |
+| 201–500 | .37754 | .86745 |
+| 501–1000 | .24630 | .52087 |
+| 1001–1500 | .19618 | .46816 |
+| 1501–2000 | .16420 | .40657 |
+
+| Step | EMA evaluation loss | Live evaluation loss |
+|---|---:|---:|
+| 0 | 1.98811152 | 1.98811152 |
+| 500 | .91275436 | .92416462 |
+| 1000 | .88123242 | .89200708 |
+| 1500 | .86733491 | .87725872 |
+| 2000 | **.85689331** | **.86698182** |
+
+The earlier branch-norm, factor-1, higher-LR checkpoint at step 2000 measured
+**.85988654 EMA / .87153464 live** on this same evaluation definition. The
+combined fresh recipe is slightly better at this training age; this supports
+retaining it without a learning-regression concern. It does not isolate which
+change caused the improvement or predict the eventual quality ranking.
+
+Across all sampled updates, the largest absolute conditioning loss effect is
+**.00300884**, and the largest absolute second finite difference is **.00124812**.
+At step 2000 the largest effect is **.00121850**, with conditioning displacement
+RMS **.01941119**, induced prediction change RMS **.01132298**, and gain **.58332**.
+The last ten sampled gains range .453–.732 without a sustained rise (the full
+trajectory, rather than the inequality gain < 1, informs this decision).
+
+Endpoint feature statistics: condition RMS **3.0380**, caption variation/RMS
+**.03476**, time variation/RMS **.15812**, hidden negative-tail fraction **.26071**.
+Branch-norm affine gain max is **1.01898**, gate RMS max **17.08185**, residual
+RMS max **121.11676**. The first observation from the previous branch-norm
+checkpoint has condition RMS 1.0407, caption/time ratios .02178/.09792 and
+negative-tail fraction .66146. Different conditioning scales must be read
+alongside retained variation and the measured output/loss response.
+
+**Growth is not eliminated and is not the acceptance criterion.** Fresh-run
+sampled attention/FFN/modulation matrix RMS ends at .07868/.09073/.03508 and
+is still increasing, predominantly through outward radial updates. The final
+conditioning-weight shared shift is .010038 RMS versus .000008721 for its
+bias update—over 1000 times larger—yet the measured loss effect is small.
+Thus neither increasing weight norms nor this shift-to-bias ratio independently
+identifies a spike. The decision rests on functional update response, complete
+gradient history, actual updates and learning.
+
+Job **`ascend-stability-fresh-0924`** succeeded, with a validated step-2000
+checkpoint, 21 observations, **1,879,815 samples**, **656.72 steady samples/s**,
+and **37.7 GiB** peak allocated memory. The two jobs together occupied about
+**28.53 NPU-hours**, including startup and teardown; all allocations are released.
+Throughput differences across these runs are not an isolated optimization A/B.
+
+Fresh source SHA-256:
 `935c8d6129501c8a09f32e5b45e8da51e5aef69892eeb6cee4645d3c3bb684a4`
-(71-file manifest verified). Repeatable definition:
-`scripts/ascend/stability_probe.sh fresh`; `fresh.toml` layered after the
-reference and calibrated configs in `configs/experiments/stability_0924/`.
-Output: `ascend-stability-0924-fresh`.
+(71-file manifest verified). Historical launcher/config definition is in commit
+`d8f2840`: `scripts/ascend/stability_probe.sh fresh`, with `fresh.toml`
+layered after reference and calibrated configs. Remote immutable source is
+`repo-stability-0924-v2`; output is `runs/ascend-stability-0924-fresh` under
+the canonical Ascend root in INSPIRE.md. Raw `stability.jsonl`,
+`training_metrics.jsonl` and `stability_inputs.pt` remain with each run.
+
+## Stage-1 decision
+
+**Close the short stability stage and proceed to repository/config/docs cleanup.**
+Select branch norm, factor 1000, no conditioning-input norm, Muon .003,
+auxiliary AdamW 1e-4 and Muon decay .01. The model retains h1152, 16 heads,
+one double-stream plus 24 single-stream blocks; branch norms bring the count
+to **532,766,716 parameters**. Double-stream modulation is none, single-stream
+modulation is layer, matching the actual tested configuration.
+
+No additional isolated normalization/decay sweep or separate long validation is
+required by these results. This is a credible short-run recipe, not proof of
+indefinite spike prevention. The mechanism panel is small and short-caption-only;
+the later infrastructure pass must exercise the real caption/bucket workload,
+resume path and resolution transitions. Production still requires the user's
+cleanup and infrastructure stages. The hero remains fresh, 600k steps, 20k
+warmup, bias-corrected EMA, and the previously requested dataset mixture.
 
 ## Checkpoint correctness and verification
 
@@ -184,4 +258,4 @@ Frequent shell opens hit a gateway websocket limit; access recovered after a
 cooldown. Prefer platform logs for frequent checks and sparse full snapshots.
 Automatic approval review rejected extracting a credential from a historical
 job command; the submitted jobs read/transmit no credential. No new hero has
-been launched. **Stage 1 remains open pending the fresh experiment.**
+been launched. **Stage 1 is closed; cleanup is next.**

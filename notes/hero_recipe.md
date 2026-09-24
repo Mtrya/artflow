@@ -1,6 +1,14 @@
 # Hero run recipe
 
-Last updated: 2026-09-24. Current configuration for the pre-NFT hero run.
+Last updated: 2026-09-24. Historical hero configuration and launch records.
+
+**Current direction:** pure Ascend pretraining. The next hero follows four
+stages: stability experiments with internal telemetry, repository/config/docs
+cleanup, an infrastructure pass, then hero. The short stability stage has passed;
+cleanup is next. The H200 launch
+authorization and configuration below are historical. The replacement Ascend
+model/optimizer recipe is selected, while production configuration and infrastructure
+checks remain. See [the current plan](ascend_pretraining_0924.md).
 1024p is definitively dropped: the complete pre-NFT path is 256p → 640p → 896p
 with a 75:20:5 optimizer-step split. All scientific recipe decisions are frozen.
 The user authorized a **fresh 4×H200 hero after qualification** on 2026-09-24:
@@ -40,6 +48,7 @@ document the trained model's strengths and limitations.
 | EMA | **Bias-corrected warmup**, `decay_t = min(0.9999, (1+t)/(10+t))`, updated every optimizer step; full resume retains EMA weights and global t |
 | Timestep shift | Noise→data convention: `t' = t / (s - (s-1)*t)`, `s=max(1,sqrt(image_tokens/256))` |
 | DDP | Accumulation-boundary gradient synchronization; no per-micro allreduce |
+| Grad-spike skip | Historical optional guard at pre-clip norm > 10. **Disabled in the September 24 stability experiments**; repeated skips can hide a learning stall and do not establish model health. |
 | Activation checkpointing | Disabled; validate full-stream memory with the selected plans |
 | Data | Fixed eligible pools and per-stage mixtures below |
 
@@ -302,6 +311,21 @@ mixture, optimizer, curriculum, or capability-forecast experiment is required.
    updates and tested with two CPU ranks; validate it on the final eight-GPU stack.
    Verify the monitoring/review and resume workflows, checkpoint
    retention, storage capacity and bounded recovery allowances before launch.
+
+6. **Checkpoint round-trip for the double-stream topology** (bug found and fixed
+   2026-09-24). The hero topology is 1 double-stream + 24 single-stream blocks,
+   and both serialisation paths disagreed with it: `get_config()` read
+   `attn.qkv` off block 0, which raises `AttributeError` for the double-stream
+   attention (it splits QKV into `qkv_img`/`qkv_txt`), and both `get_config()`
+   and `_infer_config_from_state_dict()` counted double-stream blocks by looking
+   for `txt_mlp`, a name present in neither the module (`mlp_img`/`mlp_txt`) nor
+   the state dict (`mlp_txt`), so the depth always serialised as 0. A hero
+   configuration could therefore describe the checkpoint as 0 double + 25 single;
+   raw state-dict tensors were not changed by this metadata bug. Fixed to
+   `isinstance(..., DoubleStreamDiTBlock)` / `mlp_txt`; pinned by
+   `tests/test_config_serialization.py`. `get_config()` still omits
+   `txt_in_features` and the two modulation strategies, so a rebuild from
+   `config.json` alone is not yet self-sufficient — no current caller does that.
 
 Operational checks: use the frozen 48-image bilingual short/long-prompt panel
 in [stage4_eval_freeze.md](stage4_eval_freeze.md), covering full-body figures,

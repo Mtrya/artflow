@@ -1,13 +1,14 @@
 # Remaining stability work after branch normalization — 2026-09-24
 
-This is an assessment and proposed recipe, not a launch record. Apply the
-[user's experiment policy](ascend_pretraining_0924.md): maximize useful decisions
+Archived pre-experiment assessment. The [completed Stage-1 evidence](ascend_stability_stage1_0924.md)
+records the resulting decision. Apply the
+[user's experiment policy](../ascend_pretraining_0924.md): maximize useful decisions
 per unit of compute, combine justified changes, and use the hero itself for
 longer validation.
 
 ## What is established
 
-The accumulation-matched 2k-step [probe](muon_weight_growth_0924.md) improves
+The accumulation-matched 2k-step [probe](../muon_weight_growth_0924.md) improves
 evaluation loss from 0.92154 to 0.91259 and last-block activation RMS from
 12001 to 73.58. This supports adopting `branch_norm`. It does not measure
 the new model's response to an actual conditioning update or its future spike
@@ -30,7 +31,7 @@ rate. These activation probes use four captions at fixed `t=0.5`.
    positive 16k-step quality evidence. Proposed first candidate: Muon LR 0.003.
 
 2. **The conditioning-update mechanism is not yet checked after branch norm.**
-   The [H200 replay](h200_spike_root_cause_0924.md) causally isolated the
+   The [H200 replay](../h200_spike_root_cause_0924.md) causally isolated the
    shared displacement `delta_W @ mean(h)` from the final conditioning linear
    layer. Branch norm is before the learned gates, so gates and affine norm
    gains remain possible amplification paths. Aggregate modulation RMS rises
@@ -68,7 +69,7 @@ rate. These activation probes use four captions at fixed `t=0.5`.
 The user's subsequent clarification sets four stages: stability experiments,
 repository/config/docs cleanup, an infrastructure pass, and then the hero.
 The replay below is an initial diagnostic, not a direct hero-launch gate.
-See the [current Stage-1 contract](ascend_stability_stage1.md).
+See the [completed Stage-1 experiment record](ascend_stability_stage1_0924.md).
 
 Reuse a retained branch-norm checkpoint and optimizer state for a bounded
 update replay. On a few representative fixed batches/timesteps, compare the

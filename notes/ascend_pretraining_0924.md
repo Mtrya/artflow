@@ -25,9 +25,10 @@ Current sequence, explicitly clarified by the user:
 3. Run an infrastructure pass on that model and configuration.
 4. Launch the hero.
 
-We are in **Stage 1**. A successful short check does not authorize bypassing
-Stages 2–3 or imply an immediate hero launch. See the
-[Stage-1 experiment and telemetry contract](ascend_stability_stage1.md).
+**Stage 1 closed at 20:39 CST on September 24. Repository/config/docs cleanup
+is next.** The completed short checks do not authorize bypassing cleanup and
+the infrastructure pass. See the
+[archived Stage-1 evidence](archive/ascend_stability_stage1_0924.md).
 Optimize for useful decisions per unit of time and compute; do not require a
 clean A/B for every candidate.
 
@@ -78,14 +79,33 @@ is running and no useful independent work remains, monitor sleep is authorized.
   establishing that any single internal metric predicts future spikes.
   The user has handed further work to this agent; the previous experiment
   agent is finished. No additional long-validation requirement applies.
-- The subsequent [stability review](ascend_stability_review_0924.md) separates
+- The subsequent [stability review](archive/ascend_stability_review_0924.md) separates
   remaining functional risks from raw norm/saturation statistics, checks Muon
   LR conventions against primary sources, and informed the
-  [instrumented Stage-1 experiments](ascend_stability_stage1.md). Two 1000-update
+  [instrumented Stage-1 experiments](archive/ascend_stability_stage1_0924.md). Two 1000-update
   continuations have completed: calibrated rates reduce sampled conditioning
   update effects and improve live loss, with slightly worse EMA loss. A fresh
-  2000-step combined-recipe check is running. These are stability experiments,
+  2000-step combined-recipe check has now completed successfully. These are stability experiments,
   not a hero launch or authorization to skip cleanup and the infrastructure pass.
+
+## Selected model and optimizer for cleanup
+
+- Branch normalization on; conditioning-input normalization off; timestep factor 1000.
+- Muon LR 0.003, auxiliary AdamW LR 1e-4, Muon decay 0.01; gradient clip 1.0.
+- h1152, 16 heads, 1 double-stream + 24 single-stream blocks: **532,766,716 parameters**.
+  Double-stream modulation none, single-stream modulation layer, as actually tested.
+- Bias-corrected EMA retained. Fresh hero remains 600k steps with 20k warmup;
+  the short check's 200-step warmup is not the production schedule.
+
+The fresh check applied all 2000 updates, with no post-warmup clipping. Its last
+500 steps have maximum gradient norm 0.40657. Final EMA/live loss is
+**0.85689331/0.86698182**, versus **0.85988654/0.87153464** for the earlier
+branch-norm checkpoint at the same training age and on the same evaluation panel.
+The largest sampled conditioning loss effect over the fresh run is 0.00300884.
+Raw weight growth and large shared conditioning shifts still exist; they are
+not sufficient failure criteria. These results support moving to cleanup,
+not a claim that long-run spike prevention is proven. Both jobs have succeeded
+and released their allocations. No new hero was launched by this stage.
 
 ## Time resolution and normalization address different properties
 
