@@ -175,7 +175,8 @@ def test_fast_encode_text_matches_reference():
     assert torch.equal(fast_pooled, ref_pooled)
 
 
-def test_training_text_stops_at_selected_layer_and_preserves_features():
+@pytest.mark.parametrize("exit_layer", [1, 2, 4])
+def test_training_text_stops_at_selected_layer_and_preserves_features(exit_layer):
     from transformers import Qwen3Config, Qwen3ForCausalLM
     from src.pretrain.train import encode_training_text
     from src.dataset.sampler import pad_text_to_hi
@@ -188,7 +189,7 @@ def test_training_text_stops_at_selected_layer_and_preserves_features():
     tokenizer = _StubTokenizer([DROP_IDX + 12, DROP_IDX + 3, DROP_IDX - 1])
     captions = ["long", "short", ""]
     ref, ref_mask, ref_pool = encode_text(
-        captions, model, tokenizer, pooling=True, exit_layer=2,
+        captions, model, tokenizer, pooling=True, exit_layer=exit_layer,
         exit_mode="full_forward_slice",
     )
     ref, ref_mask = pad_text_to_hi(ref, ref_mask, 16)
@@ -203,12 +204,12 @@ def test_training_text_stops_at_selected_layer_and_preserves_features():
                for i, layer in enumerate(model.model.layers)]
     try:
         actual, mask, pooled = encode_training_text(
-            captions, model, tokenizer, exit_layer=2, bucket_hi=16,
+            captions, model, tokenizer, exit_layer=exit_layer, bucket_hi=16,
         )
     finally:
         for handle in handles:
             handle.remove()
-    assert calls == [1, 1, 0, 0]
+    assert calls == [1] * exit_layer + [0] * (4 - exit_layer)
     assert actual.shape == (3, 16, 16)
     _assert_same_retained(actual, mask, ref, ref_mask)
     torch.testing.assert_close(pooled, ref_pool, rtol=0, atol=0)

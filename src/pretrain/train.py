@@ -932,9 +932,9 @@ def main():
         selected = list(captions_list)
 
         if args.caption_dropout_prob > 0:
+            # Each sample drops independently, including a whole micro-batch.
+            # Empty prompts retain chat suffix tokens in the text encoder.
             drop_mask = torch.rand(len(selected)) < args.caption_dropout_prob
-            if bool(drop_mask.all()):
-                drop_mask[torch.randint(len(selected), (1,)).item()] = False
             for i, drop in enumerate(drop_mask.tolist()):
                 if drop:
                     selected[i] = ""
