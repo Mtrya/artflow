@@ -1,8 +1,8 @@
 # Complete Ascend pretraining run. All tunables are required; no overlays.
 # Relative storage_root is resolved from this file. Dataset/model/output paths
 # are relative to storage_root; prompts_file is relative to this file.
-# Bucket plans and accumulation below are candidates for the infrastructure pass.
-# The referenced plans must be measured and installed before launching training.
+# The 256p bucket plan and accumulation are qualified on 16 Ascend 910B cards.
+# Later-stage plans must be measured and installed before those stages launch.
 
 [paths]
 storage_root = ".."
@@ -14,7 +14,9 @@ hidden_size = 1152
 num_heads = 16
 double_stream_depth = 1
 single_stream_depth = 24
-mlp_ratio = 2.67
+# 8/3 gives a 3072-wide gated FFN at hidden size 1152. Aligned matrix
+# dimensions improve Ascend training throughput with negligible capacity loss.
+mlp_ratio = 2.6666666666666665
 
 [text_encoder]
 path = "models/Qwen3-0.6B"
@@ -77,7 +79,7 @@ stability_interval = 100
 [[stages]]
 name = "256p"
 end_step = 450000
-gradient_accumulation_steps = 2
+gradient_accumulation_steps = 1
 bucket_plan = "bucket_plans/ascend/hero-256p-k20.json"
 eval_dataset_path = "precomputed_dataset/light-eval@256p"
 grid_steps = [450000]

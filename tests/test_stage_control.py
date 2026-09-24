@@ -33,15 +33,25 @@ def test_training_loader_recreation_preserves_checkpoint_rng(workers):
                       if isinstance(node, ast.Assign)
                       and any(isinstance(target, ast.Name) and target.id == "dataloader"
                               for target in node.targets))
+    worker_setup = [
+        node for node in tree.body[0].body
+        if (isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name)
+                    and target.id == "dataloader_worker_kwargs"
+                    for target in node.targets))
+        or (isinstance(node, ast.If)
+            and ast.unparse(node.test) == "args.num_workers > 0")
+    ]
     code = compile(ast.fix_missing_locations(ast.Module(
-        body=[copy.deepcopy(assignment)], type_ignores=[])), "<training loader>", "exec")
+        body=copy.deepcopy([*worker_setup, assignment]), type_ignores=[])),
+        "<training loader>", "exec")
     namespace = dict(
         DataLoader=torch.utils.data.DataLoader, torch=torch,
         row_dataset=torch.arange(8), sampler=[[0, 1], [2, 3], [4, 5], [6, 7]],
         row_length_collate_fn=torch.utils.data.default_collate,
         collate_fn=torch.utils.data.default_collate,
-        args=SimpleNamespace(seed=42), accelerator=SimpleNamespace(process_index=3),
-        dataloader_worker_kwargs=dict(num_workers=workers),
+        args=SimpleNamespace(seed=42, num_workers=workers),
+        accelerator=SimpleNamespace(process_index=3),
     )
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(987)
@@ -49,12 +59,30 @@ def test_training_loader_recreation_preserves_checkpoint_rng(workers):
         expected_dropout_draws = torch.rand(16)
         for _ in range(2):  # New process/iterator after restoring the same RNG.
             torch.set_rng_state(checkpoint_rng)
-            exec(code, namespace)
-            loader = namespace["dataloader"]
-            assert loader.generator.initial_seed() == 45
-            assert torch.equal(torch.cat(list(loader)), torch.arange(8))
-            assert torch.equal(torch.get_rng_state(), checkpoint_rng)
-            assert torch.equal(torch.rand(16), expected_dropout_draws)
+            # A background subprocess launch can have such a CLOEXEC pipe
+            # open while workers start. Forked persistent workers keep its
+            # writer alive without exec, preventing the parent's EOF forever.
+            read_fd, write_fd = os.pipe()
+            os.set_blocking(read_fd, False)
+            loader = None
+            try:
+                exec(code, namespace)
+                loader = namespace["dataloader"]
+                assert loader.generator.initial_seed() == 45
+                assert torch.equal(torch.cat(list(loader)), torch.arange(8))
+                os.close(write_fd)
+                write_fd = None
+                # Workers are still alive here. No worker may retain the
+                # transient write descriptor (EAGAIN would reveal the leak).
+                assert os.read(read_fd, 1) == b""
+                assert torch.equal(torch.get_rng_state(), checkpoint_rng)
+                assert torch.equal(torch.rand(16), expected_dropout_draws)
+            finally:
+                if loader is not None and loader._iterator is not None:
+                    loader._iterator._shutdown_workers()
+                os.close(read_fd)
+                if write_fd is not None:
+                    os.close(write_fd)
 
 
 @pytest.mark.parametrize("total", [400000, 420000])

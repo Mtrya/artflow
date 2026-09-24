@@ -23,10 +23,12 @@ class Euler(Solver):
     def step(
         self, x: torch.Tensor, t: float, dt: float, model_fn: Callable
     ) -> torch.Tensor:
-        # x is current state at time t
-        # model_fn(x, t) returns velocity v(x, t)
-        t_tensor = torch.tensor(t, device=x.device, dtype=x.dtype).expand(x.shape[0])
-        v = model_fn(x, t_tensor)
+        # Accumulate outside the model's mixed precision: small increments
+        # disappear in BF16, and rounded times corrupt high-frequency features.
+        if x.dtype in (torch.float16, torch.bfloat16):
+            x = x.float()
+        t_tensor = torch.tensor(t, device=x.device, dtype=torch.float32).expand(x.shape[0])
+        v = model_fn(x, t_tensor).to(x.dtype)
         return x + v * dt
 
 
@@ -36,15 +38,17 @@ class Heun(Solver):
     def step(
         self, x: torch.Tensor, t: float, dt: float, model_fn: Callable
     ) -> torch.Tensor:
-        t_tensor = torch.tensor(t, device=x.device, dtype=x.dtype).expand(x.shape[0])
-        v1 = model_fn(x, t_tensor)
+        if x.dtype in (torch.float16, torch.bfloat16):
+            x = x.float()
+        t_tensor = torch.tensor(t, device=x.device, dtype=torch.float32).expand(x.shape[0])
+        v1 = model_fn(x, t_tensor).to(x.dtype)
 
         x_guess = x + v1 * dt
         t_next = t + dt
-        t_next_tensor = torch.tensor(t_next, device=x.device, dtype=x.dtype).expand(
+        t_next_tensor = torch.tensor(t_next, device=x.device, dtype=torch.float32).expand(
             x.shape[0]
         )
-        v2 = model_fn(x_guess, t_next_tensor)
+        v2 = model_fn(x_guess, t_next_tensor).to(x.dtype)
 
         return x + 0.5 * (v1 + v2) * dt
 
@@ -62,7 +66,10 @@ def sample_ode(
     time_shift: Optional[float] = None,
     progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, List[torch.Tensor]]]:
-    """Sample using ODE solver.
+    """Sample with FP32 times and at least FP32 integration state.
+
+    The model may use autocast and return lower-precision velocities. Cast the
+    final samples to the decoder's dtype at the decode boundary.
 
     Args:
         time_shift: If provided, the uniform timestep schedule is shifted via
@@ -87,9 +94,11 @@ def sample_ode(
 
     target_device = torch.device(device) if device is not None else z0.device
     x = z0.to(target_device)
+    if x.dtype in (torch.float16, torch.bfloat16):
+        x = x.float()
 
     # Build shifted timestep schedule
-    uniform_ts = torch.linspace(t_start, t_end, steps + 1)
+    uniform_ts = torch.linspace(t_start, t_end, steps + 1, dtype=torch.float32)
     shifted_ts = [shift_timesteps(u, z0, time_shift=time_shift).item() for u in uniform_ts]
 
     intermediates = []

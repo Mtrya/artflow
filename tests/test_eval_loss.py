@@ -563,6 +563,43 @@ def test_probe_restores_training_mode(probe_env):
     assert model.training
 
 
+def test_probe_trims_padding_without_changing_model_predictions(probe_env):
+    model, kwargs = probe_env
+    probe = EvalLossProbe(**kwargs)
+    width = 9
+    probe.txt = torch.randn(len(probe.latents), width, 1024)
+    probe.txt_mask = torch.zeros(len(probe.latents), width, dtype=torch.long)
+    for index, length in zip(probe.groups[0], (2, 4, 0, 1)):
+        probe.txt_mask[index, :length] = 1
+    # The second latent-shape batch has entirely empty captions. Wake the
+    # model's gates and output projection so this checks actual attention.
+    with torch.no_grad():
+        model.final_layer[1].weight.normal_(std=0.02)
+        for block in model.blocks:
+            block.modulation[-1].bias.fill_(0.1)
+
+    class CheckPredictions(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = model
+            self.widths = []
+
+        def forward(self, z_t, t, txt, txt_pooled, txt_mask):
+            self.widths.append(txt.shape[1])
+            actual = self.model(z_t, t, txt, txt_pooled, txt_mask)
+            missing = width - txt.shape[1]
+            padded = torch.nn.functional.pad(txt, (0, 0, 0, missing), value=123)
+            mask = torch.nn.functional.pad(txt_mask, (0, missing))
+            expected = self.model(z_t, t, padded, txt_pooled, mask)
+            torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+            return actual
+
+    checked = CheckPredictions()
+    metrics = probe.evaluate(checked)
+    assert checked.widths == [4] * 4 + [1] * 4
+    assert np.isfinite(metrics["eval/loss"])
+
+
 def test_encode_caption_chunks(monkeypatch):
     """Chunked pre-encoding keeps row order and re-pads to the widest chunk."""
     calls = []

@@ -23,8 +23,11 @@ priors and short experiments that change decisions. The current sequence is
 **stability experiments and telemetry → repository/config/documentation cleanup
 → infrastructure pass on the selected recipe → hero**. The short stability
 stage passed on September 24; repository/config/docs cleanup passed local
-checks on September 25. Infrastructure qualification is next. The
-[evidence and selected recipe](archive/ascend_stability_stage1_0924.md) do not
+checks on September 25. Infrastructure optimization and qualification is next:
+target approximately 2× speedup over the whole curriculum, with focused
+experiments and an evidence-driven stopping rule, not a fixed time or compute
+budget. See the [agreed infra goal and measurement policy](infra_pass.md#goal-and-stopping-rule--agreed-september-25-2026).
+The [evidence and selected recipe](archive/ascend_stability_stage1_0924.md) do not
 trigger an immediate hero launch. Do not require
 an exhaustive candidate A/B matrix or a separate long-validation run.
 
@@ -59,7 +62,7 @@ experiments. Stage-2 arms below implement column C.
 | Objective | rectified flow + logit-normal(0,1) + resolution time shift | SD3 (Esser et al. 2024); FLUX/Qwen-Image follow |
 | AdaLN-zero init | on | DiT; universal, already in code |
 | QK-RMSNorm | on | SD3/FLUX and everything since; already in code |
-| FFN | gated SiLU, ratio 2.67 (iso-param ≈ standard 4.0) | universal post-2024 |
+| FFN | gated SiLU, ratio 8/3 (width 3072 at h1152; aligned September 25) | measured Ascend gain; see [infra pass](infra_pass.md) |
 | Patch size | 2 | DiT-XL/2, SD3, Qwen-Image |
 | Pooled text in AdaLN | **fused** (old runs used `pure` — flip default for all stage-2 arms) | SD3 (pooled CLIP), FLUX (pooled T5), Qwen-Image |
 | CFG caption dropout | 0.1 | convention |

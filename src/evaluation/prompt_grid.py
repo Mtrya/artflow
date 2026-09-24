@@ -330,7 +330,9 @@ def run_prompt_grid_eval(
         # shortened grid caption visible in SwanLab.
         with open(os.path.join(save_path, "samples", f"panel_step_{current_step:06d}.json"), "w") as handle:
             json.dump({"step": current_step, "solver": "euler", "ode_steps": ode_steps,
-                       "cfg_scale": 1.0, "precision": "bf16", "exit_layer": exit_layer,
+                       "cfg_scale": 1.0, "precision": "bf16",
+                       "solver_precision": "fp32", "timestep_precision": "fp32",
+                       "exit_layer": exit_layer,
                        "weights": weights, "pooling": pooling,
                        "eval_dataset_path": eval_dataset_path,
                        "prompts": [{**p, "seed": resolved_prompt_seed(p),

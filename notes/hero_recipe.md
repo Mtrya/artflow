@@ -9,7 +9,7 @@ source. Stage selection and checkpoint resume are operations.
 ## Selected settings
 
 - Architecture `artflow-v2`: h1152, 16 heads, 1 double-stream + 24 single-stream
-  blocks, gated MLP expansion 2.67. Branch RMS normalization, fused pooled-text
+  blocks, gated MLP expansion 8/3 (width 3072). Branch RMS normalization, fused pooled-text
   conditioning, centered RoPE, and factor-1000 timestep features are native.
   Double-stream modulation is independent; single-stream modulation is shared
   within each block. Conditioning-input LayerNorm is absent.
@@ -34,11 +34,17 @@ See [the stability evidence](archive/ascend_stability_stage1_0924.md) and
 [current plan](ascend_pretraining_0924.md). This is a credible stability
 candidate, not a claim of optimality or long-run stability.
 
-The run file names new Ascend bucket artifacts. They are **not installed or
-qualified yet**. Accumulations 2/4/5 are explicit candidates for the infra
-pass, not measured production choices at all three resolutions. Startup fails
-if the selected plan is missing. Qualify the plans and set their final
-accumulations before launching the hero.
+The 256p plan is installed and qualified on 16×910B2C, with micro-batches 8–72
+and accumulation 1. The real-workload and padded 2048-token tail probes peaked
+at 52.61 and 49.10 GiB allocated, respectively. September 25's FFN alignment
+comparison measured 843.29 versus 765.34 samples/s with identical sample
+identities: 10.19% faster for 0.05% fewer total parameters. See the
+[infra evidence](infra_pass.md) for conditions and limits.
+
+Later-stage plans remain absent; accumulations 4/5 are candidates. These plans,
+accumulation settings, and transitions must be qualified before those stages
+run; they do not gate this pass or the 256p launch. Startup fails if the selected
+plan is missing. The infrastructure pass is ongoing; no hero is launched.
 
 ## Launch and recovery
 

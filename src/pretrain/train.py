@@ -83,6 +83,21 @@ def update_ema_model(
     update_ema(ema_model, current_model, decay, foreach=foreach)
 
 
+def encode_training_text(captions, text_encoder, tokenizer, *, exit_layer, bucket_hi):
+    """Stop the frozen encoder at the selected layer and pad to the batch bucket."""
+    txt, mask, pooled = encode_text(
+        captions,
+        text_encoder,
+        tokenizer,
+        pooling=True,
+        exit_layer=exit_layer,
+        exit_mode="stop_at_layer",
+        fast_slice=True,
+    )
+    txt, mask = pad_text_to_hi(txt, mask, bucket_hi)
+    return txt, mask, pooled
+
+
 def set_caption_curriculum(
     sampler: RowLengthQueueBatchSampler,
     *,
@@ -491,6 +506,10 @@ def main():
             "num_workers": args.num_workers,
             "prefetch_factor": 4,
             "persistent_workers": True,
+            # Fork can inherit a background monitor's transient subprocess
+            # pipe, keeping its writer open and deadlocking tracker shutdown.
+            # Spawn also avoids inheriting an initialized NPU runtime.
+            "multiprocessing_context": "spawn",
         }
 
     # One length-metadata sidecar per mix entry, derived from the entry's own
@@ -736,6 +755,7 @@ def main():
             vae_mean=vae_mean,
             vae_std=vae_std,
             num_samples=args.eval_loss_samples,
+            batch_size=args.eval_batch_size,
             device=accelerator.device,
         )
         accelerator.print(f"Eval-loss probe ready ({len(eval_probe.latents)} samples)")
@@ -774,6 +794,7 @@ def main():
         evaluate_grid()
 
     def evaluate_loss_metrics(eval_model):
+        started = time.monotonic()
         metrics = eval_probe.evaluate(eval_model)
         if (
             args.stability_interval
@@ -787,6 +808,9 @@ def main():
                     for key, value in live.items()
                 }
             )
+        # Includes both EMA and live-model passes when stability telemetry is
+        # enabled. Each probe synchronizes when collecting per-sample losses.
+        metrics["perf/eval_seconds"] = time.monotonic() - started
         if args.stability_interval and accelerator.is_main_process:
             record_metrics(run_dir, global_step, metrics)
         return metrics
@@ -931,22 +955,6 @@ def main():
             sigma=args.logit_normal_sigma,
         )
         return latents, shift_timesteps(t, latents)
-
-    def encode_micro(batch, selected_captions, bucket_hi):
-        # The frozen encoder stops after text_encoder_exit_layer: stopping the
-        # forward at that layer was verified feature-identical to slicing a
-        # full forward's hidden states, and it skips the remaining layers.
-        txt, txt_mask, txt_pooled = encode_text(
-            selected_captions,
-            text_encoder,
-            tokenizer,
-            pooling=True,
-            exit_layer=args.text_encoder_exit_layer,
-            exit_mode="stop",
-            fast_slice=True,
-        )
-        txt, txt_mask = pad_text_to_hi(txt, txt_mask, bucket_hi)
-        return txt, txt_mask, txt_pooled
 
     # Per-optimizer-step breakdown (--step_breakdown): record device-event
     # pairs per segment per micro-batch, settle (sync + elapsed) once per
@@ -1189,8 +1197,12 @@ def main():
                 policy=policy_state,
                 loss_weights=micro_weights.values,
             )
-            txt, txt_mask, txt_pooled = encode_micro(
-                batch, selected_captions, int(host_meta["bucket_hi"])
+            txt, txt_mask, txt_pooled = encode_training_text(
+                selected_captions,
+                text_encoder,
+                tokenizer,
+                exit_layer=args.text_encoder_exit_layer,
+                bucket_hi=int(host_meta["bucket_hi"]),
             )
             if args.step_breakdown:
                 bd_mark("text")
@@ -1632,8 +1644,9 @@ def main():
 
     if infra_recorder is not None:
         infra_recorder.close()
-    accelerator.end_training()
+    # end_training destroys the process group; finish collective work first.
     accelerator.wait_for_everyone()
+    accelerator.end_training()
     accelerator.print("[training-complete]", flush=True)
 
 

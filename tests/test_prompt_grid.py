@@ -173,6 +173,8 @@ def test_scene_grid_layout_and_manifest(monkeypatch, tmp_path):
     assert "zh / short / seed=17" in media.call_args.kwargs["caption"]
     record = json.loads((tmp_path / "samples/panel_step_300000.json").read_text())
     assert (record["step"], record["ode_steps"], record["cfg_scale"], record["weights"]) == (300000, 50, 1.0, "ema")
+    assert record["precision"] == "bf16"
+    assert record["solver_precision"] == record["timestep_precision"] == "fp32"
     assert record["prompts"][0]["text"] == prompts[0]["text"]
 
 

@@ -18,6 +18,29 @@ except ImportError:
 _SDPA_BACKENDS = None
 
 
+class RMSNorm(nn.RMSNorm):
+    """Fuse Ascend normalization while retaining FP32 arithmetic and gains."""
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if (
+            x.device.type != "npu"
+            or self.weight is None
+            or len(self.normalized_shape) != 1
+            or x.dtype not in (torch.float16, torch.bfloat16, torch.float32)
+        ):
+            return super().forward(x)
+        import torch_npu
+
+        # PyTorch's mixed-dtype RMSNorm promotes the input to FP32 and applies
+        # the learned gain before casting back. Casting the gain to BF16 just
+        # to use a fused kernel would change that computation.
+        eps = self.eps if self.eps is not None else torch.finfo(x.dtype).eps
+        y, _ = torch_npu.npu_rms_norm(
+            x.float(), self.weight.float(), epsilon=eps
+        )
+        return y.to(x.dtype)
+
+
 def sdpa_with_pad_mask(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -463,10 +486,10 @@ class DoubleStreamAttention(nn.Module):
         self.qkv_img = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.qkv_txt = nn.Linear(dim, dim * 3, bias=qkv_bias)
 
-        self.q_norm_img = nn.RMSNorm(self.head_dim, eps=1e-6)
-        self.k_norm_img = nn.RMSNorm(self.head_dim, eps=1e-6)
-        self.q_norm_txt = nn.RMSNorm(self.head_dim, eps=1e-6)
-        self.k_norm_txt = nn.RMSNorm(self.head_dim, eps=1e-6)
+        self.q_norm_img = RMSNorm(self.head_dim, eps=1e-6)
+        self.k_norm_img = RMSNorm(self.head_dim, eps=1e-6)
+        self.q_norm_txt = RMSNorm(self.head_dim, eps=1e-6)
+        self.k_norm_txt = RMSNorm(self.head_dim, eps=1e-6)
 
         self.rope = MSRoPE(
             theta=rope_theta,
@@ -588,10 +611,10 @@ class DoubleStreamDiTBlock(nn.Module):
         self.mlp_ratio = mlp_ratio
 
         # Normalize branch outputs before learned residual gates.
-        self.norm_msa_img_out = nn.RMSNorm(dim, eps=1e-6)
-        self.norm_msa_txt_out = nn.RMSNorm(dim, eps=1e-6)
-        self.norm_mlp_img_out = nn.RMSNorm(dim, eps=1e-6)
-        self.norm_mlp_txt_out = nn.RMSNorm(dim, eps=1e-6)
+        self.norm_msa_img_out = RMSNorm(dim, eps=1e-6)
+        self.norm_msa_txt_out = RMSNorm(dim, eps=1e-6)
+        self.norm_mlp_img_out = RMSNorm(dim, eps=1e-6)
+        self.norm_mlp_txt_out = RMSNorm(dim, eps=1e-6)
 
         # Modulation
         self.modulation_img = nn.Sequential(
@@ -712,8 +735,8 @@ class SingleStreamAttention(nn.Module):
         self.real_rope = False
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.q_norm = nn.RMSNorm(self.head_dim, eps=1e-6)
-        self.k_norm = nn.RMSNorm(self.head_dim, eps=1e-6)
+        self.q_norm = RMSNorm(self.head_dim, eps=1e-6)
+        self.k_norm = RMSNorm(self.head_dim, eps=1e-6)
 
         self.rope = MSRoPE(
             theta=rope_theta,
@@ -833,8 +856,8 @@ class SingleStreamDiTBlock(nn.Module):
 
         # Normalize branch outputs before the residual add. Learned gates and
         # affine norm gains remain outside this control of branch amplitude.
-        self.norm_msa_out = nn.RMSNorm(dim, eps=1e-6)
-        self.norm_mlp_out = nn.RMSNorm(dim, eps=1e-6)
+        self.norm_msa_out = RMSNorm(dim, eps=1e-6)
+        self.norm_mlp_out = RMSNorm(dim, eps=1e-6)
 
         self.norm1 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
         self.attn = SingleStreamAttention(

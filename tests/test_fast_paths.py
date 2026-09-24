@@ -173,3 +173,43 @@ def test_fast_encode_text_matches_reference():
 
     _assert_same_retained(fast_emb, fast_mask, ref_emb, ref_mask)
     assert torch.equal(fast_pooled, ref_pooled)
+
+
+def test_training_text_stops_at_selected_layer_and_preserves_features():
+    from transformers import Qwen3Config, Qwen3ForCausalLM
+    from src.pretrain.train import encode_training_text
+    from src.dataset.sampler import pad_text_to_hi
+
+    model = Qwen3ForCausalLM(Qwen3Config(
+        vocab_size=256, hidden_size=16, intermediate_size=32,
+        num_hidden_layers=4, num_attention_heads=2, num_key_value_heads=1,
+        head_dim=8,
+    )).eval()
+    tokenizer = _StubTokenizer([DROP_IDX + 12, DROP_IDX + 3, DROP_IDX - 1])
+    captions = ["long", "short", ""]
+    ref, ref_mask, ref_pool = encode_text(
+        captions, model, tokenizer, pooling=True, exit_layer=2,
+        exit_mode="full_forward_slice",
+    )
+    ref, ref_mask = pad_text_to_hi(ref, ref_mask, 16)
+    calls = [0] * 4
+
+    def count_layer(index):
+        def hook(*_):
+            calls[index] += 1
+        return hook
+
+    handles = [layer.register_forward_hook(count_layer(i))
+               for i, layer in enumerate(model.model.layers)]
+    try:
+        actual, mask, pooled = encode_training_text(
+            captions, model, tokenizer, exit_layer=2, bucket_hi=16,
+        )
+    finally:
+        for handle in handles:
+            handle.remove()
+    assert calls == [1, 1, 0, 0]
+    assert actual.shape == (3, 16, 16)
+    _assert_same_retained(actual, mask, ref, ref_mask)
+    torch.testing.assert_close(pooled, ref_pool, rtol=0, atol=0)
+    assert not actual.requires_grad
