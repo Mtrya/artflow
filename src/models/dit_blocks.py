@@ -582,12 +582,22 @@ class DoubleStreamDiTBlock(nn.Module):
         rope_scaling_type: str = "none",
         rope_scaling_factor: float = 1.0,
         rope_centered: bool = False,
+        branch_norm: bool = False,
     ):
         super().__init__()
         self.dim = dim
         self.num_heads = num_heads
         self.mlp_ratio = mlp_ratio
         self.modulation_share = modulation_share
+
+        # Sandwich norm, one per stream x branch (see SingleStreamDiTBlock and
+        # notes/muon_weight_growth_0924.md).
+        self.branch_norm = branch_norm
+        if branch_norm:
+            self.norm_msa_img_out = nn.RMSNorm(dim, eps=1e-6)
+            self.norm_msa_txt_out = nn.RMSNorm(dim, eps=1e-6)
+            self.norm_mlp_img_out = nn.RMSNorm(dim, eps=1e-6)
+            self.norm_mlp_txt_out = nn.RMSNorm(dim, eps=1e-6)
 
         # Modulation
         if modulation_share == "none":
@@ -718,6 +728,9 @@ class DoubleStreamDiTBlock(nn.Module):
             rope_freqs=rope_freqs,
         )
 
+        if self.branch_norm:
+            img_attn = self.norm_msa_img_out(img_attn)
+            txt_attn = self.norm_msa_txt_out(txt_attn)
         img_tokens = img_tokens + gate_msa_img.unsqueeze(1) * img_attn
         txt_tokens = txt_tokens + gate_msa_txt.unsqueeze(1) * txt_attn
 
@@ -725,8 +738,13 @@ class DoubleStreamDiTBlock(nn.Module):
         img_norm = modulate(self.norm2_img(img_tokens), shift_mlp_img, scale_mlp_img)
         txt_norm = modulate(self.norm2_txt(txt_tokens), shift_mlp_txt, scale_mlp_txt)
 
-        img_tokens = img_tokens + gate_mlp_img.unsqueeze(1) * self.mlp_img(img_norm)
-        txt_tokens = txt_tokens + gate_mlp_txt.unsqueeze(1) * self.mlp_txt(txt_norm)
+        mlp_img_out = self.mlp_img(img_norm)
+        mlp_txt_out = self.mlp_txt(txt_norm)
+        if self.branch_norm:
+            mlp_img_out = self.norm_mlp_img_out(mlp_img_out)
+            mlp_txt_out = self.norm_mlp_txt_out(mlp_txt_out)
+        img_tokens = img_tokens + gate_mlp_img.unsqueeze(1) * mlp_img_out
+        txt_tokens = txt_tokens + gate_mlp_txt.unsqueeze(1) * mlp_txt_out
 
         return img_tokens, txt_tokens
 
@@ -877,6 +895,7 @@ class SingleStreamDiTBlock(nn.Module):
         rope_scaling_type: str = "none",
         rope_scaling_factor: float = 1.0,
         rope_centered: bool = False,
+        branch_norm: bool = False,
     ):
         super().__init__()
         self.dim = dim
@@ -899,6 +918,13 @@ class SingleStreamDiTBlock(nn.Module):
             raise ValueError(
                 f"Unknown modulation_share strategy for SingleStreamDiTBlock: {modulation_share}"
             )
+
+        # Normalize branch outputs before the residual add. Learned gates and
+        # affine norm gains remain outside this control of branch amplitude.
+        self.branch_norm = branch_norm
+        if branch_norm:
+            self.norm_msa_out = nn.RMSNorm(dim, eps=1e-6)
+            self.norm_mlp_out = nn.RMSNorm(dim, eps=1e-6)
 
         self.norm1 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
         self.attn = SingleStreamAttention(
@@ -971,11 +997,16 @@ class SingleStreamDiTBlock(nn.Module):
             attn_metadata=attn_metadata,
         )
 
+        if self.branch_norm:
+            x_attn = self.norm_msa_out(x_attn)
         x = x + gate_msa.unsqueeze(1) * x_attn
 
         # 2. MLP Block
         x_norm = modulate(self.norm2(x), shift_mlp, scale_mlp)
-        x = x + gate_mlp.unsqueeze(1) * self.mlp(x_norm)
+        mlp_out = self.mlp(x_norm)
+        if self.branch_norm:
+            mlp_out = self.norm_mlp_out(mlp_out)
+        x = x + gate_mlp.unsqueeze(1) * mlp_out
 
         img_tokens, txt_tokens = x.split([S_img, S_txt], dim=1)
 

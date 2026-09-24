@@ -60,6 +60,10 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
         rope_scaling_type: str = "none",
         rope_scaling_factor: float = 1.0,
         rope_centered_grid: bool = False,
+        # Ablation flags from the 2026-09-24 spike investigation
+        # (notes/muon_weight_growth_0924.md). Both default off = shipped recipe.
+        branch_norm: bool = False,
+        cond_norm: bool = False,
     ):
         super().__init__()
         self.patch_size = patch_size
@@ -68,6 +72,7 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
         self.hidden_size = hidden_size
         self.num_heads = num_heads
         self.conditioning_scheme = conditioning_scheme
+        self.branch_norm = branch_norm
 
         # 1. Input Embeddings
         self.x_embedder = nn.Conv2d(
@@ -96,6 +101,12 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
         else:
             raise ValueError(f"Unknown conditioning_scheme: {conditioning_scheme}")
 
+        # Optional per-sample normalization before the shared conditioning MLP.
+        # This controls input scale; it does not guarantee preserved sample
+        # variation or bound the downstream effect of an optimizer update.
+        c_input_dim = hidden_size if conditioning_scheme == "pure" else hidden_size * 2
+        self.cond_norm = nn.LayerNorm(c_input_dim, eps=1e-6) if cond_norm else None
+
         # 3. Blocks
         head_dim = hidden_size // num_heads
         assert head_dim % 2 == 0, "Head dimension must be divisible by 2 for RoPE"
@@ -118,6 +129,7 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
                     rope_scaling_type=rope_scaling_type,
                     rope_scaling_factor=rope_scaling_factor,
                     rope_centered=rope_centered_grid,
+                    branch_norm=branch_norm,
                 )
             )
 
@@ -136,6 +148,7 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
                     rope_scaling_type=rope_scaling_type,
                     rope_scaling_factor=rope_scaling_factor,
                     rope_centered=rope_centered_grid,
+                    branch_norm=branch_norm,
                 )
             )
 
@@ -210,12 +223,15 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
         t_emb = self.t_embedder(t)  # (N, D)
 
         if self.conditioning_scheme == "pure":
-            c = self.c_mlp(t_emb)
+            c_input = t_emb
         else:  # fused
             if txt_pooled is None:
                 raise ValueError("txt_pooled is required for fused conditioning")
             txt_pooled_emb = self.txt_pooled_proj(txt_pooled)
-            c = self.c_mlp(torch.cat([t_emb, txt_pooled_emb], dim=1))
+            c_input = torch.cat([t_emb, txt_pooled_emb], dim=1)
+        if self.cond_norm is not None:
+            c_input = self.cond_norm(c_input)
+        c = self.c_mlp(c_input)
 
         img_hw = (H // self.patch_size, W // self.patch_size)
         txt_seq_len = txt.shape[1]
@@ -295,20 +311,29 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
 
     def get_config(self) -> dict:
         """Export config for HF Hub serialization."""
+        # The first block may be double-stream, whose attention splits QKV into
+        # `qkv_img`/`qkv_txt` rather than exposing a single `qkv`.
+        first_attn = getattr(self.blocks[0], "attn", None) if self.blocks else None
+        first_qkv = getattr(first_attn, "qkv", None)
+        if first_qkv is None:
+            first_qkv = getattr(first_attn, "qkv_img", None)
+        first_rope = getattr(first_attn, "rope", None)
         return {
             "patch_size": self.patch_size,
             "in_channels": self.in_channels,
             "hidden_size": self.hidden_size,
             "num_heads": self.num_heads,
-            "double_stream_depth": len([b for b in self.blocks if hasattr(b, 'txt_mlp')]),
-            "single_stream_depth": len([b for b in self.blocks if not hasattr(b, 'txt_mlp')]),
+            "double_stream_depth": len([b for b in self.blocks if isinstance(b, DoubleStreamDiTBlock)]),
+            "single_stream_depth": len([b for b in self.blocks if not isinstance(b, DoubleStreamDiTBlock)]),
             "mlp_ratio": self.blocks[0].mlp_ratio if self.blocks else 2.67,
             "conditioning_scheme": self.conditioning_scheme,
-            "qkv_bias": self.blocks[0].attn.qkv.bias is not None if hasattr(self.blocks[0], 'attn') else True,
+            "qkv_bias": first_qkv.bias is not None if first_qkv is not None else True,
             "ffn_type": "gated",  # Stored in block
-            "rope_scaling_type": getattr(self.blocks[0].attn.rope, 'scaling_type', 'none') if hasattr(self.blocks[0], 'attn') else 'none',
-            "rope_scaling_factor": getattr(self.blocks[0].attn.rope, 'scaling_factor', 1.0) if hasattr(self.blocks[0], 'attn') else 1.0,
-            "rope_centered_grid": getattr(self.blocks[0].attn.rope, 'centered', False) if hasattr(self.blocks[0], 'attn') else False,
+            "rope_scaling_type": getattr(first_rope, 'scaling_type', 'none'),
+            "rope_scaling_factor": getattr(first_rope, 'scaling_factor', 1.0),
+            "rope_centered_grid": getattr(first_rope, 'centered', False),
+            "branch_norm": self.branch_norm,
+            "cond_norm": self.cond_norm is not None,
         }
 
     @classmethod
@@ -406,13 +431,15 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
                 block_indices.add(idx)
         total_blocks = max(block_indices) + 1 if block_indices else 0
 
-        # Detect single vs double stream by checking for txt_mlp
-        has_txt_mlp = any("txt_mlp" in k for k in state_dict.keys())
+        # Detect single vs double stream by checking for mlp_txt, which only
+        # the double-stream block has (its sibling is `mlp_img`; the
+        # single-stream block's feed-forward is plain `mlp`).
+        has_txt_mlp = any("mlp_txt" in k for k in state_dict.keys())
         if has_txt_mlp:
-            # Count double stream blocks (those with txt_mlp)
+            # Count double stream blocks (those with mlp_txt)
             double_blocks = set()
             for key in state_dict.keys():
-                if "txt_mlp" in key:
+                if "mlp_txt" in key:
                     idx = int(key.split(".")[1])
                     double_blocks.add(idx)
             config["double_stream_depth"] = len(double_blocks)
@@ -427,6 +454,11 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
 
         # Detect qkv_bias
         config["qkv_bias"] = "blocks.0.attn.qkv.bias" in state_dict or "blocks.0.attn.qkv_img.bias" in state_dict
+
+        # Ablation flags, detected from their parameters so a checkpoint cannot
+        # be loaded into a model built with the other setting.
+        config["branch_norm"] = any(k.endswith(".norm_msa_out.weight") for k in state_dict)
+        config["cond_norm"] = "cond_norm.weight" in state_dict
 
         # Set defaults
         config["mlp_ratio"] = 2.67
