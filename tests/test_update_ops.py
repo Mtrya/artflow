@@ -54,7 +54,7 @@ def test_muon_and_adamw_preserve_updates_with_retained_gradient_views():
     reference = ArtFlow(hidden_size=32, num_heads=4, double_stream_depth=1,
                         single_stream_depth=1, mlp_ratio=2)
     candidate = deepcopy(reference)
-    optimizers = [build_param_groups(model, muon_lr=.02, adam_lr=1e-4, muon_wd=.0015, adam_wd=.01, adam_eps=1e-8, adam_betas=(.9,.95), muon_momentum=.95) for model in (reference, candidate)]
+    optimizers = [build_param_groups(model, muon_lr=.02, adam_lr=1e-4, muon_wd=.0015, adam_wd=.01, adam_conditioning_wd=.4, adam_eps=1e-8, adam_betas=(.9,.95), muon_momentum=.95) for model in (reference, candidate)]
     storage = torch.empty(sum(p.numel() for p in candidate.parameters()))
     offset = 0
     for parameter in candidate.parameters():

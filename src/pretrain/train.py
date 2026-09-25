@@ -440,6 +440,7 @@ def main():
         muon_wd=args.muon_wd,
         adam_lr=args.learning_rate,
         adam_wd=args.adam_wd,
+        adam_conditioning_wd=args.adam_conditioning_wd,
         adam_eps=args.adam_eps,
         adam_betas=tuple(args.adam_betas),
         muon_momentum=args.muon_momentum,

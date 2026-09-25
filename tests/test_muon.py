@@ -85,7 +85,7 @@ def test_original_scaling_matches_pytorch_per_chunk(shape, chunks):
 
 def test_param_groups_cover_each_param_once():
     model = _tiny_model()
-    opts = build_param_groups(model, muon_lr=0.02, adam_lr=3e-4, muon_wd=.0015, adam_wd=.01, adam_eps=1e-8, adam_betas=(.9,.95), muon_momentum=.95)
+    opts = build_param_groups(model, muon_lr=0.02, adam_lr=3e-4, muon_wd=.0015, adam_wd=.01, adam_conditioning_wd=.4, adam_eps=1e-8, adam_betas=(.9,.95), muon_momentum=.95)
     assert len(opts) == 2
     muon, adam = opts
     assert isinstance(muon, Muon) and isinstance(adam, torch.optim.AdamW)

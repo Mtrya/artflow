@@ -49,6 +49,7 @@ class OptimConfig:
     lr_warmup_steps: int
     max_grad_norm: float
     adam_wd: float
+    adam_conditioning_wd: float
     adam_eps: float
     adam_betas: list[float]
     muon_lr: float
@@ -272,7 +273,9 @@ def _validate(config: TrainConfig) -> None:
         0 <= o.lr_warmup_steps < config.max_steps, "warmup must be shorter than the run"
     )
     require(
-        o.max_grad_norm > 0 and o.muon_wd >= 0 and o.adam_wd >= 0 and o.adam_eps > 0,
+        o.max_grad_norm > 0
+        and min(o.muon_wd, o.adam_wd, o.adam_conditioning_wd) >= 0
+        and o.adam_eps > 0,
         "invalid clipping, decay or Adam epsilon",
     )
     require(

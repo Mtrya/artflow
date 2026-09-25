@@ -31,6 +31,15 @@ import torch
 from torch import nn
 
 
+# These matrices determine the amplitude of the shared conditioning signal.
+# Their decay is independent of embeddings, biases and branch-normalization
+# gains; applying the same strong decay to all auxiliary parameters changes
+# a substantially larger part of the model.
+CONDITIONING_WEIGHTS = frozenset({
+    "txt_pooled_proj.weight", "c_mlp.0.weight", "c_mlp.2.weight",
+})
+
+
 @torch.no_grad()
 def _zeropower_via_newtonschulz5(G: torch.Tensor, steps: int = 5) -> torch.Tensor:
     """Orthogonalize G via quintic Newton-Schulz iteration (bf16 by default)."""
@@ -189,6 +198,7 @@ def build_param_groups(
     muon_wd: float,
     adam_lr: float,
     adam_wd: float,
+    adam_conditioning_wd: float,
     adam_eps: float,
     adam_betas: tuple[float, float],
     muon_momentum: float,
@@ -200,7 +210,8 @@ def build_param_groups(
     AdamW-routed: embeddings (x/txt), patch conv, final layer, timestep and
     conditioning MLPs (t_embedder has no params; c_mlp/txt_pooled_proj are
     small conditioning heads), all norms and biases, and the MSRoPE buffers
-    never appear here (no grad).
+    never appear here (no grad). The three conditioning matrices have their
+    own AdamW decay group; conditioning biases retain the ordinary decay.
     """
     adam_name_patterns = (
         "x_embedder",
@@ -212,9 +223,13 @@ def build_param_groups(
 
     muon_groups: dict[int, dict] = {}
     adam_params = []
+    conditioning_params = []
 
     for name, p in model.named_parameters():
         if not p.requires_grad:
+            continue
+        if name in CONDITIONING_WEIGHTS:
+            conditioning_params.append(p)
             continue
         is_adam = p.ndim != 2 or any(pat in name for pat in adam_name_patterns)
         if is_adam:
@@ -238,10 +253,17 @@ def build_param_groups(
                 weight_decay=muon_wd,
             )
         )
+    adam_groups = []
     if adam_params:
+        adam_groups.append(dict(params=adam_params, weight_decay=adam_wd))
+    if conditioning_params:
+        adam_groups.append(
+            dict(params=conditioning_params, weight_decay=adam_conditioning_wd)
+        )
+    if adam_groups:
         optimizers.append(
             torch.optim.AdamW(
-                adam_params,
+                adam_groups,
                 lr=adam_lr,
                 weight_decay=adam_wd,
                 betas=adam_betas,
