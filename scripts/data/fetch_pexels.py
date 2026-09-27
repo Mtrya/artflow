@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetcher: Pexels photo search, restricted to photographs of people.
+"""Fetch Pexels photos with subject and shape filters.
 
 Source: the Pexels API (https://www.pexels.com/api/).  The licence
 (https://www.pexels.com/license/) allows free use and modification, forbids
@@ -9,8 +9,8 @@ this fetcher keeps locally is the bounded-size image plus the metadata needed to
 credit the photographer and link back, so a later publication can carry the
 credit and a download recipe instead of the image bytes.
 
-The search terms are chosen for the gap this source fills: photographs of people
-across regions and in traditional dress, which the corpus is otherwise short of.
+The default search terms cover people across regions and in traditional dress.
+Custom query files and subject filters support D4 concept and general-photo batches.
 
 Images are fetched through the CDN's own scaling parameters rather than at full
 resolution: ``?auto=compress&cs=tinysrgb&w=1792&h=1792`` fits the picture inside

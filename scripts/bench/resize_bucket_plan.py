@@ -1,10 +1,10 @@
-"""Draft fixed-boundary batch/accumulation candidates, never accepted GPU plans.
+"""Draft fixed-boundary batch/accumulation candidates for device validation.
 
 Use the existing beta-policy metadata weighting over the stage interval. Integer
 sizes are scaled proportionally toward the requested harmonic-mean global batch,
 rounded up, then trimmed without going below that target. This is a screening
 proposal, not a memory model or throughput optimizer. Realized finite-queue
-exposure, memory tails and measured speed still require GPU validation.
+exposure, memory tails and measured speed still require device validation.
 """
 
 import argparse
@@ -45,7 +45,7 @@ def resize(sizes, shares, *, old_accumulation, new_accumulation, ranks, target):
         raise ValueError("scaled proposal cannot meet target; do not silently enlarge it")
     # Each accepted decrement approaches the target without crossing below it.
     # No claim of globally optimal latency: preserve the reference shape balance
-    # approximately, and let the subsequent GPU comparison decide.
+    # approximately, and let the subsequent device comparison decide.
     while True:
         best = None
         best_mean = mean_emitted_batch(shares, proposed) * factor

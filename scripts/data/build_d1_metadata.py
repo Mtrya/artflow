@@ -12,14 +12,10 @@ Run on the machine that holds the workspace:
     python $ARTFLOW_ROOT/repo/scripts/data/build_d1_metadata.py
 Output: $ARTFLOW_ROOT/data/meta/d1/d1_metadata.jsonl
 """
+import argparse
 import glob
 import json
 import os
-
-from scripts.data.common import workspace_root
-
-W = workspace_root()
-OUT = os.path.join(W, "data/meta/d1/d1_metadata.jsonl")
 
 NPM_SHARDS = ["npm_tw_c0", "npm_tw_c1", "npm_tw_c2", "npm_tw_c3"]
 MUSEUM_SETS = ["aic_china", "met_china", "fsg", "princeton"]
@@ -41,6 +37,14 @@ def load_jsonl_map(pattern, key="image_id"):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", default=os.environ.get("ARTFLOW_ROOT"),
+                        help="workspace root (default: ARTFLOW_ROOT)")
+    args = parser.parse_args()
+    if not args.root:
+        parser.error("pass --root or set ARTFLOW_ROOT")
+    W = args.root
+    OUT = os.path.join(W, "data/meta/d1/d1_metadata.jsonl")
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     rows = []
     for s in NPM_SHARDS + MUSEUM_SETS:

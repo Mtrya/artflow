@@ -1,8 +1,6 @@
 """The blind panel's review material: shuffling, answer key and counting.
 
-``generate`` is GPU code and is not exercised here (its sampling path lives in
-``src.evaluation.prompt_grid``).  What is tested is everything around the
-review: that a re-run with the same seed reproduces the same blinding, that the
+The review checks cover that a re-run with the same seed reproduces the same blinding, that the
 answer key describes the order actually pasted into the comparison image, that
 a ballot is counted to the right arm with ties counted separately, and that a
 prompt missing from an arm or from the ballot is refused rather than silently
@@ -15,7 +13,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from scripts.bench.blind_panel import (
+from scripts.eval.blind_panel import (
     TIE,
     compose_panel,
     main,

@@ -8,8 +8,7 @@ provider refused must stay visible instead of silently vanishing.
 
 import json
 
-from scripts.caption.consolidate import load
-from scripts.caption.freeze_captions import freeze
+from scripts.caption.freeze_captions import freeze, load
 from src.utils.prompt_contract import DROP_IDX, PROMPT_TEMPLATE, SYSTEM_PROMPT
 
 
@@ -51,6 +50,16 @@ def test_retries_collapse_to_one_caption_per_image(tmp_path):
     assert by_id["img-1"]["text"] == "a caption about a harbour"
     assert by_id["img-1"]["accepted"] is True
     assert by_id["img-2"]["accepted"] is True
+
+
+def test_good_caption_survives_later_failed_retry_and_stale_error(tmp_path):
+    path = tmp_path / "retries.jsonl"
+    write(path, [record("img-1", "a harbour at dusk", error="old timeout", transient=True),
+                 record("img-1", "", error="provider refusal")])
+    frozen, _ = freeze(load([path]), CharTokenizer())
+    assert frozen[0]["text"] == "a harbour at dusk"
+    assert frozen[0]["accepted"] is True
+    assert "error" not in frozen[0] and "transient" not in frozen[0]
 
 
 def test_keeps_the_text_and_drops_a_provider_refusal_and_repeated_text():

@@ -8,9 +8,14 @@ method and sequence are in [redesign_plan.md](redesign_plan.md).
 ## Implemented components and remaining qualification
 
 [`src/posttrain/`](../src/posttrain/) contains DMD, joint-loss, NFT and reward
-components. Prompt-pool builders live in
-[`scripts/posttrain/`](../scripts/posttrain/). Complete the training launcher
-and orchestration, then qualify on the intended Ascend allocation:
+components. The [prompt-pool builder](../scripts/posttrain/build_rollout_prompts.py)
+reads precomputed captions from a complete run config and selected stage. Source
+weights are sampling probabilities, matching `src/dataset/mix.py`. Sampling is
+without replacement; exhausted sources redistribute their shortfall by the
+remaining weights, and the command reports final source counts.
+
+Complete the training launcher and orchestration, then qualify on the intended
+Ascend allocation:
 
 - Teacher/student/fake-score forward and backward, GAN head, 8-step rollout,
   VAE decoding, distributed updates and complete checkpoint/resume.

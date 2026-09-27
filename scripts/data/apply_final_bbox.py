@@ -45,8 +45,6 @@ def main() -> None:
     parser.add_argument("--metadata", required=True)
     parser.add_argument("--boxes", required=True, help="second-round box JSONL")
     parser.add_argument("--out", required=True)
-    parser.add_argument("--in-place", action="store_true",
-                        help="write to --out even if it is the input path")
     args = parser.parse_args()
 
     boxes = load_boxes(args.boxes)

@@ -1,57 +1,29 @@
-"""Blind side-by-side review of checkpoints from several training arms.
+"""Build blinded image comparisons and tally human preferences.
 
-An *arm* is one training configuration.  This tool turns the checkpoints of
-several arms into the material for a human preference review without revealing
-which arm made which image:
+``panel`` reads <prompt_id>.png files from each named arm, shuffles their
+positions per prompt using --seed, and writes comparison images, an answer
+key, a ballot and an index. Keep the answer key closed while voting.
+``tally`` reports wins and ties from the completed ballot.
 
-1. ``generate`` samples the fixed prompt suite from one checkpoint, one PNG per
-   prompt.  Sampling follows the training-time prompt grid
-   (``src.evaluation.prompt_grid``) exactly - per-prompt seed, Euler solver at
-   50 steps, the VAE's own decoding statistics - so an image matches the grid
-   image of the same checkpoint and prompt.
-2. ``panel`` collects the generated directories of several arms and writes one
-   side-by-side image per prompt with the panels numbered 1..N (no arm names),
-   an ``answer_key.json`` that maps each number back to its arm, a
-   ``ballot.json`` template to fill in, and an ``index.md`` that shows the
-   prompt text next to each comparison.
-3. ``tally`` reads the completed ballot and reports how many prompts each arm
-   won, with ties counted separately.
-
-The panel numbering is shuffled independently per prompt, seeded from
-``--seed`` and the prompt id, so the same inputs and seed always produce the
-same blinding; keep ``answer_key.json`` closed until the ballot is complete.
-
-Usage:
-    python scripts/bench/blind_panel.py generate \
-        --checkpoint <run>/checkpoint_step_000500 --out review/arm-a \
-        --config <run>.toml --stage 256p
-    python scripts/bench/blind_panel.py panel \
+Run from the repository root:
+    python -m scripts.eval.blind_panel panel \
         --arm a=review/arm-a --arm b=review/arm-b --out review/panel --seed 7
-    python scripts/bench/blind_panel.py tally \
+    python -m scripts.eval.blind_panel tally \
         --answer-key review/panel/answer_key.json --ballot review/panel/ballot.json
 """
 
 import argparse
 import json
 import random
-import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
 
-# Importable both as ``python -m scripts.bench.blind_panel`` and as a plain
-# ``python scripts/bench/blind_panel.py``: the latter puts the script's own
-# directory on sys.path, which does not expose ``src.*``.
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
-DEFAULT_PROMPTS = "assets/eval/prompts_v1.jsonl"
+DEFAULT_PROMPTS = "assets/eval/hero_monitor_v1.jsonl"
 TIE = "tie"
 
-_CHECKPOINT_STEP = re.compile(r"checkpoint_step_(\d+)")
 
 
 # ---------------------------------------------------------------------------
@@ -344,173 +316,7 @@ def cmd_tally(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
-# GPU generation, on the training-time sampling path
-# ---------------------------------------------------------------------------
-
-
-def resolve_checkpoint(path: str) -> Path:
-    """The weights file behind ``--checkpoint``: a file, or a dir's EMA weights."""
-    checkpoint = Path(path)
-    if checkpoint.is_dir():
-        weights = checkpoint / "ema_weights.pt"
-        if not weights.is_file():
-            raise FileNotFoundError(
-                f"{checkpoint} has no ema_weights.pt; pass the weights file directly"
-            )
-        return weights
-    if not checkpoint.is_file():
-        raise FileNotFoundError(f"checkpoint not found: {checkpoint}")
-    return checkpoint
-
-
-def checkpoint_step(path: str) -> Optional[int]:
-    """Training step parsed from a ``checkpoint_step_<N>`` directory name."""
-    match = _CHECKPOINT_STEP.search(str(path))
-    return int(match.group(1)) if match else None
-
-
-def cmd_generate(args: argparse.Namespace) -> int:
-    import functools
-    from datetime import datetime
-
-    import torch
-    from diffusers import AutoencoderKLQwenImage
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-
-    from src.evaluation.prompt_grid import (
-        load_prompt_plan,
-        prompt_seed,
-        sample_prompt_images,
-    )
-    from src.models.artflow import ArtFlow
-    from src.pretrain.config import flatten, load_config
-    from src.utils.vae_codec import get_vae_stats
-
-    config = flatten(load_config(args.config), args.stage)
-    model_config = {
-        "hidden_size": config["hidden_size"],
-        "num_heads": config["num_heads"],
-        "double_stream_depth": config["double_stream_depth"],
-        "single_stream_depth": config["single_stream_depth"],
-        "mlp_ratio": config["mlp_ratio"],
-    }
-    vae_path = config["vae_path"]
-    text_encoder_path = config["text_encoder_path"]
-    exit_layer = config["text_encoder_exit_layer"]
-    pooling = True
-    dataset_path = args.dataset or config["eval_dataset_path"]
-    if not dataset_path:
-        raise ValueError(
-            "no eval dataset: pass --dataset or set [eval].dataset_path in --config"
-        )
-    batch_size = args.batch_size or config["eval_batch_size"]
-
-    weights = resolve_checkpoint(args.checkpoint)
-    step = args.step if args.step is not None else checkpoint_step(weights)
-    device = torch.device(args.device)
-
-    print(f"Loading checkpoint {weights} (step {step}) onto {device}...")
-    state_dict = torch.load(str(weights), map_location="cpu")
-    if isinstance(state_dict, dict) and "module" in state_dict:
-        state_dict = state_dict["module"]
-    model = ArtFlow(**model_config)
-    model.load_state_dict(state_dict)
-    model.to(device)
-    model.eval()
-
-    vae = AutoencoderKLQwenImage.from_pretrained(
-        vae_path, torch_dtype=torch.bfloat16, local_files_only=True
-    ).to(device)
-    vae_mean, vae_std = get_vae_stats(vae_path, device=device)
-    vae_mean = vae_mean.to(dtype=torch.bfloat16)
-    vae_std = vae_std.to(dtype=torch.bfloat16)
-
-    text_encoder = AutoModelForCausalLM.from_pretrained(
-        text_encoder_path,
-        torch_dtype=torch.bfloat16,
-        device_map=str(device),
-        low_cpu_mem_usage=True,
-        local_files_only=True,
-    )
-    text_encoder.eval()
-    tokenizer = AutoTokenizer.from_pretrained(text_encoder_path)
-
-    prompts, shapes = load_prompt_plan(args.prompts, dataset_path)
-    if not prompts:
-        raise ValueError(f"prompt suite is empty: {args.prompts}")
-
-    amp_context = None
-    if device.type == "cuda":
-        amp_context = functools.partial(
-            torch.autocast, device_type="cuda", dtype=torch.bfloat16
-        )
-    print(
-        f"Sampling {len(prompts)} prompts ({args.ode_steps} solver steps, "
-        f"batch size {batch_size})..."
-    )
-    results = sample_prompt_images(
-        model,
-        vae,
-        vae_mean,
-        vae_std,
-        text_encoder,
-        tokenizer,
-        prompts,
-        shapes,
-        batch_size=batch_size,
-        ode_steps=args.ode_steps,
-        pooling=pooling,
-        device=device,
-        exit_layer=exit_layer,
-        amp_context=amp_context,
-    )
-
-    out_dir = Path(args.out)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    for prompt, image in results:
-        array = (
-            image.permute(1, 2, 0).clamp(0.0, 1.0).numpy() * 255.0
-        ).round().astype("uint8")
-        Image.fromarray(array).save(out_dir / f"{prompt['id']}.png")
-
-    manifest = {
-        "checkpoint": str(weights),
-        "step": step,
-        "prompts_file": str(args.prompts),
-        "eval_dataset": dataset_path,
-        "solver": {
-            "name": "euler",
-            "ode_steps": args.ode_steps,
-            "t_start": 0.0,
-            "t_end": 1.0,
-            "time_shift": "resolution-dependent, applied by sample_ode as in training",
-        },
-        "seed_rule": "int(md5(prompt_id)[:8], 16) -> torch.Generator(device='cpu')",
-        "seeds": {prompt["id"]: prompt_seed(prompt["id"]) for prompt, _ in results},
-        "prompts": {
-            prompt["id"]: {
-                "bucket": prompt["_bucket"],
-                "latents": list(shapes[prompt["_bucket"]]),
-            }
-            for prompt, _ in results
-        },
-        "pooling": pooling,
-        "text_encoder": {"path": text_encoder_path, "exit_layer": exit_layer},
-        "vae": vae_path,
-        "model_config": model_config,
-        "batch_size": batch_size,
-        "device": str(device),
-        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-    }
-    (out_dir / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
-    print(f"Wrote {len(results)} PNGs and manifest.json to {out_dir}")
-    return 0
-
-
-# ---------------------------------------------------------------------------
-# Command line
+# Command-line interface
 # ---------------------------------------------------------------------------
 
 
@@ -522,63 +328,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    generate = sub.add_parser(
-        "generate",
-        help="sample the fixed prompt suite from one checkpoint",
-        description=(
-            "Sample one PNG per prompt from a checkpoint, on the same sampling "
-            "path as the training-time prompt grid."
-        ),
-    )
-    generate.add_argument(
-        "--checkpoint",
-        required=True,
-        help="checkpoint directory (uses its ema_weights.pt) or weights file",
-    )
-    generate.add_argument(
-        "--out", required=True, help="output directory for <prompt_id>.png"
-    )
-    generate.add_argument(
-        "--config",
-        required=True,
-        metavar="TOML",
-        help="Complete run file used for training",
-    )
-    generate.add_argument("--stage", required=True)
-    generate.add_argument(
-        "--prompts",
-        default=DEFAULT_PROMPTS,
-        help=f"fixed prompt suite JSONL (default: {DEFAULT_PROMPTS})",
-    )
-    generate.add_argument(
-        "--dataset",
-        default=None,
-        help="precomputed eval dataset whose latents define the resolutions "
-        "(default: [eval].dataset_path from the config)",
-    )
-    generate.add_argument(
-        "--batch-size",
-        type=int,
-        default=None,
-        help="prompts per sampling batch (default: [eval].batch_size)",
-    )
-    generate.add_argument(
-        "--ode-steps", type=int, default=50, help="solver steps (default: 50)"
-    )
-    generate.add_argument(
-        "--step",
-        type=int,
-        default=None,
-        help="training step recorded in the manifest (default: parsed from the path)",
-    )
-    generate.add_argument("--device", default="cuda:0")
-    generate.set_defaults(func=cmd_generate)
-
     panel = sub.add_parser(
         "panel",
         help="build unlabelled side-by-side comparisons from several arms",
         description=(
-            "Gather the generate outputs of several arms, shuffle the arms "
+            "Gather the image directories of several arms, shuffle the arms "
             "independently per prompt, and write the comparison images plus the "
             "answer key, ballot template and index."
         ),
@@ -588,7 +342,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         required=True,
         metavar="NAME=DIR",
-        help="one arm's generate output directory; repeat per arm",
+        help="directory of <prompt_id>.png images; repeat per arm",
     )
     panel.add_argument("--out", required=True, help="output directory for the panel")
     panel.add_argument(

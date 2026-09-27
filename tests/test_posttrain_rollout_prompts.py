@@ -1,20 +1,21 @@
 import json
+from collections import Counter
 
 import pytest
 
-from scripts.posttrain.build_rollout_prompts import allocate, build_pool
+from scripts.posttrain.build_rollout_prompts import allocate, build_pool, stage_sources
 
 
 def _write_jsonl(path, rows):
     path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows))
 
 
-def test_allocate_proportional_to_weight_times_size():
+def test_allocate_uses_training_source_probabilities_independent_of_size():
     counts = allocate({"a": 100, "b": 100}, {"a": 2.0, "b": 1.0}, 90)
     assert counts == {"a": 60, "b": 30}
-    # Bigger pool with equal weight gets more samples.
+    # Training weights are source probabilities, independent of pool size.
     counts = allocate({"a": 300, "b": 100}, {}, 100)
-    assert counts == {"a": 75, "b": 25}
+    assert counts == {"a": 50, "b": 50}
     # Largest remainder fills rounding slack to exactly `total`.
     counts = allocate({"a": 10, "b": 10, "c": 10}, {}, 100)
     assert sum(counts.values()) == 100
@@ -85,3 +86,44 @@ def test_build_pool_raises_when_total_exceeds_capacity(tmp_path):
     _write_jsonl(p, [{"caption_zh": "只有一条"}])
     with pytest.raises(ValueError, match="usable rows"):
         build_pool({"x": p}, {}, 5)
+
+
+@pytest.mark.parametrize("weight", [-1, 0, float("nan"), float("inf")])
+def test_invalid_weights_fail(weight):
+    with pytest.raises(ValueError, match="finite and positive"):
+        allocate({"a": 10}, {"a": weight}, 5)
+
+
+def test_reads_selected_config_stage_and_arrow_captions(tmp_path):
+    from datasets import Dataset
+    from pathlib import Path
+
+    # The same strict config parser resolves the stage inputs for training.
+    recipe = Path("configs/hero.toml").read_text()
+    config = tmp_path / "hero.toml"
+    config.write_text(recipe)
+    sources, weights = stage_sources(str(config), "896p")
+    assert all(name.endswith("@896p") for name in sources)
+    assert len(sources) == len(weights)
+    # Materialize tiny Arrow stores for two entries with deliberately unequal sizes.
+    names = list(sources)[:2]
+    local = {}
+    for name, size in zip(names, [10, 100]):
+        path = tmp_path / name
+        Dataset.from_dict({"captions": [[f"{name}-{i}"] for i in range(size)],
+                           "latents": [[999.0]] * size}).save_to_disk(str(path))
+        local[name] = path
+    pool = build_pool(local, dict.fromkeys(names, 1.0), 16, seed=5)
+    assert Counter(row["source"] for row in pool) == dict.fromkeys(names, 8)
+    assert all(row["field"] == "captions" for row in pool)
+    with pytest.raises(ValueError, match="unknown stage"):
+        stage_sources(str(config), "missing")
+
+
+def test_unknown_weight_and_whitespace_caption_are_rejected(tmp_path):
+    path = tmp_path / "a.jsonl"
+    _write_jsonl(path, [{"caption_zh": "  ", "captions": [None, "\n"]}])
+    with pytest.raises(ValueError, match="unknown sources"):
+        build_pool({"a": path}, {"b": 1.0}, 1)
+    with pytest.raises(ValueError, match="no usable captions"):
+        build_pool({"a": path}, {}, 1)

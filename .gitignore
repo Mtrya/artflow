@@ -61,11 +61,6 @@ swanlog
 # Local cluster job wrappers and exploratory analysis are retained on disk,
 # not shipped as supported launch tooling. Repeatable launchers live in scripts/.
 /jobs/*
-/scripts/bench/boundary_waste_analysis.py
-/scripts/bench/check_calib_896p.py
-/scripts/bench/inspect_calib.py
-/scripts/bench/pull_val_metrics.py
-/scripts/data/merge_precompute_parts.py
 
 # Credentials and machine-local operational state must never be published.
 .env
