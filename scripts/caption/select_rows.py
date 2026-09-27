@@ -81,6 +81,7 @@ DOMAIN_BY_SOURCE = {
     "d3_human_recaption": "photograph",
     "d3_people_supp": "photograph",
     "d3_pexels": "photograph",
+    "d4_pexels": "photograph",
 }
 
 

@@ -23,9 +23,21 @@ Output, under ``--out``:
     fetch.log                        progress, written by the caller's redirect
 
 The run is resumable: photo ids already present in metadata.jsonl are skipped,
-and a download that already landed on disk is not repeated.  API requests are
+and a download that already landed on disk is not repeated.  ``--target`` counts
+the candidates that hold an image, so a resumed run stops after that many more
+downloads rather than re-counting the rows already there.  API requests are
 paced to stay under the published hourly limit; the downloads themselves run on
 a small thread pool, since one page of results yields up to 80 pictures.
+
+``--queries`` takes a file that overrides the built-in list: one term per line,
+optionally ``term | pages`` to give that term its own page budget instead of
+``--pages-per-query``.  Blank lines and ``#`` comments are ignored.  The search
+API returns at most eight pages per term, so a budget beyond that is wasted.
+
+What counts as a candidate is the alt text: by default it must name a person
+(the filter this fetcher was built for).  ``--keep-pattern`` replaces that
+regex for batches with another subject, and ``--all-photos`` keeps everything
+the shape filter allows.
 """
 
 from __future__ import annotations
@@ -40,7 +52,7 @@ import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -206,17 +218,54 @@ def long_side_bounded(width: int, height: int, box: int = 1792) -> tuple:
     return int(round(width * scale)), int(round(height * scale))
 
 
-def load_done(path: Path) -> set:
+def make_keep_matcher(pattern: Optional[str]) -> re.Pattern:
+    """The regex a candidate's alt text must match to be downloaded.
+
+    The default matcher keeps photographs whose alt text names a person, the
+    filter this fetcher was built for.  ``--keep-pattern`` replaces it for
+    batches with a different subject (anatomy, architecture), and
+    ``--all-photos`` bypasses matching altogether.
+    """
+    return re.compile(pattern, re.IGNORECASE) if pattern else PERSON_WORDS
+
+
+def load_state(path: Path) -> Tuple[set, int]:
+    """Photo ids already recorded, and how many of them hold an image.
+
+    The two are read from the same file on purpose: ``--target`` counts the
+    pictures on disk, so a resumed run stops after the requested number of
+    *new* downloads instead of re-counting the rows whose candidates were
+    skipped for a shape or for naming nobody.
+    """
     done = set()
+    kept = 0
     if not path.exists():
-        return done
+        return done, kept
     with path.open(encoding="utf-8") as handle:
         for line in handle:
             try:
-                done.add(int(json.loads(line)["photo_id"]))
+                record = json.loads(line)
+                done.add(int(record["photo_id"]))
             except Exception:  # noqa: BLE001 - a torn last line is expected
                 continue
-    return done
+            if record.get("download_ok"):
+                kept += 1
+    return done, kept
+
+
+def parse_queries(text: str) -> List[Tuple[str, Optional[int]]]:
+    """Read the ``--queries`` file: ``term`` or ``term | pages`` per line."""
+    queries = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        term, _, pages = line.partition("|")
+        term = term.strip()
+        if not term:
+            continue
+        queries.append((term, int(pages.strip()) if pages.strip() else None))
+    return queries
 
 
 def main() -> None:
@@ -237,8 +286,14 @@ def main() -> None:
                         help="concurrent image downloads")
     parser.add_argument("--queries", default=None,
                         help="file with one search term per line (default: built-in list)")
-    parser.add_argument("--all-photos", action="store_true",
-                        help="keep photographs whose alt text names no person")
+    parser.add_argument("--source-name", default="pexels_people",
+                        help="value recorded as each row's `source`")
+    keep = parser.add_mutually_exclusive_group()
+    keep.add_argument("--all-photos", action="store_true",
+                      help="keep photographs whose alt text names no person")
+    keep.add_argument("--keep-pattern", default=None,
+                      help="regex a candidate's alt text must match to be kept "
+                           "(default: the built-in person words)")
     args = parser.parse_args()
 
     key = os.environ.get("PEXELS_API_KEY")
@@ -250,14 +305,14 @@ def main() -> None:
     meta_path = out / "metadata.jsonl"
     out.mkdir(parents=True, exist_ok=True)
 
-    queries = QUERIES
+    queries: List[Tuple[str, Optional[int]]] = [(query, None) for query in QUERIES]
     if args.queries:
-        queries = [line.strip() for line in Path(args.queries).read_text().splitlines()
-                   if line.strip() and not line.startswith("#")]
+        queries = parse_queries(Path(args.queries).read_text(encoding="utf-8"))
+    keep_matcher = make_keep_matcher(args.keep_pattern)
 
     session = make_session()
     pacer = Pacer(args.per_hour)
-    done = load_done(meta_path)
+    done, kept = load_state(meta_path)
     # Which pages each query has already been walked.  Search results come back
     # in a stable order, so one highest-page mark per query is enough: without
     # it a restart re-requests every page it has already seen, and the hourly
@@ -269,17 +324,18 @@ def main() -> None:
             fetched = json.loads(state_path.read_text())
         except Exception:  # noqa: BLE001 - a damaged state file just re-walks
             fetched = {}
-    print(f"[start] {len(done)} candidates already recorded, "
-          f"{len(fetched)} queries already walked", flush=True)
+    print(f"[start] {len(done)} candidates already recorded "
+          f"({kept} with an image), {len(fetched)} queries already walked",
+          flush=True)
 
-    kept = len(done)
     written = 0
     requests_made = 0
     with meta_path.open("a", encoding="utf-8") as meta:
-        for query in queries:
+        for query, query_pages in queries:
             if kept >= args.target:
                 break
-            for page in range(1, args.pages_per_query + 1):
+            budget = query_pages or args.pages_per_query
+            for page in range(1, budget + 1):
                 if kept >= args.target:
                     break
                 if fetched.get(query, 0) >= page:
@@ -299,7 +355,7 @@ def main() -> None:
                 fetched[query] = max(fetched.get(query, 0), page)
                 state_path.write_text(json.dumps(fetched))
                 if not photos:
-                    fetched[query] = args.pages_per_query
+                    fetched[query] = budget
                     state_path.write_text(json.dumps(fetched))
                     break
                 todo: List[tuple] = []
@@ -311,9 +367,9 @@ def main() -> None:
                     ratio = max(width, height) / max(1, min(width, height))
                     scaled_w, scaled_h = long_side_bounded(width, height)
                     alt = (photo.get("alt") or "").strip()
-                    person_hint = bool(PERSON_WORDS.search(alt))
+                    keep_hint = bool(keep_matcher.search(alt))
                     record: Dict = {
-                        "source": "pexels_people",
+                        "source": args.source_name,
                         "source_id": f"pexels-{photo_id}",
                         "photo_id": photo_id,
                         "page_url": photo.get("url"),
@@ -325,7 +381,7 @@ def main() -> None:
                         "source_width": width,
                         "source_height": height,
                         "query": query,
-                        "person_hint": person_hint,
+                        "keep_hint": keep_hint,
                         "license": LICENSE,
                     }
                     if ratio > args.max_ratio or min(scaled_w, scaled_h) < args.min_side:
@@ -334,8 +390,8 @@ def main() -> None:
                         meta.write(json.dumps(record, ensure_ascii=False) + "\n")
                         done.add(photo_id)
                         continue
-                    if not person_hint and not args.all_photos:
-                        record.update(download_ok=False, skip_reason="no person in alt text")
+                    if not keep_hint and not args.all_photos:
+                        record.update(download_ok=False, skip_reason="alt text did not match the keep pattern")
                         meta.write(json.dumps(record, ensure_ascii=False) + "\n")
                         done.add(photo_id)
                         continue
