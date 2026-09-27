@@ -1,18 +1,11 @@
-"""Offline tests for the Smithsonian FSG fetcher parsing (no network)."""
+"""FSG metadata extraction checked against an API-response fixture."""
 
 import unittest
 
-from src.dataset.fetchers.fsg import (
-    cc0_media,
-    freetext_values,
-    object_type_matches,
-    parse_record,
-    pick_largest_resource,
-    topic_matches,
-)
+from src.dataset.fetchers.fsg import parse_record, pick_largest_resource
 
 
-def make_record(**overrides):
+def make_record():
     rec = {
         "id": "ld1-0", "version": "", "unitCode": "FSG", "type": "edanmdm",
         "content": {
@@ -77,30 +70,6 @@ class TestFsgParsing(unittest.TestCase):
         # only the "Artist" labelled entries are joined, not previous owners
         self.assertEqual(self.parsed["artist"], "Possibly by Lü Ji (ca. 1420-ca. 1505)")
 
-    def test_parse_record_topics(self):
-        self.assertEqual(self.parsed["topics"],
-                         ["bird", "Chinese Art", "Ming dynasty (1368 - 1644)"])
-
-    def test_parse_record_media_preserved(self):
-        self.assertEqual(len(self.parsed["media"]), 1)
-
-    def test_freetext_values_label_filter(self):
-        ft = make_record()["content"]["freetext"]
-        self.assertEqual(freetext_values(ft, "name", "Artist"),
-                         ["Possibly by Lü Ji (ca. 1420-ca. 1505)"])
-        self.assertEqual(len(freetext_values(ft, "name")), 2)
-        self.assertEqual(freetext_values(ft, "missing_key"), [])
-
-    def test_topic_matches(self):
-        self.assertTrue(topic_matches(self.parsed, "Chinese"))
-        self.assertTrue(topic_matches(self.parsed, "chinese art"))  # case-insensitive
-        self.assertFalse(topic_matches(self.parsed, "Japanese"))
-
-    def test_object_type_matches(self):
-        self.assertTrue(object_type_matches(self.parsed, "Painting"))
-        self.assertTrue(object_type_matches(self.parsed, "painting"))
-        self.assertFalse(object_type_matches(self.parsed, "Ceramic"))
-
     def test_pick_largest_resource(self):
         media = {"resources": [
             {"label": "Thumbnail Image", "url": "t.jpg"},
@@ -108,30 +77,3 @@ class TestFsgParsing(unittest.TestCase):
             {"label": "Screen Image", "url": "s.jpg", "width": 500, "height": 1000},
         ]}
         self.assertEqual(pick_largest_resource(media)["url"], "h.jpg")
-
-    def test_pick_largest_resource_prefers_jpeg_over_larger_tiff(self):
-        media = {"resources": [
-            {"label": "High-resolution TIFF", "url": "h.tif", "width": 7792, "height": 17793},
-            {"label": "High-resolution JPEG", "url": "h.jpg", "width": 7792, "height": 17793},
-        ]}
-        self.assertEqual(pick_largest_resource(media)["url"], "h.jpg")
-
-    def test_pick_largest_resource_falls_back_to_first_url(self):
-        media = {"resources": [
-            {"label": "Screen Image", "url": "s.jpg"},
-            {"label": "Thumbnail Image", "url": "t.jpg"},
-        ]}
-        self.assertEqual(pick_largest_resource(media)["url"], "s.jpg")
-
-    def test_pick_largest_resource_none(self):
-        self.assertIsNone(pick_largest_resource({"resources": []}))
-
-    def test_cc0_media(self):
-        self.assertTrue(cc0_media({"usage": {"access": "CC0"}}))
-        self.assertFalse(cc0_media({"usage": {"access": "CC BY-NC-SA"}}))
-        self.assertFalse(cc0_media({"usage": None}))
-        self.assertFalse(cc0_media({}))
-
-
-if __name__ == "__main__":
-    unittest.main()

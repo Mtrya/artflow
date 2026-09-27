@@ -71,7 +71,3 @@ class TestNpmTwParsing(unittest.TestCase):
         self.assertEqual(extract_image_codes(html),
                          ["K2A003652N000000000PAB", "K2A003652N000000000PAC"])
         self.assertEqual(extract_image_codes("<html>no images</html>"), [])
-
-
-if __name__ == "__main__":
-    unittest.main()

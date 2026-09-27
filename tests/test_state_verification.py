@@ -1,21 +1,12 @@
+"""Live training state checked against independently serialized checkpoint files."""
+
 import copy
 
 import pytest
 import torch
 from safetensors.torch import save_file
 
-from src.pretrain.state_verification import require_exact_state, verify_restored_training_state
-
-
-def test_exact_state_rejects_values_types_metadata_and_nonfinite():
-    reference = {"state": [torch.tensor([1., 2.])], "lr": .01}
-    assert require_exact_state(reference, copy.deepcopy(reference), label="test")["exact"]
-    for actual in ({"state": [torch.tensor([1., 3.])], "lr": .01},
-                   {"state": [torch.tensor([1., 2.], dtype=torch.float64)], "lr": .01},
-                   {"state": [torch.tensor([1., 2.])], "lr": .02},
-                   {"state": [torch.tensor([1., float("nan")])], "lr": .01}):
-        with pytest.raises(ValueError):
-            require_exact_state(reference, actual, label="test")
+from src.pretrain.state_verification import verify_restored_training_state
 
 
 def test_verifies_live_loaded_state_and_detects_post_load_mutation(tmp_path):

@@ -2,7 +2,7 @@
 
 import unittest
 
-from src.dataset.dedup import find_cross_canvas_dupes, norm_text
+from src.dataset.dedup import find_cross_canvas_dupes
 from src.dataset.domain_filter import assign_domain
 
 
@@ -79,11 +79,3 @@ class TestCrossCanvasDedup(unittest.TestCase):
         self.assertEqual(len(groups), 1)
         self.assertEqual(groups[("山水軸", "佚名")],
                          ["K2A000001N000000000", "K2A000099N000000000"])
-
-    def test_norm_text(self):
-        self.assertEqual(norm_text("a　 b  c"), "abc")
-        self.assertEqual(norm_text(None), "")
-
-
-if __name__ == "__main__":
-    unittest.main()

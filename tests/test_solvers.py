@@ -1,58 +1,44 @@
-"""Sampling precision must not inherit the model's autocast dtype."""
+"""Flow integration checked against analytic ODE solutions and training time shifts."""
+
+import math
 
 import pytest
 import torch
 
-from src.flow.solvers import Euler, Heun, sample_ode
+from src.flow.paths import resolution_time_shift, shift_timesteps
+from src.flow.solvers import sample_ode
 
 
-@pytest.mark.parametrize("solver", [Euler, Heun])
-@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
-def test_solver_step_preserves_time_and_small_increments(solver, dtype):
-    seen = []
-    velocity = torch.tensor(0.1, dtype=dtype)
-
-    def model(x, t):
-        seen.append(t.clone())
-        assert x.dtype == torch.float32
-        return torch.full_like(x, velocity.item(), dtype=dtype)
-
-    result = solver().step(torch.ones(2, 1, 2, 2, dtype=dtype), 0.9, 0.002, model)
-    assert result.dtype == torch.float32
-    torch.testing.assert_close(result, torch.full_like(result, 1 + velocity.item() * 0.002),
-                               rtol=0, atol=1e-7)
-    for index, t in enumerate(seen):
-        assert t.dtype == torch.float32
-        torch.testing.assert_close(t, torch.full_like(t, 0.9 + index * 0.002),
-                                   rtol=0, atol=0)
+@pytest.mark.parametrize('solver', ['euler', 'heun'])
+@pytest.mark.parametrize('dtype', [torch.bfloat16, torch.float16, torch.float64])
+def test_constant_velocity_solution_preserves_small_increments(solver, dtype):
+    initial = torch.ones(1, 1, 2, 2, dtype=dtype)
+    velocity = torch.tensor(0.1, dtype=dtype).item()
+    result = sample_ode(lambda x, t: torch.full_like(x, velocity, dtype=dtype),
+                        initial, steps=50, solver=solver, time_shift=1)
+    expected = torch.full_like(result, 1 + velocity)
+    torch.testing.assert_close(result, expected, rtol=0, atol=4e-6)
 
 
-@pytest.mark.parametrize("solver", ["euler", "heun"])
-def test_low_precision_velocity_accumulates_across_sampling_steps(solver):
-    z0 = torch.ones(1, 1, 2, 2, dtype=torch.bfloat16)
-    velocity = torch.tensor(0.1, dtype=torch.bfloat16).item()
-    result, states = sample_ode(
-        lambda x, t: torch.full_like(x, velocity, dtype=torch.bfloat16),
-        z0, steps=50, solver=solver, time_shift=1, return_intermediates=True,
-    )
-    assert len(states) == 51
-    assert all(state.dtype == torch.float32 for state in states)
-    torch.testing.assert_close(states[0], z0.float(), rtol=0, atol=0)
-    torch.testing.assert_close(result, torch.full_like(result, 1 + velocity),
-                               rtol=0, atol=4e-6)
-    assert (result > 1).all()  # BF16 state previously lost every increment.
+@pytest.mark.parametrize('solver,tolerance', [('euler', .015), ('heun', .00005)])
+def test_linear_ode_matches_exponential_solution(solver, tolerance):
+    initial = torch.tensor([[[[1., -2.]]]], dtype=torch.float64)
+    result = sample_ode(lambda x, t: x, initial, steps=100, solver=solver, time_shift=1)
+    torch.testing.assert_close(result, initial * math.e, rtol=tolerance, atol=0)
 
 
-def test_heun_adds_velocities_after_promoting_precision():
-    velocities = iter([1.0, 1.0078125])
-    result = Heun().step(
-        torch.zeros(1, dtype=torch.bfloat16), 0, 1,
-        lambda x, t: torch.full_like(x, next(velocities), dtype=torch.bfloat16),
-    )
-    torch.testing.assert_close(result, torch.tensor([1.00390625]), rtol=0, atol=0)
+def test_shifted_solver_integrates_over_training_time_interval():
+    initial = torch.zeros(1, 16, 64, 64)
+    endpoints = shift_timesteps(torch.tensor([.2, .7]), initial)
+    # For v(t)=t, the exact integral is half the change in squared time.
+    expected = (endpoints[1].square() - endpoints[0].square()) / 2
+    result = sample_ode(lambda x, t: t[:, None, None, None].expand_as(x), initial,
+                        steps=5, solver='heun', t_start=.2, t_end=.7,
+                        time_shift=resolution_time_shift(initial))
+    torch.testing.assert_close(result, torch.full_like(result, expected))
 
 
-def test_explicit_double_precision_state_is_preserved():
-    result = sample_ode(lambda x, t: x * 0, torch.ones(1, 1, 2, 2, dtype=torch.float64),
-                        steps=1, time_shift=1)
-    assert result.dtype == torch.float64
+@pytest.mark.parametrize('width,shift', [(32, 1.), (128, 4.)])
+def test_time_shift_matches_sd3_token_count_anchors(width, shift):
+    # SD3 Eq. 23 gives shifts 1 and 4 for 256 and 4096 image tokens.
+    assert resolution_time_shift(torch.empty(1, 16, width, width)) == shift

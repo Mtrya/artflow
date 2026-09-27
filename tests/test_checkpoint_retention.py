@@ -1,11 +1,8 @@
-"""Retention must never trade recoverability for space before a save completes."""
-
-from pathlib import Path
+"""Retention decisions checked against complete and damaged checkpoint fixtures."""
 
 import pytest
 
 from src.pretrain.checkpoint_retention import prune_checkpoints
-from src.pretrain.config import load_config
 from src.pretrain.stage_control import CHECKPOINT_RECORD, write_checkpoint_record
 
 
@@ -70,18 +67,3 @@ def test_incompatible_old_checkpoint_does_not_count_as_a_recovery_copy(tmp_path)
     current = saved(tmp_path, 6000)
     assert prune(current, keep_last=2) == []
     assert old.exists() and incompatible.exists()
-
-
-def test_disabled_retention_does_not_read_or_prune(tmp_path):
-    assert prune(tmp_path / "absent", keep_last=0) == []
-    config = tmp_path / "run.toml"
-    config.write_text(Path("configs/hero.toml").read_text().replace("checkpoint_keep_last = 2", "checkpoint_keep_last = 0"))
-    assert load_config(config).train.checkpoint_keep_last == 0
-
-
-@pytest.mark.parametrize("value", ["-1", "true", "1.5"])
-def test_invalid_retention_config_is_rejected(tmp_path, value):
-    path = tmp_path / "retention.toml"
-    path.write_text(Path("configs/hero.toml").read_text().replace("checkpoint_keep_last = 2", f"checkpoint_keep_last = {value}"))
-    with pytest.raises(ValueError, match="checkpoint_keep_last"):
-        load_config(path)

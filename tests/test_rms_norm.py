@@ -1,4 +1,4 @@
-"""Normalization keeps checkpoint layout, precision, and input/gain gradients."""
+"""Normalization outputs and gradients checked against torch.nn.RMSNorm."""
 
 import pytest
 import torch
@@ -20,7 +20,6 @@ def test_rms_norm_matches_reference_with_learned_gains(dtype, device, width):
         reference.weight.uniform_(0.5, 1.5)
     norm = RMSNorm(width, eps=1e-6).to(device)
     norm.load_state_dict(reference.state_dict(), strict=True)
-    assert norm.state_dict().keys() == reference.state_dict().keys()
 
     # Q/K inputs have noncontiguous sequence/head axes.
     x = torch.randn(2, 11, 4, width, device=device, dtype=dtype).transpose(1, 2)

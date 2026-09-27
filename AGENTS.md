@@ -67,6 +67,10 @@ progress live in `notes/`; consult them before acting, never from here.
 
 - Delete dead code and its tests in the same change; don't leave superseded
   paths flag-disabled "for later".
+- Tests cover active `src/` behavior and cross-check an independent reference:
+  a trusted library, an analytic result, an input fixture, or an equivalent
+  execution path. Do not test scripts, notes, source spelling, internal layout,
+  or a copy of the algorithm under test.
 - Commit at meaningful logical checkpoints, not after every small edit.
   Group related small changes; use English messages stating what and why;
   the test suite (`.venv/bin/python -m pytest tests/ -q`) is green before

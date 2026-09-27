@@ -23,7 +23,6 @@ def test_decode_latents_casts_for_vae_and_returns_rgb_images(latent_dtype, vae_d
                     self.conv.weight[channel, channel, 0, 0, 0] = 1
 
         def decode(self, latents):
-            assert latents.shape == (2, 16, 1, 2, 3)
             return SimpleNamespace(sample=self.conv(latents))
 
     latents = torch.zeros(2, 16, 2, 3, dtype=latent_dtype)

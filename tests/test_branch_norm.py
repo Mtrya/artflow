@@ -1,12 +1,7 @@
-"""Check initialization and branch-output scaling with fixed learned gates.
-
-These local invariants do not establish long-run stability or bound gates,
-norm gains, and arbitrary changes to internal branch weights.
-"""
+"""Branch normalization checked by rescaling branch outputs with fixed learned gates."""
 
 import torch
 
-from src.models.artflow import ArtFlow
 from src.models.dit_blocks import DoubleStreamDiTBlock, SingleStreamDiTBlock
 
 

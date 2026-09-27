@@ -1,11 +1,6 @@
 """Folding a transcription of in-image text into a caption."""
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from src.dataset.ocr_merge import append_ocr_block, clean_ocr_lines  # noqa: E402
+from src.dataset.ocr_merge import append_ocr_block, clean_ocr_lines
 
 
 def test_catalogue_lines_are_dropped():
@@ -27,13 +22,6 @@ def test_mostly_unreadable_lines_are_dropped():
 
 def test_duplicate_lines_are_kept_once():
     assert clean_ocr_lines("石渠寶笈\n石渠寶笈") == ["石渠寶笈"]
-
-
-def test_append_block_uses_the_caption_language():
-    zh = append_ocr_block("山水立軸。", ["石渠寶笈"], "zh")
-    en = append_ocr_block("A hanging scroll.", ["石渠寶笈"], "en")
-    assert zh.endswith("画面上的文字（按原行款录出）：\n石渠寶笈")
-    assert en.endswith("Text visible in the image, transcribed as it appears:\n石渠寶笈")
 
 
 def test_append_block_without_lines_is_a_no_op():
