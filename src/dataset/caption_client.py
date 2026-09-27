@@ -55,7 +55,7 @@ class Provider:
 DEEPSEEK_ROOT = "https://api.deepseek.com"
 
 # College self-hosted endpoint (SII internal network only; see
-# notes/posttrain_reward_budget.md).  Serves Qwen3.8-27B, the only multimodal
+# notes/posttrain_preflight.md).  Serves Qwen3.8-27B, the only multimodal
 # model on the college deployment; the key lives in the environment, never here.
 SII_ROOT = "https://cqhbod8bjjjbcoakk8pmeebgkaq9akcq.openapi-sj.sii.edu.cn/v1"
 

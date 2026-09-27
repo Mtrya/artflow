@@ -11,9 +11,9 @@ progress live in `notes/`; consult them before acting, never from here.
 - Adopt a lever only when its measured end-to-end gain is material; revert
   levers that aimed at the wrong segment (profile the step breakdown first:
   data / forward / backward / sync / optimizer).
-- Pretraining targets Ascend. Settled execution mechanisms belong in code,
-  not optional training flags. Keep platform setup separate from the recipe;
-  inference and post-training hardware choices have their own scope.
+- Pretraining and post-training target Ascend. Settled execution mechanisms
+  belong in code, not optional training flags. Keep platform setup separate
+  from the recipe; inference hardware choices have their own scope.
 - One-off probes are deleted once their evidence is written into `notes/`.
   The note is the archive; never keep a script "just in case".
 - Don't ship speculative generality: three similar lines beat a premature
@@ -40,7 +40,11 @@ progress live in `notes/`; consult them before acting, never from here.
 - `notes/` is the project memory: record decisions with their reasoning and
   the measured evidence, dated; update living docs when a decision changes
   rather than appending contradictions.
-- When a stage closes, move its records to `notes/archive/` and fix links.
+- Keep living notes focused on the current design. Retain history and negative
+  constraints when they explain a decision or prevent a known mistake.
+- When a stage closes, consolidate decisions and necessary evidence into living
+  notes. Keep useful detailed records locally in gitignored `notes/archive/`,
+  delete obsolete material, and fix links.
 - Comments and docstrings describe the code as it is now — sweep stale ones
   in the same change that makes them stale.
 - No secrets in any artifact. Keys come from env vars or platform secret
@@ -76,12 +80,16 @@ progress live in `notes/`; consult them before acting, never from here.
 
 - `notes/redesign_plan.md` — master plan, stage definitions, frozen decisions.
   Check before proposing anything that touches a frozen item.
-- `notes/hero_recipe.md` — the signed-off training recipe and launch records.
-- `notes/infra_pass.md` — measured monitoring/throughput facts; check before
+- `notes/hero_recipe.md` — the signed-off recipe, evaluation and recovery contracts.
+- `notes/infra_pretrain.md` — measured monitoring/throughput facts; check before
   re-deriving known baselines or re-diagnosing known phenomena.
+- `notes/ascend_pretraining.md` — living Ascend pretraining doc: direction,
+  evidence, and the hero run watch log.
+- `notes/dataset_plan.md` — data domains, caption contract and current additions.
+- `notes/concept_benchmark.md` — concept coverage and targeted-data/SFT decisions.
+- `notes/posttrain_preflight.md` — Ascend post-training qualification, reward
+  implementation, judge/scorer evidence and throughput accounting.
 - `INSPIRE.md` — platform operations (Inspire): job submission, storage
   layout, quotas, gotchas. Read before any platform action.
-- `notes/archive/ascend_probe_0921.md` — Ascend bring-up chronicle; check before
-  touching NPU code or re-running a concluded probe.
 - `git log` — recent decisions and their rationale; check before undoing or
   re-adding something.

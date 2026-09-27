@@ -1,101 +1,129 @@
 # Ascend hero recipe
 
-Current direction: fresh Ascend pretraining on `main`. The complete runnable
-recipe is [`configs/hero.toml`](../configs/hero.toml). It contains every tunable
-for all three resolution stages. Missing or unknown fields fail validation;
-there is no base config, config overlay, or environment/CLI hyperparameter
-source. Stage selection and checkpoint resume are operations.
+Updated September 27, 2026. The complete runnable recipe is
+[`configs/hero.toml`](../configs/hero.toml). It explicitly specifies every
+training tunable for all three resolution stages and rejects missing or
+unknown fields. Stage selection and checkpoint resume are operations.
+Run state and recovery details live in [Ascend pretraining](ascend_pretraining.md).
 
-## Selected settings
+## Model and optimization
 
-- Architecture `artflow-v2`: h1152, 16 heads, 1 double-stream + 24 single-stream
-  blocks, gated MLP expansion 8/3 (width 3072), 532,496,992 parameters.
-  Branch RMS normalization, fused pooled-text
-  conditioning, centered RoPE, and factor-1000 timestep features are native.
-  Double-stream modulation is independent; single-stream modulation is shared
-  within each block. Conditioning-input LayerNorm is absent.
-- Muon uses original per-chunk scaling at LR 0.02, decay 0.0015, momentum 0.95.
-  Auxiliary AdamW uses LR 1e-4, decay 0.01, betas 0.9/0.95. Clip norm is 1.0.
-- One continuous 600k-step schedule, with 20k warmup. Stage endpoints are
-  450k, 570k, and 600k. All dataset weights, including the higher 256p D4
-  share and proportional shard weights, are explicit in the run file.
-- Bias-corrected EMA, decay 0.9999. Linear beta caption selection, log2 caption
-  loss weighting, and logit-normal timestep sampling are native mechanisms;
-  their numerical parameters remain explicit tunables.
-- Recovery checkpoints every 2k updates; keep the latest two complete copies
-  within each stage. Each checkpoint records its complete run config, model
-  architecture/capacity metadata, and the active bucket table.
+| Component | Selected setting |
+|---|---|
+| Architecture | `artflow-v2`, h1152, 16 heads, 1 double-stream + 24 single-stream blocks, FFN width 3072 (ratio 8/3), 532,496,992 parameters |
+| Text | Frozen Qwen3-0.6B, online true early exit at layer 20, hidden size 1024 |
+| Image latents | Qwen-Image VAE, 16 channels, factor 8; 2×2 latent patches |
+| Conditioning | Fused pooled text/time, factor-1000 timestep features, branch RMSNorm before gates |
+| Positions/modulation | Centered image RoPE and fixed text diagonal; independent double-stream and per-block shared single-stream modulation |
+| Muon | Original per-chunk scaling, LR 0.02, weight decay 0.0015, momentum 0.95 |
+| Auxiliary AdamW | Peak LR 1e-4, betas 0.9/0.95, epsilon 1e-8, ordinary decay 0.01 |
+| Conditioning decay | 0.4 on `txt_pooled_proj.weight`, `c_mlp.0.weight`, `c_mlp.2.weight` |
+| Gradient clipping | Global norm 1.0 |
+| EMA | Bias-corrected, decay 0.9999, updated every optimizer step |
 
-## Readiness
+Muon chunks fused QKV/modulation matrices before orthogonalization. Its update
+multiplier is `sqrt(max(1, rows/cols))` for each chunk. Conditioning matrices
+belong to AdamW. The selected decay 0.4 was installed through a full-state
+migration at 56k; [qualification and provenance](ascend_pretraining.md) explain
+that continuation.
 
-The short stability stage passed with the preceding RMS-matched Muon recipe.
-Original scaling changes the FFN down-projection update coefficient. The
-infrastructure pass exercised the selected convention in fresh 600-update
-runs and full-state replay, with the production 20k warmup horizon. Those
-checks cover early warmup, not peak-LR or long-run stability.
-See [the stability evidence](archive/ascend_stability_stage1_0924.md) and
-[current plan](ascend_pretraining_0924.md). This is a credible stability
-candidate, not a claim of optimality or long-run stability.
+## Schedule and sampling
 
-The 256p plan is installed and qualified on 16×910B2C, with micro-batches 8–72
-and accumulation 1. The real-workload and padded 2048-token tail probes peaked
-at 52.61 and 49.10 GiB allocated, respectively. September 25's FFN alignment
-comparison measured 843.29 versus 765.34 samples/s with identical sample
-identities: 10.19% faster for 0.05% fewer total parameters. See the
-[infra evidence](infra_pass.md) for conditions and limits.
+One continuous 600k-update schedule uses 20k warmup and cosine decay. AdamW
+starts at 1e-5, peaks at 1e-4 and reaches 5e-6. Stage endpoints are 450k, 570k
+and 600k (256p / 640p / 896p, a 75:20:5 step split).
 
-Native NPU RMSNorm and SwiGLU are measured execution mechanisms. The latter
-adds 4.22% throughput on a matched-node 600-update comparison, with comparable
-short-run loss/gradient distributions and unchanged parameter layout. The
-measured early-256p training rate is 878.91 samples/s; all-rank peak is
-49.68 GiB. These are short-run measurements, not long-run stability guarantees.
+Rows are sampled from explicit weighted source pools; a caption is selected
+within the row. Caption-length beta changes linearly from −1 to +1 over the
+run. A 20% short-caption reserve uses a 256-token threshold. Caption dropout
+is independently sampled at probability 0.1. Loss weighting uses log2 caption
+length relative to 128 tokens. Logit-normal timestep parameters are 0 and 1;
+resolution time shift is native. Text tokenization/encoding runs online;
+precompute stores latents and cleaned caption text with sampling metadata.
 
-Later-stage plans remain absent; accumulations 4/5 are candidates. These plans,
-accumulation settings, and transitions must be qualified before those stages
-run; they do not gate this pass or the 256p launch. Startup fails if the selected
-plan is missing. The September 25 infrastructure pass is closed. The fresh
-hero is now launched; see the [maintenance handoff](pretrain_hero_handoff.md). Exact
-full-state/RNG restoration passed on all 16 ranks, followed by a matched
-3,200-record replay, corrected prompt grids and clean shutdown. The local
-suite passes 798 tests (six NPU skips); device-specific checks passed live.
+The qualified 256p plan uses 16×910B2C, micro-batches 8–72 and accumulation 1.
+The 640p/896p plans are generated for the final mixtures below. Accumulations
+4/5 and planner budgets of 33 versus 42 GB DiT-only remain qualification
+candidates. Measure each plan and transition before its stage launches.
 
-## Launch and recovery
+## Data additions for the later resolutions
 
-Prepare the environment, models, and datasets using machine-local platform
-instructions. Set `paths.storage_root` in the complete run file to the actual
-artifact root. Relative storage roots resolve against the config file's
-location. Data/model/output/bucket paths resolve against that root; the prompt
-file resolves against the config file. There is no environment interpolation.
+The September 27 amendments address full-body people and underexposed world
+content. The running 256p mixture stays fixed.
+
+| Source | Current eligible rows / change | 640p weight | 896p weight |
+|---|---|---:|---:|
+| `d3-pexels` | +6,008 rows; pool 37,417 → 43,425 | 8.50 | 11.50 |
+| `d2-museum` | User-selected source emphasis | 0.800000 | 0.825000 |
+| `d4-extra` | D4 Pexels merged with megalith; 34,935 usable rows at 640p, 30,726 at 896p | 2.476274 | 3.467343 |
+
+D4 Pexels contributes 29,574 rows. Megalith contributes 5,361/1,152 usable
+rows at the respective resolutions. Scaling its former weights 0.38/0.13
+by the eligible-row ratios preserves the unnormalized weight per pre-existing
+row; source probabilities are normalized over the complete mixture. See
+[dataset provenance](dataset_plan.md).
+
+These are the working recipe's later-stage amendments. The active deployment
+uses its pinned complete config. Strict resume compares the full recorded
+recipe, including future stages, so applying amendments requires an explicit,
+tested stage-transition migration. Editing checkpoint metadata to conceal a
+recipe mismatch would invalidate recovery evidence.
+
+## Evaluation and telemetry
+
+- Fixed loss probe every 500 updates, requesting 512 held-out rows with
+  evaluation batch size 8. Record actual sample counts when eligibility or
+  buckets reduce the requested set; compare matched panels/counts.
+- Image grids every 2,500 updates and at the explicit stage `grid_steps`.
+  [`hero_monitor_v1.jsonl`](../assets/eval/hero_monitor_v1.jsonl) contains
+  12 scenes × Chinese/English × short/long captions = 48 images. Each scene
+  shares its seed across its four variants. Review anatomy, architecture,
+  style and layout as improved / unchanged / regressed / uncertain.
+- Grid sampling: stored EMA, Euler 50, CFG 1, resolution time shift;
+  solver times/state at least FP32, model forward and VAE decode BF16.
+- End-of-global-training KID uses 2,000 generated images.
+- Health telemetry every 250 updates, stability probes every 100, caption/source
+  logging every 25. Preserve per-update samples, losses and gradient records.
+
+Compare live and stored EMA loss together: smoothing can hide a live-model
+regression. Detailed fixed-panel metric interpretation and review rules are
+in [Ascend pretraining](ascend_pretraining.md).
+
+At the completed hero checkpoint, evaluate live weights first, then compare
+stored EMA on loss, grids and KID before selecting the post-training teacher.
+Post-hoc EMA is an option only if enough suitable checkpoint history was
+retained; the rotating two-checkpoint policy cannot reconstruct arbitrary
+historical decay profiles.
+
+## Launch, checkpoints and resolution transitions
+
+Set `paths.storage_root` in the complete run file to the prepared artifact
+root. A relative root resolves against the config file; data/model/output/
+bucket paths resolve against that root, and the prompt path against the
+config file. Platform preparation is documented in `INSPIRE.md`.
 
 ```bash
 python -m src.pretrain.train --config configs/hero.toml --stage 256p --check_config
 python -m scripts.pretrain.launch --config configs/hero.toml --stage 256p --nproc_per_node 16
 ```
 
-The launcher fixes the qualified NPU allocator policy (expandable segments)
-and one OpenMP thread per process before workers initialize. These execution
-mechanisms are not recipe switches or inherited caller choices.
+The launcher sets the qualified NPU expandable-segments allocator policy and
+one OpenMP thread per worker before initialization. It holds a writer lock,
+mirrors attempt output and terminates the worker group on NPU OOM.
 
-Select `640p` or `896p` after its predecessor finishes. The launcher finds the
-latest complete same-stage checkpoint, otherwise the predecessor's endpoint.
-It holds a writer lock throughout training, mirrors the current attempt's
-output, and terminates the worker group on NPU OOM. Explicit `--resume` selects
-a particular complete checkpoint. Resume requires the recorded recipe; the
-trainer also verifies that a same-stage bucket table has not changed.
+Save every 2,000 updates and retain the latest two complete checkpoints per
+stage. Checkpoints contain the complete run config, model metadata, active
+bucket table, model/EMA, optimizers, schedulers, sampler and per-rank RNG state.
+Recovery chooses the latest complete same-stage checkpoint; a stage's first
+launch uses its predecessor's endpoint. `--resume` selects a complete checkpoint
+explicitly. Same-stage recovery also checks bucket-table equality.
 
-SwanLab receives the entire resolved recipe, architecture version, selected
-stage, and active bucket contents. Fixed mechanisms do not produce individual
-boolean fields. Older configurations and architecture variants require their
-historical Git revision. The [prior CUDA hero record](archive/cuda_hero_recipe_0924.md)
-is retained as evidence, not a current launch procedure.
+Preserve the complete 450k and 570k endpoints before transitioning. Qualify
+the new bucket plan, accumulation, memory, monitoring and full-state recovery
+while retaining global schedule progress. Any required recipe change uses a
+tested migration with provenance. SwanLab records the complete actual recipe,
+architecture version, selected stage and active bucket contents.
 
-## September 25 launch
-
-Fresh `ascend-hero-256p` runs on 16×910B2C after the pretraining audit fixes in
-`8b4257d`. Platform job `ascend-hero-256p-0925-r3` uses the qualified HIGH
-allocation and reports directly to [SwanLab](https://swanlab.cn/@mtrya/artflow/runs/i9r8wnah).
-Its complete deployed config preserves all numerical settings above; only
-storage/output/bucket artifact paths differ. The new output root prevents
-resuming an older hero accidentally. Source/config hashes, actual progress,
-logs, full-state recovery and later-stage duties are in the
-[maintenance handoff](pretrain_hero_handoff.md).
+The [infrastructure record](infra_pretrain.md) contains matched throughput,
+recovery and monitoring measurements. The current run supplies longer-term
+stability evidence.
