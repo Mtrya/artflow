@@ -41,10 +41,24 @@ length relative to 128 tokens. Logit-normal timestep parameters are 0 and 1;
 resolution time shift is native. Text tokenization/encoding runs online;
 precompute stores latents and cleaned caption text with sampling metadata.
 
-The qualified 256p plan uses 16×910B2C, micro-batches 8–72 and accumulation 1.
-The 640p/896p plans are generated for the final mixtures below. Accumulations
-4/5 and planner budgets of 33 versus 42 GB DiT-only remain qualification
-candidates. Measure each plan and transition before its stage launches.
+All three bucket plans target 16×910B2C. Each contains 20 caption-length
+buckets per aspect ratio, up to 2,048 tokens.
+
+| Stage | Micro-batch per rank | Accumulation | Expected samples/update |
+|---|---:|---:|---:|
+| 256p | 8–72 | 1 | Depends on caption progress; about 950 in the early qualification |
+| 640p | 5–12 | 3 | 528 planned; 532 measured |
+| 896p | 3–6 | 4 | 373 planned; 375 measured |
+
+The later-stage plans use the final mixtures below and their own caption
+progress windows. Accumulation 3/4 keeps effective batches near the historical
+targets of approximately 512/400; retaining 4/5 would increase training samples
+and compute per optimizer update substantially. These are qualified practical
+choices, not a claim of a globally optimal statistical batch size. Their
+52 GiB planner ceiling includes model, encoder, optimizer, EMA, gradients and
+DDP residency. The earlier 33/42 GiB DiT-only candidates failed before their
+first update and are superseded. Full-workload results and limits are in
+[the infrastructure record](infra_pretrain.md).
 
 ## Data additions for the later resolutions
 
@@ -65,15 +79,21 @@ row; source probabilities are normalized over the complete mixture. See
 
 These are the working recipe's later-stage amendments. The active deployment
 uses its pinned complete config. Strict resume compares the full recorded
-recipe, including future stages, so applying amendments requires an explicit,
-tested stage-transition migration. Editing checkpoint metadata to conceal a
-recipe mismatch would invalidate recovery evidence.
+recipe, including future stages, so applying amendments requires an explicit
+stage-transition migration. Use
+[`migrate_stage_recipe.py`](../scripts/pretrain/migrate_stage_recipe.py) on an
+independent copy of the completed 450k checkpoint. It locks the completed
+stage, model, optimizer, monitoring and global schedule; allows future-stage
+data/bucket/accumulation amendments; verifies relocated current buckets and
+prompts; and records old/new recipes plus hashes of every preserved state
+artifact. Ordinary resume remains strict. Editing checkpoint metadata to
+conceal a recipe mismatch would invalidate recovery evidence.
 
 ## Evaluation and telemetry
 
-- Fixed loss probe every 500 updates, requesting 512 held-out rows with
-  evaluation batch size 8. Record actual sample counts when eligibility or
-  buckets reduce the requested set; compare matched panels/counts.
+- Fixed loss probe every 500 updates, requesting 512 held-out cases per
+  caption-length band with evaluation batch size 8. Record actual counts when
+  eligibility or buckets reduce the requested set; compare matched panels/counts.
 - Image grids every 2,500 updates and at the explicit stage `grid_steps`.
   [`hero_monitor_v1.jsonl`](../assets/eval/hero_monitor_v1.jsonl) contains
   12 scenes × Chinese/English × short/long captions = 48 images. Each scene

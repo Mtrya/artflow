@@ -89,9 +89,9 @@ from src.dataset.mix import DatasetEntry, parse_dataset_mix  # noqa: E402
 from src.utils.prompt_contract import MAX_SEQUENCE_LENGTH  # noqa: E402
 
 DEFAULT_BUCKETS = 10
-# 0.88 of a 48 GB card: the fraction of the card the plan may use for peak
+# 0.88 of a 64 GB card: the fraction of the card the plan may use for peak
 # allocated memory, leaving room for fragmentation and reserved overhead.
-DEFAULT_VRAM_BUDGET_GB = 0.88 * 48.0
+DEFAULT_VRAM_BUDGET_GB = 0.88 * 64.0
 DEFAULT_MIN_BATCH = 2
 DEFAULT_MAX_BATCH = 128
 DEFAULT_ALIGN_GAIN = 0.03
@@ -1287,7 +1287,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                              f"{DEFAULT_BUCKETS})")
     parser.add_argument("--vram-budget-gb", type=float, default=DEFAULT_VRAM_BUDGET_GB,
                         help="peak allocated memory the plan may use (default "
-                             f"{DEFAULT_VRAM_BUDGET_GB:.2f} GB, 88%% of a 48 GB card)")
+                             f"{DEFAULT_VRAM_BUDGET_GB:.2f} GB, 88%% of a 64 GB card)")
     parser.add_argument("--min-batch", type=int, default=DEFAULT_MIN_BATCH,
                         help=f"smallest micro-batch a bucket may take (default "
                              f"{DEFAULT_MIN_BATCH})")

@@ -62,7 +62,7 @@ before an intervention that could invalidate comparison or recovery.
 
 Use the checkpoint's recorded complete recipe and verify the pinned files
 against the manifest. The working recipe has September 27 later-stage data
-amendments; compare it with deployed/checkpoint state before applying them.
+and batching amendments; compare it with deployed/checkpoint state before applying them.
 Strict resume checks the entire recipe, including future stages.
 
 Determine whether the prior attempt is running, preempted, dead or blocked in
@@ -98,6 +98,61 @@ RNG exactly. The original cloud series already contained loss through 57,094
 and stability through 57,000. Thus cloud points in that overlap still represent
 the preceding recipe. Use the continuation's local JSONL for 56,001–57,094
 and preserve the actual global step when comparing phases.
+
+## Prepared 450k resolution transition
+
+The September 27 working recipe selects accumulation **3/4** for 640p/896p
+with micro-batches **5–12 / 3–6** on 16×910B2C. The source mixtures are the
+user's settled values. Throughput, tail coverage and qualification limits are
+in [the infrastructure record](infra_pretrain.md). The current 256p job keeps
+its pinned recipe; do not restart it to install future-stage settings.
+
+`repo-pretrain-later-0927` is the prepared snapshot under `ARTFLOW_ROOT`.
+Its complete runtime config and all three bucket files have their own manifest
+in `INSPIRE.md`. A read-only amendment preflight passed against the real
+184k checkpoint: exactly six future-stage fields differ (datasets, bucket
+plan and accumulation for each later stage), plus verified operational file
+relocations. This did not modify or resume the hero checkpoint.
+
+The separate native qualification completed both stage transitions and an
+896p replay. All 16 ranks restored model/optimizers/schedulers/EMA/RNG exactly;
+the replay matched 128 rank/update sample-identity hashes and all endpoint
+RNG/sampler states. Both higher-resolution monitoring paths and 48-image panels
+completed. Brief early clipping peaked at 1.28/1.87 with no skipped updates;
+this supports infrastructure readiness, not a guarantee about the future
+hero transfer. Detailed conditions are in the infrastructure record.
+
+At the completed 450k endpoint, preserve the original checkpoint in the
+finished 256p stage directory. From the prepared snapshot, create an independent
+amended copy, then explicitly select it for the first 640p launch:
+
+```bash
+cd "$ARTFLOW_ROOT/repo-pretrain-later-0927"
+python -m scripts.pretrain.migrate_stage_recipe \
+  --source "$ARTFLOW_ROOT/runs/ascend-hero-wd04-56k/ascend-hero-256p/checkpoint_step_450000" \
+  --destination "$ARTFLOW_ROOT/keep/hero-recipe-0927/checkpoint_step_450000" \
+  --config configs/hero.toml \
+  --reason "Install measured later-resolution buckets, accumulation and settled data mixtures"
+bash scripts/ascend/pretrain.sh \
+  --config configs/hero.toml --stage 640p --nproc_per_node 16 \
+  --resume "$ARTFLOW_ROOT/keep/hero-recipe-0927/checkpoint_step_450000" \
+  --verify_resume_state
+```
+
+The migration refuses an existing destination and records hashes plus both
+recipes. It preserves model, both optimizers/schedulers, EMA, sampler and
+per-rank RNG files byte for byte. Stage transitions reset the sampler for the
+new data/shape stream while retaining global optimizer/scheduler/EMA progress.
+Verify all 16 restore reports and the 600k scheduler horizon at launch.
+Review the initial and 452k 640p grids and live/EMA loss, gradients and stability
+telemetry; short infrastructure checks cannot prove the actual 450k transfer
+will remain stable.
+
+Later 640p recovery can use ordinary same-stage discovery. Preserve its
+complete 570k endpoint; 896p can use ordinary predecessor discovery with the
+same prepared config, because both later-stage recipes are already recorded.
+The launch commands belong in separately scheduled allocations after each
+predecessor has completed; this preparation has not launched a later hero stage.
 
 ## Runtime records
 

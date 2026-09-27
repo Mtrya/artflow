@@ -1,8 +1,8 @@
 # Complete Ascend pretraining run. All tunables are required; no overlays.
 # Relative storage_root is resolved from this file. Dataset/model/output paths
 # are relative to storage_root; prompts_file is relative to this file.
-# The 256p bucket plan and accumulation are qualified on 16 Ascend 910B cards.
-# Later-stage plans must be measured and installed before those stages launch.
+# Bucket plans and accumulation target 16 Ascend 910B2C cards.
+# Measurement conditions and transition checks are in notes/infra_pretrain.md.
 
 [paths]
 storage_root = ".."
@@ -143,7 +143,8 @@ weight = 33.371500
 [[stages]]
 name = "640p"
 end_step = 570000
-gradient_accumulation_steps = 4
+# About 528 samples/update on 16 ranks; micro-batches 5–12 by bucket.
+gradient_accumulation_steps = 3
 bucket_plan = "bucket_plans/ascend/hero-640p-k20.json"
 eval_dataset_path = "precomputed_dataset/light-eval@640p"
 grid_steps = [450000, 452000, 570000]
@@ -158,7 +159,7 @@ weight = 12.320000
 
 [[stages.datasets]]
 path = "precomputed_dataset/d2-museum@640p"
-weight = 0.780000
+weight = 0.8000000
 
 [[stages.datasets]]
 path = "precomputed_dataset/d3-human@640p"
@@ -174,15 +175,15 @@ weight = 5.883045
 
 [[stages.datasets]]
 path = "precomputed_dataset/d3-pexels@640p"
-weight = 6.660000
+weight = 8.500000
 
 [[stages.datasets]]
 path = "precomputed_dataset/d3-synth-v2@640p"
 weight = 0.780000
 
 [[stages.datasets]]
-path = "precomputed_dataset/d4-megalith@640p"
-weight = 0.380000
+path = "precomputed_dataset/d4-extra@640p"
+weight = 2.476274
 
 [[stages.datasets]]
 path = "precomputed_dataset/d4-pd12m@640p"
@@ -219,7 +220,8 @@ weight = 4.654104
 [[stages]]
 name = "896p"
 end_step = 600000
-gradient_accumulation_steps = 5
+# About 373 samples/update on 16 ranks; micro-batches 3–6 by bucket.
+gradient_accumulation_steps = 4
 bucket_plan = "bucket_plans/ascend/hero-896p-k20.json"
 eval_dataset_path = "precomputed_dataset/light-eval@896p"
 grid_steps = [570000, 572000, 600000]
@@ -234,7 +236,7 @@ weight = 11.450000
 
 [[stages.datasets]]
 path = "precomputed_dataset/d2-museum@896p"
-weight = 0.520000
+weight = 0.8250000
 
 [[stages.datasets]]
 path = "precomputed_dataset/d3-human@896p"
@@ -246,11 +248,11 @@ weight = 15.140000
 
 [[stages.datasets]]
 path = "precomputed_dataset/d3-pexels@896p"
-weight = 10.740000
+weight = 11.500000
 
 [[stages.datasets]]
-path = "precomputed_dataset/d4-megalith@896p"
-weight = 0.130000
+path = "precomputed_dataset/d4-extra@896p"
+weight = 3.467343
 
 [[stages.datasets]]
 path = "precomputed_dataset/d4-pd12m@896p"

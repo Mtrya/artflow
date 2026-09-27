@@ -58,8 +58,8 @@ one strict run config covering the entire resolution curriculum.
 | 2: model experiments | Complete | Width/depth, modulation, text exit, positional scheme and optimizer selected. |
 | 3: execution efficiency | Complete | Corrected CUDA measurements supplied the initial implementation evidence. |
 | 3.5: captions and buckets | Complete | Multi-caption row sampling, length curriculum and variable-aspect planning. |
-| 4: Ascend qualification | Complete for 256p | 16×910B2C launch, full-state recovery, monitoring and measured infrastructure improvements. |
-| 5: hero pretraining | Active | Finish 256p, qualify each later resolution and its transition, then finish 600k. |
+| 4: Ascend qualification | Complete | 16×910B2C plans for all resolutions, measured execution gains, native transitions, full-state recovery and monitoring. |
+| 5: hero pretraining | Active | Finish 256p, activate the finalized recipe at 450k, monitor the actual resolution transfers, then finish 600k. |
 | 6: post-training | Preparation | Ascend execution/reward qualification, 640p pilot, then 896p cold start and joint DMD+RL. |
 | 7: publication | Pending completed training | Final inference pipeline, `inko` rename, model release and demo. |
 
@@ -90,11 +90,15 @@ Execute [the complete hero recipe](hero_recipe.md) on Ascend. The continuous
 450k and 570k resolution boundaries. Record actual sample exposure, elapsed
 time and NPU-hours throughout training.
 
-The 256p plan uses 16×910B2C and accumulation 1. The 640p/896p dataset mixtures
-include the September 27 additions. Their bucket plans and candidate
-accumulations 4/5 need measured qualification before use. Resolve any change to
-the checkpoint's complete recorded recipe through an explicit, tested
-transition migration. Preserve the predecessor's complete endpoint.
+All three plans target 16×910B2C, with accumulation **1/3/4**. The 640p/896p
+plans use the settled September 27 mixtures and measured memory-sized
+micro-batches 5–12 / 3–6; native throughput was 173.47 / 83.90 samples/s.
+All 280 candidate aspect/length/batch tail cases passed. Measurement scope and
+transition/recovery evidence are in [the infrastructure record](infra_pretrain.md).
+Apply the complete recipe's future-stage amendments through the explicit
+checkpoint migration tool at 450k, preserving the predecessor's original
+complete endpoint. Continue normal loss/gradient/functional monitoring when
+the actual hero reaches each new resolution.
 
 Review the fixed bilingual panel, live/EMA losses and internal stability
 telemetry at the recipe's cadence. Follow the evidence-based review and

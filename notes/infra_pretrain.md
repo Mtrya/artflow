@@ -1,7 +1,7 @@
 # Ascend pretraining infrastructure
 
-Updated September 27, 2026. This record captures the qualified 256p execution
-path and the measurements behind it. The recipe is in
+Updated September 27, 2026. This record captures the Ascend execution path,
+resolution-specific bucket plans and their measurements. The recipe is in
 [hero_recipe.md](hero_recipe.md); current operation and recovery are in
 [ascend_pretraining.md](ascend_pretraining.md).
 
@@ -30,7 +30,96 @@ unchanged, and peak allocation fell 52.591 → 49.678 GiB.
 The selected 256p bucket plan uses micro-batches 8–72 and accumulation 1.
 Real-workload and padded 2,048-token tail probes peaked at 52.61 and 49.10 GiB
 allocated. Native RMSNorm/SwiGLU and launch policies are settled mechanisms
-in code. Later resolutions need their own measurements.
+in code. The later-resolution measurements are recorded below.
+
+## Later-resolution plans — September 27
+
+The final 640p/896p mixtures contain 1,304,540/794,599 eligible rows across
+17/14 sources. All source caption sidecars passed dataset validation, and all
+five latent aspect shapes were inventoried. No source weights were changed.
+
+Calibration retained the FP32 model, EMA, frozen BF16 Qwen k20, initialized
+Muon/AdamW states and gradients, plus a model-sized DDP-buffer reserve. The
+52 GiB full-residency ceiling replaces the earlier DiT-only budgets; those
+earlier candidates OOMed before their first update. Fitted memory residuals
+were at most 0.60 GiB. Bounds use each stage's caption-progress window
+(.75–.95 / .95–1.0), 20 buckets per aspect and the 2,048-token cap.
+
+Each resolution compared time-balanced and memory-sized buckets on the same
+16×910B2C allocation, with 64 native training updates per candidate and the
+first 20 excluded. Source weights, initialization, optimizer and accumulation
+were held fixed. Different batch sizes change sample grouping, so this is a
+samples-per-second comparison, not a paired loss-quality experiment.
+
+| Stage | Aligned samples/s | Selected memory-sized samples/s | Samples/update | Seconds/update | Peak allocated / reserved GiB |
+|---|---:|---:|---:|---:|---:|
+| 640p, accumulation 3 | 169.78 | **173.47** | 531.66 | 3.0648 | 51.18 / 51.59 |
+| 896p, accumulation 4 | 83.30 | **83.90** | 375.43 | 4.4747 | 51.74 / 52.67 |
+
+Time alignment needed a measured gain of at least 3% with a positive lower
+95% block-bootstrap bound to be retained. Its measured changes were −2.13%
+(interval −3.04% to −1.20%) and −0.72% (−1.61% to +0.13%); neither qualifies.
+These intervals describe variation within the short comparison phases, not
+future-node reproducibility. Earlier 128-update aligned bring-ups measured
+169.12/83.31 samples/s, consistent with the repeated baselines. Accumulation
+reduces the significance of the slowest individual micro-batch, which the
+planner's isolated time-alignment prediction does not model.
+
+The selected ranges are 5–12 / 3–6 samples per rank. Harmonic emitted-batch
+estimates are 11.002774 / 5.835881, giving 528.13 / 373.50 samples per update
+with accumulation 3/4. A forced-shape check covered **all 280 distinct
+aspect/length/batch combinations** across both candidates, three forward/backward
+repeats each, with finite loss and gradient checks. Peak allocations were
+51.57/52.03 GiB against 60.96 GiB device capacity. This complements the native
+mixed-stream tests; it is not a long-run allocator or stability guarantee.
+
+The throughput probes used the same mature 180k model weights with fresh
+optimizers, fixed caption progress .85/.975, the normal 600k schedule, and
+monitoring disabled. Rates exclude startup, checkpoint and periodic evaluation
+costs. They qualify execution; actual 450k/570k model transfer and training
+stability remain observations for the hero at its normal monitoring cadence.
+
+Selected plan SHA-256 values:
+
+- 640p: `71f9599966773ba54e20bac5daf8de8a52c4f60dc9c0305ec9c8dbc8c168b066`
+- 896p: `9cc148738b14f40a6fa34b53843559db5173e936b8275dbe9a681493b3aed824`
+
+Detailed calibration, comparison and tail evidence is archived locally under
+`notes/archive/bucket_qualification_0927*`. Platform artifact locations are in
+`INSPIRE.md`.
+
+A bounded native curriculum then exercised **256p→640p→896p**, using
+diagnostic endpoints 2/16 and stopping at 40 while retaining the 600k scheduler
+horizon. The first checkpoint carried the deployed hero's legacy future-stage
+fields; the migration tool independently copied it and amended six future
+data/bucket/accumulation fields. The other 56 inventoried artifacts were
+byte-identical. Both transitions and the 896p step-32 recovery verified exact
+model, optimizers, schedulers, EMA and RNG restoration on **all 16 ranks**.
+The replay's eight updates matched all **128 rank/update identity hashes**
+(3,026 global samples); endpoint sampler and Python/NumPy/CPU-Torch/NPU RNG
+states also matched on every rank. Maximum absolute paired loss difference
+was 2.27e-5; post-update floating-point equality is not required.
+
+Monitoring passed at both higher resolutions: batch-8 live/EMA loss probes,
+health/stability telemetry, complete checkpoints, and the full 48-prompt,
+50-ODE-step image panels. The bounded check requested 64 cases per caption
+band and obtained 195/170 total cases; long bands were sparse, including zero
+cases above 1,024 tokens. Steady live+EMA evaluation took 45.42/84.15s for
+those reduced panels, **not the production 512-per-band request**. Checkpoint
+saves took about 4.27/4.0s. Long-caption memory coverage comes from the forced
+shapes above, not these held-out panels.
+
+All diagnostic updates applied. Four early 640p updates clipped (maximum
+pre-clip norm 1.2834), as did the first two 896p updates (maximum 1.8710);
+later updates fell below 1, and the recovery segment had no clips. These
+brief transfer transients are recorded rather than presented as spike-free
+stability evidence. The mature-model/fresh-optimizer test is not the actual
+450k/570k continuation and does not justify changing its optimizer recipe.
+
+The prepared production recipe also passed read-only amendment preflight
+against the real 184k checkpoint. The active 256p deployment is unchanged.
+Future-stage activation follows the explicit 450k handoff in
+[Ascend pretraining](ascend_pretraining.md).
 
 ## Recovery and monitoring qualification
 
@@ -56,7 +145,9 @@ At that workload, 450k updates project to about 150 hours plus one-time costs.
 Actual duration depends on caption progression, sample grouping and system
 conditions. Total curriculum time is
 `450k × t256 + 120k × t640 + 30k × t896 + one-time costs`; higher-resolution
-rates remain to be measured.
+compute-only estimates are now approximately 102.2 hours for 640p and 37.3
+hours for 896p using the measured rates above. Add their monitoring costs;
+these estimates are not a wall-clock completion promise.
 
 ## Mechanisms and resolved failures
 
