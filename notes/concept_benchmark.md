@@ -45,6 +45,52 @@ Seed 是 **1–5 个概念的跨轴组合**；轴内避免重复组合，跨领�
 Verdict 聚合该概念跨 seed、语言、prompt 和随机种子的表现。阈值在首轮用
 真实分布校准；用户人工过 grid，拦截判官制造的假缺口。
 
+## 词表源落地（2026-09-27 晚）
+
+代码分工：`src/dataset/concept_vocab.py` 放可测的库逻辑（源加载、清洗、
+频率洗尾、轴归属、seed 采样），`scripts/data/build_concept_vocab.py` 放
+下载与编排流水线。原始 dump 不进 git。
+
+已拉取并验证的源：
+
+| 源 | 规模 | 质量检查 |
+|---|---|---|
+| WordNet（NLTK） | 82k 名词 synset | 实体轴 60.3k lemma → 形态过滤 37.6k → zipf≥2.5 共 21.0k；场景轴 4.8k→933；人物/职业 18.9k→4.8k。小写过滤可去绝大多数专名，仍需 NSFW blocklist |
+| ImageNet-1k | 1,000 标签 | `data/vocab/imagenet1k.json`，直接可用 |
+| Getty AAT explicit dump | 56,775 英文优选词（带 facet） | 134MB zip 走代理下载，已抽取为 `data/vocab/aat_en_pref.jsonl`；Objects 28.4k / Materials 4.5k / Activities 3.9k / Styles 5.7k；1,720 个 `<...>` 导航节点可滤除 |
+| 策展国画清单 | 80 技法 + 56 实体/场景 | `data/vocab/curated/zh_*.jsonl`，中英对照 v0 |
+| 世界先验频率 | wordfreq（en+zh，含 jieba） | 已验证；zipf 2.5 阈值下 Objects 保留 62%、Materials 60%、Activities 66%、Styles 仅 35% |
+
+**v1 词表产物**（`data/vocab/concepts_v1.jsonl`，50k 概念，构建命令见
+`data/vocab/concepts_v1.report.md`）：entity 45.7k / technique 3.2k /
+scene 1.1k。构建中确认的三条结构性决定：
+
+1. AAT 轴归属按**完整层级路径**（parentString）而非 facet：Processes and
+   Techniques、Color 两个 hierarchy 直接进技法轴（process 1,947 +
+   color 465），Settlements and Landscapes 与 Built Complexes and
+   Districts 进场景轴（972），Abstract 的 Activities 其余部分丢弃。
+2. WordNet noun.location 抽象污染无法靠物理实体祖先修复（time zone 与
+   desert 同树），场景轴只保留自然地貌/聚居地祖先子树（120 条），
+   建成环境场景交给 AAT。
+3. NTriples 的非 ASCII 是字面 `\uXXXX` 转义，抽取时必须反转义。
+
+已知残留噪声（留给 seed 采样与 LLM 展开稀释）：AAT Styles 仍有少量
+民族名漏网（inuit/cara 级）；Activities→process 有实验室方法
+（electron probe microanalysis）；AAT 为复数形式、与 WordNet 单数
+未归一。
+
+**训练频率回扫 v1**（2026-09-27 晚，`data/vocab/trainfreq_v1.jsonl`，
+扫描器在 qb `$W/concept_vocab/scan_trainfreq.py`）：对 640p 全部 17 个
+数据集的 1,304,540 行 caption 做词索引匹配（英文按词序列、末词容忍复数，
+中文子串），行级去重计数。结果：48% 概念有命中（entity 49% / scene 45% /
+technique 39%）；策展清单 135 条中 126 条有命中，零命中的 9 条
+（荷叶皴/乱柴皴/逆锋/锥画沙/花盆底鞋/梅兰竹菊/江南水巷/徽州村落等）
+正是预期的领域缺口候选。两条已知偏差，判读时必须保留：
+
+- 多词概念的 wordfreq 先验是逐词平均，虚高（"range animal" zipf≥4 但
+  作为短语几乎不出现）；零命中清单里的这类条目是词表噪声，不是数据缺口。
+- 集合型概念（梅兰竹菊）在 caption 里通常拆开写，短语匹配漏计。
+
 ## 待定项
 
 1. 判官与协议在词表、prompt 就绪后讨论。候选 SII Qwen3.8-27B thinking off
