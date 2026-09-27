@@ -7,34 +7,44 @@ alongside loss, gradients and functional response.
 
 ## Latest recorded observation
 
-The last recorded patrol is **September 27, 14:20 CST, approximately step
-165.5k**. These observations come from the existing run record; this document
-audit did not query the platform.
+The last recorded patrol is **September 27, 19:15 CST, approximately step
+181k**. Full-history curves (0–181k) are plotted under
+`notes/assets/hero_patrol_20260927_1910/`; internal readings come from
+`stability.jsonl` step 181,000 and `training_metrics.jsonl` step 180,319 on
+the pod.
 
 | Signal | Recorded value |
 |---|---|
-| Throughput / peak allocation | 816 samples/s / 48.44 GiB |
-| Last 400 updates | Median loss 0.8086; median pre-clip gradient 0.185, maximum 0.546; zero clips/skips |
-| Evaluation | EMA 0.83561, live approximately 0.8463; both improving |
-| EMA relative distance | 0.2685, declining |
-| Conditioning / hidden RMS | 94.9 / 77.8 |
-| Maximum residual / gate RMS | 20,012 / 2,995 |
-| Block 24 output / maximum branch norm gain | 20,171 / 1.753 |
-| Absolute conditioning time spread | 94.9 × 0.0638 = 6.05 |
-| Conditioning update RMS | Typical envelope 0.21–0.26; one recorded 0.47 outlier |
+| Throughput | ~805 samples/s median over the last 400 updates, stable |
+| Last 400 updates | Median loss 0.8047; median pre-clip gradient 0.196, maximum 0.619; zero clips/skips |
+| Evaluation | EMA 0.83535, live approximately 0.8457; both flat within noise over 178.5k–181k (EMA was 0.83561 at 165.5k) |
+| EMA relative distance | 0.2633, still declining |
+| Conditioning / hidden RMS | 107.2 / 91.8 |
+| Maximum residual / gate RMS | 22,134 / 3,341 (both at block 23–24 tail) |
+| Block 24 output / maximum branch norm gain | 22,134 / 1.785 |
+| Absolute conditioning time spread | 107.2 × 0.0608 = 6.51 |
+| Conditioning update RMS | Median 0.268 over >170k, p90 0.34, maximum 0.41 — the envelope keeps rising |
+| Caption-borne conditioning fraction | `condition_caption_ratio` **0.0069**, below the 0.008 (≈2 bf16 levels) triage line set September 25; `hidden_caption_ratio` 0.0085 |
+| Negative tail fraction | 0.488, oscillating around ~0.5 since ~130k |
 
-Across 145k→165.5k, growth per 1k updates was approximately 0.81% residual,
-0.84% conditioning, 1.33% hidden and 0.80% gate RMS. These positive log slopes
-describe exponential growth over the measured window. Recent residual growth
-was slower, around 0.6%/1k. Window-dependent acceleration estimates require
-refitting; continued scale growth remains an investigation item despite
-improving evaluation.
+Growth per 1k updates, refit on 160k→180k (previous window 145k→165.5k in
+parentheses): residual +0.71% (0.90%), gate +0.75% (0.85%), conditioning
++0.83% (0.94%), hidden +1.15% (1.43%). All four log-slope estimates
+**decelerated**; growth persists but is no longer accelerating on any tracked
+carrier.
 
-The 162k→164k matrix-RMS changes per 1k were +0.33% (`c_mlp.0`), −0.14%
-(`c_mlp.2`) and +0.05% (pooled projection). These small mixed changes do not
-establish a stationary balance. The maximum MLP branch ratio, 1,715, occurs
-at block 0 with input RMS 0.512; inspect absolute branch contributions when
-the denominator is this small.
+The 178k→180k matrix-RMS changes per 1k were +2.08% (`c_mlp.0`), −2.47%
+(`c_mlp.2`) and +1.54% (pooled projection) — larger magnitudes than the
+162k→164k window (+0.33/−0.14/+0.05), but the sampled-weight decomposition at
+181k still nets negative (`norm_sq_change_mean` −4.4e-5), so the decay-0.4
+balance holds on average and single 2k windows remain noisy.
+
+Per the September 25 triage rule, `condition_caption_ratio` crossing ~0.008
+makes the **text-ablation functional eval the next indicated measurement**.
+No recipe change is implied; the question is whether the shrinking
+caption-borne signal is still functionally used. Verdict this patrol: **no
+intervention**; run the text-ablation eval when convenient (it needs the
+pod), keep watching update-RMS envelope and caption ratios.
 
 Patrol cadence is every six hours, using full-history curves, full-resolution
 local scalars, internal per-layer metrics and a recent complete checkpoint
