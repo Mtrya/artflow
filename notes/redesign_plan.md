@@ -539,6 +539,12 @@ domain.
 
 **Goal**: a usable public release whose explanations stand on their own.
 
+September 27, 2026 decision: the standalone generation pipeline and its demo
+are removed during training. Rewrite them **only after the entire model is
+trained**, using the finalized checkpoint metadata, text conditioning and
+sampling contract. This belongs to Stage 7; training and evaluation continue
+to use their existing sampling helpers.
+
 - 7.0 **Rename to `inko` (user decision, 2026-09-12)**: rename the repository
   and model from `artflow` to `inko` before publication. Update comments,
   documentation, model cards, examples, and repository/model links consistently;

@@ -1,8 +1,8 @@
 # Ascend pretraining hero maintenance handoff — September 25, 2026
 
 This is the fresh post-infra hero authorized by the user on September 25.
-Use [the complete recipe](hero_recipe.md), [infra evidence](infra_pass.md), and
-[the audit disposition](silly_issues.md). No H200/4090 checkpoint is involved.
+Use [the complete recipe](hero_recipe.md) and [infra evidence](infra_pass.md).
+No H200/4090 checkpoint is involved.
 The hero is the longer stability validation; it is not evidence that stability
 at peak learning rate has already been established.
 
