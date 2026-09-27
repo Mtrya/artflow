@@ -1,5 +1,49 @@
 # Silly issues — training and sampling audit, September 25, 2026
 
+## Current validity — September 27, 2026
+
+Rechecked the working tree based on `df1910b`, then fixed issue 6 in the
+follow-up below. **Only issue 4 remains open.** The September 25 pretraining
+disposition below records the earlier launch state.
+
+| Issue | Current status | Verification |
+|---|---|---|
+| 1. Rounded sampling timesteps | Fixed | Euler and Heun construct FP32 model times, including Heun's corrector. |
+| 2. BF16 ODE accumulation | Fixed | Both solvers promote low-precision state and velocities before integration; explicit FP64 state is preserved. |
+| 3. Microbatch-dependent caption dropout | Fixed | No forced restoration; partition-invariance, singleton, all-dropped and real-tokenizer regressions pass. |
+| 4. Standalone generation contract | Still valid | Reproduced missing `txt_pooled` with a tiny real ArtFlow in both CFG and non-CFG calls. A wrapper spy confirms no encoder-layer selection (the hero still selects layer 20). Toy-model probes reproduce endpoint CFG and conditioning-batch mismatches. |
+| 5. Final encoder-layer early exit | Fixed | The final exit hooks Qwen's final norm; real small-Qwen training/full-forward equivalence tests pass at first, intermediate and final layers. |
+| 6. Decode-helper dtype | Fixed September 27 | The helper now uses the VAE parameter's `.dtype` and moves/casts latents in one `.to(device=device, dtype=dtype)` call. Regression coverage uses a real Conv3d-backed stub decoder with FP32/BF16 inputs and weights. |
+
+The two-step CFG probe gives `3.5*x_initial` instead of `4*x_initial` with
+Euler, and `4.28125*x_initial` instead of `6.25*x_initial` with Heun. With
+two prompts and two images per prompt, latent/text batch sizes are 4/2
+without CFG and 8/4 with CFG. These probes isolate the pipeline logic using
+mocked text features and toy velocities; they do not measure image quality.
+
+Audit validation: `OMP_NUM_THREADS=2 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+.venv/bin/python -m pytest tests/test_solvers.py
+tests/test_training_caption_dropout.py tests/test_fast_paths.py
+tests/test_prompt_grid.py tests/test_kid_eval.py tests/test_time_shift.py
+tests/test_timestep_factor.py -q` — **76 passed**, no skips, 36.68 seconds.
+Additional CPU reproductions ran inline; no probe scripts were retained.
+Training grids and KID still use their own wrappers, pass pooled text and
+the configured exit layer, and decode directly with the VAE. The initial audit
+did not rerun platform qualification or the complete test suite and changed
+only this note.
+
+Issue 6 follow-up: `tests/test_vae_codec.py` reproduces the dtype error in both
+conversion directions before the fix (two failures, two matching-dtype passes).
+It also checks batched, non-square RGB output and clipping to image range.
+After the fix, all four regression cases pass (3.02 seconds).
+The full suite with the same offline/thread environment passes outside the
+sandbox: **820 passed, six NPU skips**, nine warnings, 44.99 seconds
+(`.venv/bin/python -m pytest tests/ -q --tb=short`). The initial sandboxed
+full-suite run reported failures and stalled; it was interrupted. Those
+failures did not recur outside the sandbox. No platform qualification was run.
+The implementation change is confined to the decode helper; the standalone
+pipeline, training recipe and platform jobs are unchanged.
+
 ## Pretraining disposition — September 25
 
 The launch follow-up fixed the issues that affect pretraining:
