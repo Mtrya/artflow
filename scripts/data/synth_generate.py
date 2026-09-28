@@ -24,6 +24,8 @@ import time
 from pathlib import Path
 from typing import Dict, List
 
+from PIL import Image
+
 # Inference recipe per generator.  Z-Image-Turbo is guidance-distilled, so the
 # guidance scale is zero and a handful of steps is the whole sampler; Qwen-Image
 # is a full 50-step model with classifier-free guidance.
@@ -42,6 +44,11 @@ RECIPES: Dict[str, Dict] = {
     # and no classifier-free guidance, which is what the distillation expects.
     "qwen-image-lightning": {"pipeline": "QwenImagePipeline", "steps": 8,
                              "guidance": 1.0, "extra": {}},
+    # Qwen-Image 2.1 is meant to be sampled without guidance (the pipeline only
+    # applies classifier-free guidance when asked with true_cfg_scale > 1), so
+    # 40 steps with no guidance is the published recipe.
+    "qwen-image-2.1": {"pipeline": "QwenImage21Pipeline", "steps": 40,
+                       "guidance": None, "extra": {}},
     "ernie-image-turbo": {"pipeline": "ErnieImagePipeline", "steps": 8,
                           "guidance": 1.0, "extra": {"use_pe": False},
                           "resolutions": [(1024, 1024), (1264, 848), (848, 1264),
@@ -208,6 +215,20 @@ def main() -> None:
                 kwargs["prompt"] = row["text"]
             image = pipe(**kwargs).images[0]
             record["seconds"] = round(time.time() - call_started, 2)
+            if image.mode != "RGB":
+                # Qwen-Image 2.1 can return RGBA.  An opaque alpha is simply
+                # dropped; a picture with real transparency is composited over
+                # white, because a training JPEG must not be a subject on black,
+                # and the row records that this happened.
+                alpha = image.getchannel("A")
+                transparent = alpha.getextrema()[0] < 250
+                record["transparent"] = transparent
+                if transparent:
+                    background = Image.new("RGB", image.size, "white")
+                    background.paste(image, mask=alpha)
+                    image = background
+                else:
+                    image = image.convert("RGB")
             image.save(image_path, quality=args.quality)
             sink.write(json.dumps(record, ensure_ascii=False) + "\n")
             sink.flush()
