@@ -667,8 +667,9 @@ def gbif_payload(results, end=True):
 
 
 def gbif_routes(pages, usage_key=777):
-    """``pages`` maps an offset to occurrence rows; match always resolves."""
+    """``pages`` maps an offset to occurrence rows; the term always resolves."""
     return {
+        fetch_gbif.INAT_TAXA: {"results": [{"name": "Pica pica"}]},
         GBIF_MATCH: {"usageKey": usage_key, "scientificName": "Pica pica",
                      "confidence": 99, "matchType": "EXACT"},
         GBIF_SEARCH: lambda url, params: pages.get(params["offset"], gbif_payload([])),
@@ -698,8 +699,10 @@ class TestGbif(ReinforceTest):
         self.assertEqual(row["image_url"], "https://cdn.example.org/img0.jpg")
         self.assertEqual((row["width"], row["height"]), (1792, 1344))
         self.assertTrue(Path(row["local_path"]).exists())
+        taxa_params = session.json_calls(fetch_gbif.INAT_TAXA)[0][1]
+        self.assertEqual(taxa_params, {"q": "magpie", "per_page": 1})
         match_params = session.json_calls(GBIF_MATCH)[0][1]
-        self.assertEqual(match_params, {"name": "magpie"})
+        self.assertEqual(match_params, {"name": "Pica pica"})
         search_params = session.json_calls(GBIF_SEARCH)[0][1]
         self.assertEqual(search_params["taxon_key"], 777)
         self.assertEqual(search_params["mediaType"], "StillImage")
@@ -707,8 +710,23 @@ class TestGbif(ReinforceTest):
         self.assertEqual(search_params["limit"], 300)
         self.assertEqual(search_params["license"], "CC_BY_NC_4_0")  # last of the OR'd three
 
-    def test_no_match_marks_term_exhausted(self):
+    def test_no_inat_taxon_marks_term_exhausted(self):
         session = FakeSession(json_routes={
+            fetch_gbif.INAT_TAXA: {"results": []},
+            GBIF_MATCH: {"usageKey": 777},
+            GBIF_SEARCH: gbif_payload([gbif_occurrence(502)]),
+        })
+        out = self.tmpdir()
+        run_harvest(fetch_gbif, options(fetch_gbif, out, make_queries(out, "quark | 5")),
+                    session)
+        self.assertEqual(read_metadata(out), [])
+        self.assertTrue(read_state(out)["quark"]["exhausted"])
+        self.assertEqual(session.json_calls(GBIF_MATCH), [])
+        self.assertEqual(session.json_calls(GBIF_SEARCH), [])
+
+    def test_no_gbif_match_marks_term_exhausted(self):
+        session = FakeSession(json_routes={
+            fetch_gbif.INAT_TAXA: {"results": [{"name": "Quarkus imaginarium"}]},
             GBIF_MATCH: {"matchType": "NONE", "confidence": 0},
             GBIF_SEARCH: gbif_payload([gbif_occurrence(502)]),
         })

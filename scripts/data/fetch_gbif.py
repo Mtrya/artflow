@@ -2,11 +2,12 @@
 """Fetch GBIF occurrence photos for concept-reinforcement terms.
 
 Source: the GBIF API (https://api.gbif.org/v1/), which needs no key.  Each
-term is resolved to a taxon once (``species/match``; the resolved key is
-cached in the state file, so a resume does not re-match) and its occurrences
-are paged with ``mediaType=StillImage`` plus the three GBIF licence classes
-(``CC0_1_0``, ``CC_BY_4_0``, ``CC_BY_NC_4_0``) — the same licence posture as
-the iNat leg.  GBIF re-exports the iNaturalist research-grade dataset, which
+term is resolved to a taxon once (iNaturalist's ``taxa`` endpoint handles the
+vernacular name, GBIF's ``species/match`` the scientific name; the resolved
+key is cached in the state file, so a resume does not re-match) and its
+occurrences are paged with ``mediaType=StillImage`` plus the three GBIF
+licence classes (``CC0_1_0``, ``CC_BY_4_0``, ``CC_BY_NC_4_0``) — the same
+licence posture as the iNat leg.  GBIF re-exports the iNaturalist research-grade dataset, which
 the iNat leg already harvests, so rows carrying that dataset key are recorded
 as skips instead of duplicating it; everything else (museum specimens, eBird,
 smaller citizen-science portals) is new supply.
@@ -64,6 +65,11 @@ from scripts.data.fetch_reinforce_common import (
 
 MATCH = "https://api.gbif.org/v1/species/match"
 SEARCH = "https://api.gbif.org/v1/occurrence/search"
+# GBIF's species/match no longer resolves vernacular names; iNaturalist's
+# taxa endpoint does (it is what the iNat leg's taxon_name search uses), so
+# term resolution goes through it first and the scientific name it returns
+# is matched against GBIF.
+INAT_TAXA = "https://api.inaturalist.org/v1/taxa"
 # The API refuses to page past this many matches.
 MAX_RESULTS = 100000
 LICENSES = (("license", "CC0_1_0"), ("license", "CC_BY_4_0"),
@@ -95,7 +101,20 @@ def occurrence_alt(result: Dict) -> str:
 
 
 def match_taxon(session: requests.Session, term: str) -> dict:
-    return get_json(session, MATCH, {"name": term})
+    """Resolve a vernacular term to a GBIF taxon via iNaturalist's resolver.
+
+    Returns the GBIF match payload (with ``resolved_via`` set to the iNat
+    scientific name), or ``{}`` when either step fails to resolve.
+    """
+    taxa = get_json(session, INAT_TAXA, {"q": term, "per_page": 1})
+    results = taxa.get("results") or []
+    scientific = (results[0].get("name") or "").strip() if results else ""
+    if not scientific:
+        return {}
+    matched = get_json(session, MATCH, {"name": scientific})
+    if matched.get("usageKey"):
+        matched["resolved_via"] = scientific
+    return matched
 
 
 def search_params(taxon_key: int, limit: int, offset: int) -> List:
@@ -196,8 +215,8 @@ def harvest(args, session: requests.Session) -> None:
                     print(f"[match] {term!r}: no taxon", flush=True)
                     continue
                 print(f"[match] {term!r} -> {progress['matched_name']!r} "
-                      f"key={taxon_key} confidence={matched.get('confidence')}",
-                      flush=True)
+                      f"key={taxon_key} confidence={matched.get('confidence')} "
+                      f"via={matched.get('resolved_via')!r}", flush=True)
             offset = max(0, int(progress.get("offset") or 0))
             while True:
                 if total_kept >= args.target or (cap is not None and kept_term >= cap):
