@@ -457,6 +457,20 @@ class TestMuseum(ReinforceTest):
         self.assertEqual(len(session.json_calls(AIC_SEARCH)), 1)
         self.assertTrue(state["chair"]["exhausted"])
 
+    def test_aic_multipage_walk_reads_done_flag_safely(self):
+        # page 1 of 2: the done flag is only written on the last page, so the
+        # loop must read it tolerantly (regression: KeyError on 'aic_done')
+        entries = [aic_entry(30, image_id="uuid-30")]
+        session = FakeSession(
+            json_routes={AIC_SEARCH: aic_payload(entries, total_pages=2)},
+            images={"iiif.example.org/2/uuid-30": (1600, 1200)})
+        out = self.tmpdir()
+        args = options(fetch_museum, out, make_queries(out, "chair | 5"), apis="aic")
+        run_harvest(fetch_museum, args, session)
+        state = read_state(out)
+        self.assertTrue(state["chair"]["aic_done"])
+        self.assertEqual(len(session.json_calls(AIC_SEARCH)), 2)
+
     def test_resume_skips_fulfilled_term(self):
         out = self.tmpdir()
         queries = make_queries(out, "chair | 1")

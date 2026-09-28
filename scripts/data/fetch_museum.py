@@ -329,7 +329,7 @@ def harvest(args, session: requests.Session) -> None:
                     save_state(state_path, state)
                     print(f"[aic] term={term!r} page={page} kept={kept_term} "
                           f"total={total_kept} new={written}", flush=True)
-                    if progress["aic_done"]:
+                    if progress.get("aic_done"):
                         break
                     page += 1
 
