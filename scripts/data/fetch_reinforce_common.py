@@ -48,9 +48,9 @@ TAG_RE = re.compile(r"<[^>]+>")
 def make_session() -> requests.Session:
     session = requests.Session()
     session.headers.update({"User-Agent": USER_AGENT})
-    retries = Retry(total=4, backoff_factor=1.5,
+    retries = Retry(total=8, backoff_factor=2.0,
                     status_forcelist=(429, 500, 502, 503, 504),
-                    allowed_methods=("GET",))
+                    allowed_methods=("GET",), respect_retry_after_header=True)
     session.mount("https://", HTTPAdapter(max_retries=retries))
     return session
 
