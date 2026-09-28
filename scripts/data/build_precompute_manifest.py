@@ -222,6 +222,43 @@ def src_d4_pexels(w):
             }
 
 
+def src_d4_extra2(w):
+    """Reinforcement batch: iNaturalist, Met+AIC, Commons and Pexels photos.
+
+    Same contract as src_d4_pexels: the source's own description (``alt``) is
+    the row's short caption, which is what the harvest emits for every row it
+    keeps.  The four harvests share one source label, so the mixture and the
+    domain map keep working on a single name; the origin directory is not
+    preserved in the row.
+    """
+    for sub in ("reinforce_inat", "reinforce_museum", "reinforce_commons",
+                "reinforce_pexels"):
+        p = os.path.join(w, f"data/raw/{sub}/metadata.jsonl")
+        if not os.path.exists(p):
+            print(f"  d4_extra2: {sub}: {p} missing, skipped")
+            continue
+        n = 0
+        with open(p) as f:
+            for line in f:
+                d = json.loads(line)
+                if not d.get("download_ok"):
+                    continue
+                caps = clean_caps(d.get("alt"))
+                if not caps:
+                    continue
+                n += 1
+                yield {
+                    "image_id": d["source_id"],
+                    "local_path": resolve_path(w, d["local_path"]),
+                    "captions": caps,
+                    "width": d.get("width"),
+                    "height": d.get("height"),
+                    "bbox": None,
+                    "source": "d4_extra2",
+                }
+        print(f"  d4_extra2: {sub}: {n} rows")
+
+
 def _d4_from_metadata(w, sub, source_name):
     p = os.path.join(w, f"data/raw/{sub}/metadata.jsonl")
     with open(p) as f:
@@ -358,6 +395,7 @@ SOURCES = {
     "d3_people": src_d3_people,
     "d3_pexels": src_d3_pexels,
     "d4_pexels": src_d4_pexels,
+    "d4_extra2": src_d4_extra2,
     "d4_vintage": src_d4_vintage,
     "d4_relaion": src_d4_relaion,
     "d4_pd12m": src_d4_pd12m,

@@ -25,6 +25,9 @@ check every worker's exit status before declaring success.
 | Command | Purpose |
 |---|---|
 | `data.fetch_pexels` | Harvest resumable Pexels query batches with subject and shape filters. |
+| `data.fetch_inat` | Harvest iNaturalist photos for count-capped `term \| cap` query files. |
+| `data.fetch_museum` | Harvest Met and AIC public-domain artworks for count-capped `term \| cap` query files. |
+| `data.fetch_commons` | Harvest Wikimedia Commons JPEG photos for count-capped `term \| cap` query files. |
 | `data.scan_resolution` | Measure image dimensions from file headers and summarize resolution coverage. |
 | `data.build_d1_metadata` | Assemble Chinese-painting metadata from clean records and VLM labels. |
 | `data.apply_final_bbox` | Apply final crop boxes, filter views and merge OCR into D1 captions. |
