@@ -9,7 +9,7 @@ from unittest import mock
 
 from PIL import Image
 
-from scripts.data import fetch_commons, fetch_inat, fetch_museum
+from scripts.data import fetch_commons, fetch_gbif, fetch_inat, fetch_museum
 from scripts.data.fetch_reinforce_common import (
     long_side_bounded,
     parse_queries,
@@ -32,6 +32,8 @@ MET_SEARCH = fetch_museum.MET_SEARCH
 MET_OBJECT_PREFIX = fetch_museum.MET_OBJECT + "/"
 AIC_SEARCH = fetch_museum.AIC_SEARCH
 COMMONS_API = fetch_commons.API
+GBIF_MATCH = fetch_gbif.MATCH
+GBIF_SEARCH = fetch_gbif.SEARCH
 
 
 def jpeg_bytes(width, height):
@@ -629,6 +631,143 @@ class TestCommons(ReinforceTest):
         self.assertTrue(rows[0]["download_ok"])
         self.assertTrue(state["bridge"]["exhausted"])
         self.assertEqual(len(session.json_calls(COMMONS_API)), 1)
+
+
+# ---------------------------------------------------------------- GBIF
+
+def gbif_media(index, mtype="StillImage", creator="photog", title="",
+               license_url=None, width=None, height=None, identifier=True):
+    media = {"type": mtype, "format": "image/jpeg", "creator": creator,
+             "title": title}
+    if identifier:
+        media["identifier"] = f"https://cdn.example.org/img{index}.jpg"
+    if license_url:
+        media["license"] = license_url
+    if width:
+        media["width"] = width
+        media["height"] = height
+    return media
+
+
+def gbif_occurrence(key, scientific="Pica pica", vernacular="Eurasian Magpie",
+                    dataset="ds-1", media=None,
+                    license_url="http://creativecommons.org/licenses/by/4.0/",
+                    recorded_by="observer"):
+    return {"key": key, "scientificName": scientific,
+            "vernacularName": vernacular, "datasetKey": dataset,
+            "license": license_url,
+            "references": f"https://www.gbif.org/occurrence/{key}",
+            "recordedBy": recorded_by,
+            "media": media if media is not None else [gbif_media(0)]}
+
+
+def gbif_payload(results, end=True):
+    return {"offset": 0, "limit": 300, "endOfRecords": end,
+            "count": len(results), "results": results}
+
+
+def gbif_routes(pages, usage_key=777):
+    """``pages`` maps an offset to occurrence rows; match always resolves."""
+    return {
+        GBIF_MATCH: {"usageKey": usage_key, "scientificName": "Pica pica",
+                     "confidence": 99, "matchType": "EXACT"},
+        GBIF_SEARCH: lambda url, params: pages.get(params["offset"], gbif_payload([])),
+    }
+
+
+class TestGbif(ReinforceTest):
+
+    def test_record_and_download(self):
+        occurrence = gbif_occurrence(501)
+        session = FakeSession(json_routes=gbif_routes({0: gbif_payload([occurrence])}),
+                              images={"img0.jpg": (2048, 1536)})
+        out = self.tmpdir()
+        args = options(fetch_gbif, out, make_queries(out, "magpie | 5"))
+        run_harvest(fetch_gbif, args, session)
+        rows = read_metadata(out)
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(set(row), SUCCESS_KEYS)
+        self.assertEqual(row["source"], "reinforce_gbif")
+        self.assertEqual(row["source_id"], "gbif-501-0")
+        self.assertEqual(row["photo_id"], 501)
+        self.assertEqual(row["alt"], "Pica pica (Eurasian Magpie)")
+        self.assertEqual(row["license"], "cc-by")
+        self.assertEqual(row["photographer"], "photog")
+        self.assertEqual(row["page_url"], "https://www.gbif.org/occurrence/501")
+        self.assertEqual(row["image_url"], "https://cdn.example.org/img0.jpg")
+        self.assertEqual((row["width"], row["height"]), (1792, 1344))
+        self.assertTrue(Path(row["local_path"]).exists())
+        match_params = session.json_calls(GBIF_MATCH)[0][1]
+        self.assertEqual(match_params, {"name": "magpie"})
+        search_params = session.json_calls(GBIF_SEARCH)[0][1]
+        self.assertEqual(search_params["taxon_key"], 777)
+        self.assertEqual(search_params["mediaType"], "StillImage")
+        self.assertEqual(search_params["offset"], 0)
+        self.assertEqual(search_params["limit"], 300)
+        self.assertEqual(search_params["license"], "CC_BY_NC_4_0")  # last of the OR'd three
+
+    def test_no_match_marks_term_exhausted(self):
+        session = FakeSession(json_routes={
+            GBIF_MATCH: {"matchType": "NONE", "confidence": 0},
+            GBIF_SEARCH: gbif_payload([gbif_occurrence(502)]),
+        })
+        out = self.tmpdir()
+        run_harvest(fetch_gbif, options(fetch_gbif, out, make_queries(out, "quark | 5")),
+                    session)
+        self.assertEqual(read_metadata(out), [])
+        self.assertTrue(read_state(out)["quark"]["exhausted"])
+        self.assertEqual(session.json_calls(GBIF_SEARCH), [])
+
+    def test_inat_reexport_is_skipped(self):
+        occurrence = gbif_occurrence(503, dataset=fetch_gbif.INAT_DATASET)
+        session = FakeSession(json_routes=gbif_routes({0: gbif_payload([occurrence])}))
+        out = self.tmpdir()
+        run_harvest(fetch_gbif, options(fetch_gbif, out, make_queries(out, "magpie | 5")),
+                    session)
+        rows = read_metadata(out)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["skip_reason"], "inat reexport")
+        self.assertEqual(set(rows[0]), SKIP_KEYS)
+        self.assertEqual(session.image_calls("img0.jpg"), [])
+
+    def test_media_type_filter_and_multi_media(self):
+        occurrence = gbif_occurrence(504, media=[gbif_media(0),
+                                                 gbif_media(1, mtype="MovingImage"),
+                                                 gbif_media(2)])
+        session = FakeSession(json_routes=gbif_routes({0: gbif_payload([occurrence])}),
+                              images={"img0.jpg": (1600, 1200), "img2.jpg": (1600, 1200)})
+        out = self.tmpdir()
+        run_harvest(fetch_gbif, options(fetch_gbif, out, make_queries(out, "magpie | 5")),
+                    session)
+        rows = read_metadata(out)
+        self.assertEqual({row["source_id"] for row in rows}, {"gbif-504-0", "gbif-504-2"})
+        self.assertTrue(all(row["download_ok"] for row in rows))
+        self.assertEqual(session.image_calls("img1.jpg"), [])
+
+    def test_offset_paging_and_resume_reuses_taxon_key(self):
+        first = gbif_occurrence(601)
+        second = gbif_occurrence(602)
+        out = self.tmpdir()
+        queries = make_queries(out, "magpie | 5")
+        session_one = FakeSession(
+            json_routes=gbif_routes({0: gbif_payload([first], end=False),
+                                     1: gbif_payload([second])}),
+            images={"img0.jpg": (1600, 1200)})
+        run_harvest(fetch_gbif, options(fetch_gbif, out, queries, target=1), session_one)
+        state = read_state(out)
+        self.assertEqual(state["magpie"]["offset"], 1)
+        self.assertEqual(state["magpie"]["taxon_key"], 777)
+        self.assertFalse(state["magpie"]["exhausted"])
+        session_two = FakeSession(
+            json_routes=gbif_routes({1: gbif_payload([second])}),
+            images={"img0.jpg": (1600, 1200)})
+        run_harvest(fetch_gbif, options(fetch_gbif, out, queries, target=2), session_two)
+        self.assertEqual(session_two.json_calls(GBIF_MATCH), [])
+        self.assertEqual([params["offset"] for _, params in
+                          session_two.json_calls(GBIF_SEARCH)], [1])
+        self.assertEqual(len(read_metadata(out)), 2)
+        self.assertTrue(read_state(out)["magpie"]["exhausted"])
 
 
 class TestRecordSchema(ReinforceTest):
