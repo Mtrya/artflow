@@ -9,7 +9,7 @@ from unittest import mock
 
 from PIL import Image
 
-from scripts.data import fetch_commons, fetch_gbif, fetch_inat, fetch_museum
+from scripts.data import fetch_commons, fetch_gbif, fetch_inat, fetch_museum, fetch_openverse
 from scripts.data.fetch_reinforce_common import (
     long_side_bounded,
     parse_queries,
@@ -34,6 +34,7 @@ AIC_SEARCH = fetch_museum.AIC_SEARCH
 COMMONS_API = fetch_commons.API
 GBIF_MATCH = fetch_gbif.MATCH
 GBIF_SEARCH = fetch_gbif.SEARCH
+OPENVERSE_API = fetch_openverse.API
 
 
 def jpeg_bytes(width, height):
@@ -786,6 +787,103 @@ class TestGbif(ReinforceTest):
                           session_two.json_calls(GBIF_SEARCH)], [1])
         self.assertEqual(len(read_metadata(out)), 2)
         self.assertTrue(read_state(out)["magpie"]["exhausted"])
+
+
+# ---------------------------------------------------------------- Openverse
+
+def openverse_result(identifier, title="Stone bridge", license_code="by",
+                     creator="Jane", width=1600, height=1200, url=True):
+    result = {"id": identifier, "title": title, "license": license_code,
+              "license_version": "4.0", "creator": creator,
+              "creator_url": f"https://flickr.com/people/{creator.lower()}",
+              "foreign_landing_url": f"https://flickr.com/photos/x/{identifier}",
+              "source": "flickr", "width": width, "height": height}
+    if url:
+        result["url"] = f"https://live.staticflickr.com/{identifier}.jpg"
+    return result
+
+
+def openverse_payload(results, page_count=1):
+    return {"result_count": len(results), "page_count": page_count,
+            "results": results}
+
+
+def openverse_routes(pages):
+    """``pages`` maps a page number to result rows."""
+    return {OPENVERSE_API: lambda url, params: pages.get(
+        params["page"], openverse_payload([]))}
+
+
+class TestOpenverse(ReinforceTest):
+
+    def test_record_and_download(self):
+        result = openverse_result("aaaa1111bbbb2222cccc3333dddd4444",
+                                  license_code="by-nc")
+        session = FakeSession(json_routes=openverse_routes({1: openverse_payload([result])}),
+                              images={"aaaa1111": (1600, 1200)})
+        out = self.tmpdir()
+        args = options(fetch_openverse, out, make_queries(out, "bridge | 5"))
+        run_harvest(fetch_openverse, args, session)
+        rows = read_metadata(out)
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(set(row), SUCCESS_KEYS)
+        self.assertEqual(row["source"], "reinforce_openverse")
+        self.assertEqual(row["source_id"], "ov-aaaa1111bbbb2222cccc3333dddd4444")
+        self.assertEqual(row["photo_id"], 0xaaaa1111bbbb)
+        self.assertEqual(row["alt"], "Stone bridge")
+        self.assertEqual(row["title"], "Stone bridge")
+        self.assertEqual(row["license"], "cc-by-nc")
+        self.assertEqual(row["photographer"], "Jane")
+        self.assertEqual(row["page_url"],
+                         "https://flickr.com/photos/x/aaaa1111bbbb2222cccc3333dddd4444")
+        self.assertEqual((row["source_width"], row["source_height"]), (1600, 1200))
+        self.assertEqual((row["width"], row["height"]), (1600, 1200))
+        self.assertTrue(Path(row["local_path"]).exists())
+        params = session.json_calls(OPENVERSE_API)[0][1]
+        self.assertEqual(params["q"], "bridge")
+        self.assertEqual(params["license"], "cc0,by,by-nc,by-sa")
+        self.assertEqual(params["excluded_source"], "wikimedia")
+        self.assertEqual(params["page"], 1)
+        self.assertEqual(params["page_size"], 20)
+
+    def test_shape_filter_pre_download_and_url_required(self):
+        wide = openverse_result("bbbb2222", width=3000, height=1000)
+        urlless = openverse_result("cccc3333", url=False)
+        session = FakeSession(json_routes=openverse_routes(
+            {1: openverse_payload([wide, urlless])}))
+        out = self.tmpdir()
+        run_harvest(fetch_openverse,
+                    options(fetch_openverse, out, make_queries(out, "bridge | 5")),
+                    session)
+        rows = read_metadata(out)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["skip_reason"], "shape 3000x1000")
+        self.assertEqual(set(rows[0]), SKIP_KEYS)
+        self.assertEqual(session.image_calls("bbbb2222"), [])
+
+    def test_paging_then_resume(self):
+        first = openverse_result("dddd4444")
+        second = openverse_result("eeee5555")
+        routes = openverse_routes({1: openverse_payload([first], page_count=2),
+                                   2: openverse_payload([second])})
+        out = self.tmpdir()
+        queries = make_queries(out, "bridge")
+        session_one = FakeSession(json_routes=routes,
+                                  images={"dddd4444": (1600, 1200)})
+        run_harvest(fetch_openverse, options(fetch_openverse, out, queries, target=1),
+                    session_one)
+        state = read_state(out)
+        self.assertEqual(state["bridge"]["page"], 2)
+        self.assertFalse(state["bridge"]["exhausted"])
+        session_two = FakeSession(json_routes=routes,
+                                  images={"eeee5555": (1600, 1200)})
+        run_harvest(fetch_openverse, options(fetch_openverse, out, queries, target=2),
+                    session_two)
+        self.assertEqual([params["page"] for _, params in
+                          session_two.json_calls(OPENVERSE_API)], [2])
+        self.assertEqual(len(read_metadata(out)), 2)
+        self.assertTrue(read_state(out)["bridge"]["exhausted"])
 
 
 class TestRecordSchema(ReinforceTest):
