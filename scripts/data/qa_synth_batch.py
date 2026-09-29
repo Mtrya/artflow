@@ -292,11 +292,14 @@ def main() -> None:
         rows = rows[:args.limit]
     print(f"{len(rows)} generated rows under {args.generated}")
 
+    checks_path = args.out_dir / "checks.jsonl"
     if args.stage in ("check", "all"):
-        stage_check(args, rows)
-    checks = read_jsonl(args.out_dir / "checks.jsonl")
+        asyncio.run(stage_check(args, rows))
+    checks = read_jsonl(checks_path) if checks_path.exists() else []
+    if not checks and args.stage != "check":
+        raise SystemExit(f"no checks at {checks_path}; run --stage check first")
     if args.stage in ("caption", "all"):
-        stage_caption(args, checks)
+        asyncio.run(stage_caption(args, checks))
     if args.stage in ("assemble", "all"):
         stage_assemble(args, checks)
     if args.stage in ("sheet", "all"):

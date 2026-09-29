@@ -1,6 +1,10 @@
 """Offline tests for the synthetic batch's data-side helpers (no API calls)."""
 
+import sys
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 from scripts.data.build_synth_grid import frames_for, pick_aspect, stable_hash
 from scripts.data.expand_hpsv2_prompts import (
@@ -128,6 +132,35 @@ class NormalizeTest(unittest.TestCase):
     def test_catalogue_opening_is_stripped(self):
         self.assertEqual(normalize_caption("This image shows a stone bridge."),
                          "A stone bridge.")
+
+
+class StageWiringTest(unittest.TestCase):
+    def test_async_stages_are_awaited(self):
+        """The check stage is a coroutine; a bare call would silently do nothing."""
+        from scripts.data import qa_synth_batch as module
+
+        called = []
+
+        async def fake_check(args, rows):
+            called.append(len(rows))
+            return []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            argv = ["qa_synth_batch", "--stage", "check", "--generated", "gen",
+                    "--out-dir", tmp]
+            with mock.patch.object(module, "stage_check", fake_check), \
+                    mock.patch.object(module, "load_rows", lambda grid, gen: [{"prompt_id": "x"}]), \
+                    mock.patch.object(sys, "argv", argv):
+                module.main()
+            self.assertEqual(called, [1])
+
+            # A later stage without its input is a mistake, not an empty run.
+            argv = ["qa_synth_batch", "--stage", "assemble", "--generated", "gen",
+                    "--out-dir", tmp]
+            with mock.patch.object(module, "load_rows", lambda grid, gen: [{"prompt_id": "x"}]), \
+                    mock.patch.object(sys, "argv", argv):
+                with self.assertRaises(SystemExit):
+                    module.main()
 
 
 if __name__ == "__main__":
