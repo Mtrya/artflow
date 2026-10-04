@@ -5,7 +5,7 @@
 # Measurement conditions and transition checks are in notes/infra_pretrain.md.
 
 [paths]
-storage_root = ".."
+storage_root = "../.."
 vae = "models/e2e-qwenimage-vae"
 output_dir = "runs"
 
@@ -52,7 +52,7 @@ caption_short_reserve = 0.20
 caption_short_threshold = 256
 
 [train]
-run_name = "ascend-hero"
+run_name = "ascend-hero-pretrain"
 seed = 42
 num_workers = 8
 ema_decay = 0.9999
@@ -90,55 +90,64 @@ grid_steps = [450000]
 
 [[stages.datasets]]
 path = "precomputed_dataset/d1@256p"
-weight = 8.177400
+weight = 8.093704
 
 [[stages.datasets]]
 path = "precomputed_dataset/d2-wikiart@256p"
-weight = 11.487900
+weight = 19.031336
 
 [[stages.datasets]]
 path = "precomputed_dataset/d2-museum@256p"
-weight = 0.540200
+weight = 0.894924
 
 [[stages.datasets]]
 path = "precomputed_dataset/d3-human@256p"
-weight = 9.531500
+weight = 5.848249
 
 [[stages.datasets]]
 path = "precomputed_dataset/d3-people@256p"
-weight = 9.205600
+weight = 5.648290
 
 [[stages.datasets]]
 path = "precomputed_dataset/d3-pexels@256p"
-weight = 5.020600
+weight = 5.294499
 
 [[stages.datasets]]
 path = "precomputed_dataset/d3-synth-v2@256p"
-weight = 0.584640
+weight = 0.538081
 
 [[stages.datasets]]
 path = "precomputed_dataset/d4-inat@256p"
-weight = 0.151520
+weight = 0.139447
 
 [[stages.datasets]]
 path = "precomputed_dataset/d4-megalith@256p"
-weight = 0.344630
+weight = 0.271881
 
 [[stages.datasets]]
 path = "precomputed_dataset/d4-pd12m@256p"
-weight = 8.711300
+weight = 8.017465
 
 [[stages.datasets]]
 path = "precomputed_dataset/d4-vintage@256p"
-weight = 10.445800
+weight = 9.613874
 
 [[stages.datasets]]
 path = "precomputed_dataset/d4-zimage@256p"
-weight = 2.427500
+weight = 2.234124
 
 [[stages.datasets]]
 path = "precomputed_dataset/d4-relaion@256p"
-weight = 33.371500
+weight = 30.713667
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-extra2@256p"
+weight = 1.424928
+
+# d4-extra3: 1001 batch (30,171 rows), all three resolutions.
+[[stages.datasets]]
+path = "precomputed_dataset/d4-extra3@256p"
+weight = 2.235531
 
 [[stages]]
 name = "640p"
@@ -151,71 +160,79 @@ grid_steps = [450000, 452000, 570000]
 
 [[stages.datasets]]
 path = "precomputed_dataset/d1@640p"
-weight = 10.820000
+weight = 7.909056
 
 [[stages.datasets]]
 path = "precomputed_dataset/d2-wikiart@640p"
-weight = 12.320000
+weight = 18.633565
 
 [[stages.datasets]]
 path = "precomputed_dataset/d2-museum@640p"
-weight = 0.8000000
+weight = 0.875289
 
 [[stages.datasets]]
 path = "precomputed_dataset/d3-human@640p"
-weight = 12.190000
+weight = 5.802921
 
 [[stages.datasets]]
 path = "precomputed_dataset/d3-people-a@640p"
-weight = 5.876955
+weight = 2.760126
 
 [[stages.datasets]]
 path = "precomputed_dataset/d3-people-b@640p"
-weight = 5.883045
+weight = 2.760078
 
 [[stages.datasets]]
 path = "precomputed_dataset/d3-pexels@640p"
-weight = 8.500000
+weight = 5.173712
 
 [[stages.datasets]]
 path = "precomputed_dataset/d3-synth-v2@640p"
-weight = 0.780000
+weight = 0.525805
 
 [[stages.datasets]]
 path = "precomputed_dataset/d4-extra@640p"
-weight = 2.476274
+weight = 2.529468
 
 [[stages.datasets]]
 path = "precomputed_dataset/d4-pd12m@640p"
-weight = 8.430000
+weight = 7.834556
 
 [[stages.datasets]]
 path = "precomputed_dataset/d4-vintage@640p"
-weight = 9.410000
+weight = 9.394545
 
 [[stages.datasets]]
 path = "precomputed_dataset/d4-zimage@640p"
-weight = 3.220000
+weight = 2.184120
 
 [[stages.datasets]]
 path = "precomputed_dataset/d4-relaion-p0@640p"
-weight = 4.649294
+weight = 6.007972
 
 [[stages.datasets]]
 path = "precomputed_dataset/d4-relaion-p1@640p"
-weight = 4.634332
+weight = 6.007972
 
 [[stages.datasets]]
 path = "precomputed_dataset/d4-relaion-p2@640p"
-weight = 4.651669
+weight = 6.007972
 
 [[stages.datasets]]
 path = "precomputed_dataset/d4-relaion-p3@640p"
-weight = 4.650601
+weight = 6.007972
 
 [[stages.datasets]]
 path = "precomputed_dataset/d4-relaion-p4@640p"
-weight = 4.654104
+weight = 6.007923
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-extra2@640p"
+weight = 1.392420
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-extra3@640p"
+weight = 2.184530
 
 [[stages]]
 name = "896p"
@@ -228,56 +245,64 @@ grid_steps = [570000, 572000, 600000]
 
 [[stages.datasets]]
 path = "precomputed_dataset/d1@896p"
-weight = 17.360000
+weight = 8.154900
 
 [[stages.datasets]]
 path = "precomputed_dataset/d2-wikiart@896p"
-weight = 11.450000
+weight = 19.212768
 
 [[stages.datasets]]
 path = "precomputed_dataset/d2-museum@896p"
-weight = 0.8250000
+weight = 0.902497
 
 [[stages.datasets]]
 path = "precomputed_dataset/d3-human@896p"
-weight = 15.750000
+weight = 5.983298
 
 [[stages.datasets]]
 path = "precomputed_dataset/d3-people@896p"
-weight = 15.140000
+weight = 5.691793
 
 [[stages.datasets]]
 path = "precomputed_dataset/d3-pexels@896p"
-weight = 11.500000
+weight = 5.334531
 
 [[stages.datasets]]
 path = "precomputed_dataset/d4-extra@896p"
-weight = 3.467343
+weight = 2.293868
 
 [[stages.datasets]]
 path = "precomputed_dataset/d4-pd12m@896p"
-weight = 11.170000
+weight = 8.078084
 
 [[stages.datasets]]
 path = "precomputed_dataset/d4-vintage@896p"
-weight = 1.570000
+weight = 9.686564
 
 [[stages.datasets]]
 path = "precomputed_dataset/d4-relaion-p0@896p"
-weight = 3.239290
+weight = 6.194723
 
 [[stages.datasets]]
 path = "precomputed_dataset/d4-relaion-p1@896p"
-weight = 3.226566
+weight = 6.194723
 
 [[stages.datasets]]
 path = "precomputed_dataset/d4-relaion-p2@896p"
-weight = 3.225705
+weight = 6.194723
 
 [[stages.datasets]]
 path = "precomputed_dataset/d4-relaion-p3@896p"
-weight = 3.239195
+weight = 6.194723
 
 [[stages.datasets]]
 path = "precomputed_dataset/d4-relaion-p4@896p"
-weight = 3.229245
+weight = 6.194673
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-extra2@896p"
+weight = 1.435702
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-extra3@896p"
+weight = 2.252434

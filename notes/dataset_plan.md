@@ -129,7 +129,8 @@ median 297 tokens，maximum 1,267。
 
 ## 后续数据工作
 
-按 [concept benchmark](concept_benchmark.md) 在 450k / 570k / 600k
-识别常见概念缺口，决定针对性数据生成及进入阶段。每次新增数据都保留
+概念测评在 200k 与 480k 各跑过一轮，concept benchmark 已退役；
+450k / 570k 不再做中途概念测评与数据补充。600k 完成后做一次最终
+benchmark（形式待定），决定 SFT go/no-go。每次新增数据都保留
 采集/caption/预计算对账和完整配置变更记录；使用
 [recipe 的严格阶段迁移流程](hero_recipe.md) 接入训练。

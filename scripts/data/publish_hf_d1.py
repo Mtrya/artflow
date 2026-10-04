@@ -79,12 +79,29 @@ def load_long_captions(path: Path | None) -> dict[str, str]:
     return captions
 
 
+def crop_box(value) -> list[float] | None:
+    """The published crop box, as four numbers.
+
+    The metadata table stores it as a JSON string rather than a list, so a row
+    that carries a box and a row that does not are both strings as far as this
+    build is concerned.  Passing the string through would make every cropped
+    row fail the crop at precompute time and be dropped, so it is parsed here.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text or text in {"[]", "null"}:
+            return None
+        value = json.loads(text)
+    box = [float(component) for component in value]
+    return box or None
+
+
 def write_release(metadata: Path, captions: Path | None, out: Path, *,
                   images: bool = False, shard_gb: float = 1.0,
                   row_group_rows: int = 16) -> dict[str, int]:
     """Write a fresh staging directory; missing requested images fail the build."""
-    from scripts.data.build_d1_manifest import crop_box
-
     if not math.isfinite(shard_gb) or shard_gb <= 0 or row_group_rows <= 0:
         raise ValueError("shard-gb and row-group-rows must be positive")
     if out.exists() and any(out.iterdir()):

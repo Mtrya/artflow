@@ -159,7 +159,6 @@ representative final-quality images. Record per-domain/language behavior and
 reward-versus-KID/diversity trends. Align these choices with the method and
 promotion rule in [the stage plan](redesign_plan.md).
 
-Concept-coverage assessment follows its own
-[benchmark](concept_benchmark.md), whose judge/protocol decision awaits the
-vocabulary and prompts. The user has deferred a dedicated concept-judge probe;
-manual grid review catches false concept gaps.
+Concept-coverage assessment used the concept benchmark, retired after the
+480k round; the 600k final benchmark's form is still to be decided. Manual
+grid review remains the guard against false capability gaps.

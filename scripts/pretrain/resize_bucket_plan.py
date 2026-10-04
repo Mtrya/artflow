@@ -15,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
-from scripts.bench.plan_buckets import (
+from scripts.pretrain.plan_buckets import (
     load_sidecar_lengths, mean_emitted_batch, resolution_lengths,
 )
 from src.dataset.captions import CaptionPolicy

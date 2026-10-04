@@ -631,20 +631,29 @@ class RowLengthQueueBatchSampler(Sampler[List[RowRef]]):
         }
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
-        """Restore queues and replay unacknowledged emitted batches first."""
+        """Restore queues and replay unacknowledged emitted batches first.
+
+        The saved cycle list may be shorter than this sampler's: a deliberate
+        recipe amendment may append new datasets to the mixture (their rows
+        sit above every saved dataset id, so queued RowRefs stay valid).
+        Restored datasets take their saved cycle and cursor; appended
+        datasets keep the fresh constructor-built cycle at cursor 0. Saved
+        cycles longer than this sampler's are never acceptable.
+        """
         if int(state.get("version", -1)) != self.STATE_VERSION:
             raise ValueError("unsupported RowLengthQueueBatchSampler state version")
         cycles = state["cycles"]
         cursors = state["cursors"]
-        if len(cycles) != len(self._cycles) or len(cursors) != len(self._cursors):
+        if len(cursors) != len(cycles) or len(cycles) > len(self._cycles):
             raise ValueError("state metadata entries do not match this sampler")
         if any(cursor < 0 or cursor > len(cycle) for cycle, cursor in zip(cycles, cursors)):
             raise ValueError("invalid row-cycle cursor in sampler state")
 
         self._stage = min(max(float(state["stage"]), 0.0), 1.0)
         self._rng.setstate(state["rng_state"])
-        self._cycles = [[int(row_idx) for row_idx in cycle] for cycle in cycles]
-        self._cursors = [int(cursor) for cursor in cursors]
+        for dataset_id, (cycle, cursor) in enumerate(zip(cycles, cursors)):
+            self._cycles[dataset_id] = [int(row_idx) for row_idx in cycle]
+            self._cursors[dataset_id] = int(cursor)
         self._queues = defaultdict(deque)
         for key, refs in state["queues"].items():
             normalized_key = (int(key[0]), int(key[1]))

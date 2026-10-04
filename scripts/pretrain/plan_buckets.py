@@ -49,7 +49,7 @@ Outputs are the plan JSON in the loader's own shape and a markdown report next
 to it with every bound, size, prediction, fit diagnostic and decision.
 
 Usage:
-    python scripts/bench/plan_buckets.py \
+    python scripts/pretrain/plan_buckets.py \
         --dataset /shared/precomputed/d1@256p \
         --dataset '/shared/precomputed/d2-wikiart@256p:0.7' \
         --calibration ceiling-256p.json \
@@ -1050,7 +1050,7 @@ def render_report(context: PlanContext, plans: Sequence[ResolutionPlan]) -> str:
     add = lines.append
     add(f"# Bucket plan: {context.out_path}")
     add("")
-    add("Produced by `scripts/bench/plan_buckets.py`.  Bounds minimise padded")
+    add("Produced by `scripts/pretrain/plan_buckets.py`.  Bounds minimise padded")
     add("compute under the fitted time model; batch sizes are solved from a")
     add("measured memory model, not scanned.  Validate the plan with a")
     add("mixed-stream training run before relying on it: an isolated measurement")
@@ -1414,7 +1414,7 @@ def run(args: argparse.Namespace, argv: Sequence[str] = ()) -> int:
     report_path = args.report or f"{args.out}.report.md"
     context = PlanContext(
         out_path=str(args.out), report_path=str(report_path),
-        command="python scripts/bench/plan_buckets.py " + shlex.join(argv),
+        command="python scripts/pretrain/plan_buckets.py " + shlex.join(argv),
         datasets=records, calibration_path=args.calibration, calibration_points=points,
         bucket_count=args.buckets, length_cap=args.length_cap,
         image_tokens_spec=args.image_tokens, budget_gb=args.vram_budget_gb,

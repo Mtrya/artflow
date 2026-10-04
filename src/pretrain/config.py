@@ -355,7 +355,9 @@ def flatten(config: TrainConfig, stage_name: str) -> dict[str, Any]:
     import shlex
 
     flat["dataset_mix"] = shlex.join(f"{d.path}:{d.weight}" for d in stage.datasets)
-    flat["run_name"] = f"{config.train.run_name}-{stage_name}"
+    # One run directory and one SwanLab experiment span every stage; stage
+    # transitions resume the stored SwanLab run id from runtime.json.
+    flat["run_name"] = config.train.run_name
     flat["max_steps"] = config.max_steps
     flat["stop_at_step"] = stage.end_step
     flat["stage_start"] = config.stage_start(stage_name)

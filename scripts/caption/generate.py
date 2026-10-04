@@ -67,6 +67,11 @@ def load_done(path: str) -> set:
             record = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if record.get("error"):
+            # A failed request is not an answer. Keeping it out of ``done``
+            # means a re-run retries it, which is what recovers a batch that
+            # a provider answered with rate-limit or quota errors mid-run.
+            continue
         done.add((record["image_id"], record["model"]))
     return done
 
@@ -95,6 +100,7 @@ def build_requests(rows: List[Dict], options: Dict[str, Dict]) -> List[Dict]:
             domain=row["domain"],
             metadata=metadata,
             target_position=settings.get("target_position", 1.0 / 3.0),
+            extra_notes=row.get("extra_notes") or "",
         )
         jobs.append({
             "row": row,

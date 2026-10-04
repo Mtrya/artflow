@@ -79,3 +79,40 @@ def test_restored_global_progress_matches_sampler_started_at_that_progress(progr
                            curriculum_start=0.0, curriculum_end=1.0)
     actual, expected = iter(restored), iter(make_sampler(stage=progress))
     assert [next(actual) for _ in range(50)] == [next(expected) for _ in range(50)]
+
+
+def test_resume_with_appended_dataset_replays_inflight_then_draws_from_it():
+    entries = [metadata([1] * 8, [2] * 8), metadata([1] * 8, [2] * 8)]
+    plan = BucketPlan.uniform([1], [LenBucket(8, 1)])
+    original = RowLengthQueueBatchSampler(entries, plan, dataset_weights=[1, 1], seed=47)
+    iterator = iter(original)
+    for _ in range(5):
+        batch = next(iterator)
+        original.ack_batch(batch[0].batch_id)
+    pending = [next(iterator) for _ in range(2)]
+    saved = original.state_dict()
+
+    resumed = RowLengthQueueBatchSampler(entries + [metadata([1] * 8, [2] * 8)], plan,
+        dataset_weights=[1, 1, 1], seed=999)
+    resumed.load_state_dict(saved)
+    actual = iter(resumed)
+    # Unacknowledged batches replay exactly as saved, dataset-id prefix intact.
+    assert [next(actual) for _ in range(2)] == pending
+    # The appended dataset then participates in draws at its configured weight.
+    seen = Counter()
+    for _ in range(200):
+        batch = next(actual)
+        resumed.ack_batch(batch[0].batch_id)
+        seen[batch[0].dataset_id] += 1
+    assert 0 < seen[2] < 200
+
+
+def test_load_state_dict_rejects_state_with_more_datasets_than_sampler():
+    saved = make_sampler().state_dict()
+    shrunk = RowLengthQueueBatchSampler([make_sampler().metadata[0]],
+        BucketPlan.uniform([1], [LenBucket(256, 3), LenBucket(2048, 2)]), seed=1)
+    # A saved state listing more cycles than the sampler has datasets can only
+    # come from a removed/reordered mixture, which is not a supported amendment.
+    with pytest.raises(ValueError, match="state metadata entries"):
+        shrunk.load_state_dict({**saved, "cycles": saved["cycles"] + [[]],
+                                "cursors": saved["cursors"] + [0]})

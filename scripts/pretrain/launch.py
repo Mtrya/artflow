@@ -26,7 +26,8 @@ def resolve_resume(config, stage_name, world_size):
     stage = config.stage(stage_name)
     start = config.stage_start(stage_name)
     output = Path(config.paths.output_dir)
-    run = output / f"{config.train.run_name}-{stage_name}"
+    # All stages share one run directory; checkpoints are ordered by global step.
+    run = output / config.train.run_name
     for candidate in sorted(run.glob("checkpoint_step_[0-9]*"), reverse=True):
         marker = candidate / CHECKPOINT_RECORD
         if marker.is_file():
@@ -60,13 +61,7 @@ def resolve_resume(config, stage_name, world_size):
             raise ValueError(f"{candidate} is before the selected stage")
         return candidate
     if start:
-        index = config.stages.index(stage)
-        previous = config.stages[index - 1]
-        candidate = (
-            output
-            / f"{config.train.run_name}-{previous.name}"
-            / f"checkpoint_step_{start:06d}"
-        )
+        candidate = run / f"checkpoint_step_{start:06d}"
         step = validate_checkpoint(
             candidate,
             max_steps=config.max_steps,

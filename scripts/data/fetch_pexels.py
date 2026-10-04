@@ -23,9 +23,10 @@ Output, under ``--out``:
     fetch.log                        progress, written by the caller's redirect
 
 The run is resumable: photo ids already present in metadata.jsonl are skipped,
-and a download that already landed on disk is not repeated.  ``--target`` counts
-the candidates that hold an image, so a resumed run stops after that many more
-downloads rather than re-counting the rows already there.  API requests are
+and a download that already landed on disk is not repeated.  ``--target`` is the
+number of pictures the output directory should hold in total, so a resumed run
+asks for the larger number and stops once the count of rows carrying an image -
+those already on disk plus the new downloads - reaches it.  API requests are
 paced to stay under the published hourly limit; the downloads themselves run on
 a small thread pool, since one page of results yields up to 80 pictures.
 

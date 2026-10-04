@@ -1,8 +1,11 @@
-"""Apply explicit future-stage recipe amendments to a complete checkpoint copy.
+"""Apply explicit recipe amendments to a complete checkpoint copy.
 
 Model, optimizer, scheduler, EMA, sampler and RNG artifacts remain byte-identical.
-The completed/current stage and global schedule cannot change. This operation
-records the old and new recipes; ordinary resume remains strict.
+Future stages may change data/batching freely; the current stage may only
+reweight existing datasets and append new ones (appended rows sit above every
+saved dataset id, so the saved sampler state restores cleanly); completed
+stages and the global schedule cannot change. This operation records the old
+and new recipes; ordinary resume remains strict.
 """
 
 import argparse
@@ -60,6 +63,18 @@ def check_recipe_change(old, new, *, step, active_bucket):
             if reference != json.loads(Path(after["bucket_plan"]).read_text()):
                 raise ValueError("completed/current stage bucket contents cannot change")
             expected["stages"][i]["bucket_plan"] = after["bucket_plan"]
+        if i == active and before["datasets"] != after["datasets"]:
+            # Mid-stage data amendments may reweight existing entries and append
+            # new ones; removal or reordering breaks the saved sampler's
+            # dataset-id prefix (see sampler load_state_dict).
+            before_paths = [d["path"] for d in before["datasets"]]
+            after_paths = [d["path"] for d in after["datasets"]]
+            if len(after_paths) < len(before_paths) or after_paths[:len(before_paths)] != before_paths:
+                raise ValueError(
+                    "current-stage data amendments may only reweight existing datasets and append new ones")
+            expected["stages"][i]["datasets"] = after["datasets"]
+            amendments.append(dict(stage=before["name"], field="datasets",
+                                   old=before["datasets"], new=after["datasets"]))
     if expected != new:
         raise ValueError("only future-stage data/batching and verified operational locations may change")
     return amendments
@@ -99,7 +114,7 @@ def migrate(source, destination, config_path, *, reason):
     if any(source_hashes[n] != destination_hashes[n] for n in record["files"] if n != "run_config.json"):
         raise ValueError("an artifact outside the declared recipe amendment changed")
     provenance = dict(
-        migration="future-stage-recipe-v1", reason=reason, source=str(source), global_step=step,
+        migration="stage-recipe-v2", reason=reason, source=str(source), global_step=step,
         source_completion_sha256=sha256(source / CHECKPOINT_RECORD),
         source_sha256=source_hashes, destination_sha256=destination_hashes,
         source_recipe=old, destination_recipe=recipe, amendments=amendments,

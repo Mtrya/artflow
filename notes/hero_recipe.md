@@ -4,7 +4,7 @@ Updated September 27, 2026. The complete runnable recipe is
 [`configs/hero.toml`](../configs/hero.toml). It explicitly specifies every
 training tunable for all three resolution stages and rejects missing or
 unknown fields. Stage selection and checkpoint resume are operations.
-Run state and recovery details live in [Ascend pretraining](ascend_pretraining.md).
+Run state and recovery details live in [Ascend pretraining](archive/ascend_pretraining.md).
 
 ## Model and optimization
 
@@ -24,7 +24,7 @@ Run state and recovery details live in [Ascend pretraining](ascend_pretraining.m
 Muon chunks fused QKV/modulation matrices before orthogonalization. Its update
 multiplier is `sqrt(max(1, rows/cols))` for each chunk. Conditioning matrices
 belong to AdamW. The selected decay 0.4 was installed through a full-state
-migration at 56k; [qualification and provenance](ascend_pretraining.md) explain
+migration at 56k; [qualification and provenance](archive/ascend_pretraining.md) explain
 that continuation.
 
 ## Schedule and sampling
@@ -107,7 +107,7 @@ conceal a recipe mismatch would invalidate recovery evidence.
 
 Compare live and stored EMA loss together: smoothing can hide a live-model
 regression. Detailed fixed-panel metric interpretation and review rules are
-in [Ascend pretraining](ascend_pretraining.md).
+in [Ascend pretraining](archive/ascend_pretraining.md).
 
 At the completed hero checkpoint, evaluate live weights first, then compare
 stored EMA on loss, grids and KID before selecting the post-training teacher.

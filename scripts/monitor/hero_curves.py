@@ -1,6 +1,6 @@
 """Render SwanLab loss, optimizer and internal-health histories as PNG panels.
 
-Usage: python -m scripts.ascend.hero_curves --run USER/PROJECT/RUN --out output/curves
+Usage: python -m scripts.monitor.hero_curves --run USER/PROJECT/RUN --out output/curves
 Use --highlight-steps START END to mark an interval for review.
 """
 
@@ -8,7 +8,7 @@ import os
 import argparse
 from pathlib import Path
 
-from scripts.ascend.hero_watch import fetch
+from scripts.monitor.hero_watch import fetch
 
 KEYS = [
     "train/loss",

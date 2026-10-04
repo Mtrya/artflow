@@ -9,12 +9,9 @@ DiT, with a 532M-parameter hero and an 8-step student as the release target.
 
 - [Hero recipe](hero_recipe.md): architecture, complete training configuration,
   sampling and checkpoint contracts, and resolution transitions.
-- [Ascend pretraining](ascend_pretraining.md): observed run state, recovery,
-  stability evidence and monitoring decisions.
 - [Pretraining infrastructure](infra_pretrain.md): measured execution gains and
   qualification limits.
 - [Dataset plan](dataset_plan.md): domains, caption contract and data additions.
-- [Concept benchmark](concept_benchmark.md): concept coverage and targeted-data/SFT decisions.
 - [Post-training preflight](posttrain_preflight.md): reward implementation,
   judge/scorer evidence, throughput accounting and remaining qualification.
 
@@ -102,9 +99,9 @@ the actual hero reaches each new resolution.
 
 Review the fixed bilingual panel, live/EMA losses and internal stability
 telemetry at the recipe's cadence. Follow the evidence-based review and
-recovery rules in [Ascend pretraining](ascend_pretraining.md). Run the
-[concept benchmark](concept_benchmark.md) at 450k, 570k and 600k to identify
-common concepts that need targeted data.
+recovery rules in [Ascend pretraining](archive/ascend_pretraining.md). A concept
+benchmark ran at 200k and 480k and is now retired; run a final capability
+benchmark at 600k (form to be decided) for the Stage-6 SFT go/no-go.
 
 Exit: a complete hero checkpoint, verified sampling and resolution transitions,
 measured compute/exposure, and a record of observed abilities and limitations.
@@ -147,10 +144,9 @@ cannot be converted into an Ascend cap without workload measurements.
    conditional/unconditional loss, empty-caption behavior, KID, reward and
    fixed grids. Compare live and stored EMA weights. Use training/evaluation
    sampling helpers while the public generation pipeline awaits Stage 7.
-2. **Optional targeted SFT:** use the [concept benchmark](concept_benchmark.md)
-   to identify common, sparsely trained concepts the model misses. Targeted
-   data can enter an intermediate training stage; Stage-6 SFT is the fallback.
-   Composition, anatomy and texture improvement belong to DMD+RL. Review the
+2. **Optional targeted SFT:** the 600k final capability benchmark decides
+   the go/no-go and identifies what targeted data could fix. Composition,
+   anatomy and texture improvement belong to DMD+RL. Review the
    synthetic teacher and samples before including them.
 3. **DMD2 cold start at native 896p:** initialize from the hero; train an online
    fake-score copy on student outputs. Add a classification head on its
@@ -212,7 +208,7 @@ costs before deployment.
 ## Current risks
 
 - Persistent internal scale growth: follow the live/EMA, fixed-panel and
-  checkpoint evidence in [Ascend pretraining](ascend_pretraining.md).
+  checkpoint evidence in [Ascend pretraining](archive/ascend_pretraining.md).
 - Resolution transitions: qualify each plan and preserve complete endpoints.
 - Caption/judge provider changes: cache responses and record exact request
   identity; measure limits again on the intended workload.

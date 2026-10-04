@@ -7,14 +7,14 @@ structural ("surgery": optimizer, architecture, execution) and the internal
 metric surfaces, plus the evaluation and data context needed to read them.
 
 Signals printed at the end are triage leads, not calibrated thresholds; the
-authoritative interpretation rules are in notes/ascend_pretraining.md.
+authoritative interpretation rules are in notes/archive/ascend_pretraining.md.
 
 Deep-dive keys that never reach SwanLab -- `stability/blocks/NN/*` and
 `stability/weights/<param>/grad_rms` -- live only in the run's
 `stability.jsonl` on sj-ssd3; read it from the job shell when a signal fires.
 
 Usage:
-  .venv/bin/python scripts/ascend/hero_watch.py --run <user>/<project>/<run-id>
+  .venv/bin/python scripts/monitor/hero_watch.py --run <user>/<project>/<run-id>
       [--window 400] [--probes 6]
 """
 from __future__ import annotations
@@ -337,7 +337,7 @@ def main():
                        f"vector is {f(cc[-1][1], 3)} of its RMS "
                        f"(~{cc[-1][1] / EPS:.1f} bf16 levels)")
 
-    # Captured event described in notes/ascend_pretraining.md: the matrix update
+    # Captured event described in notes/archive/ascend_pretraining.md: the matrix update
     # acting on the shared hidden feature caused a harmful conditioning shift.
     # Update RMS 0.206 versus spread 0.196 characterized that event; the ratio
     # is a diagnostic reference, not a calibrated failure boundary.
@@ -479,7 +479,7 @@ def main():
         print(f"  - {s}")
     if signals:
         print("  (triage leads only. If one fires: read "
-              "notes/ascend_pretraining.md 'Reading the monitoring signals' "
+              "notes/archive/ascend_pretraining.md 'Reading the monitoring signals' "
               "and 'Review and intervention', then per-block/per-parameter detail in "
               "the run's stability.jsonl on sj-ssd3 via the job shell.)")
 

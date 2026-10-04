@@ -320,9 +320,26 @@ class CaptionClient:
         }
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:32]
 
+    async def generate_text(self, client: httpx.AsyncClient, *, prompt: str,
+                            prompt_version: str, max_tokens: int,
+                            temperature: float = 0.2,
+                            extra: Optional[Dict[str, Any]] = None) -> Response:
+        """Text-only request (classification, prompt writing).  Same cache,
+        retry and cost accounting as image calls, with an empty fingerprint."""
+        return await self._generate(client, image_bytes=b"", prompt=prompt,
+                                    prompt_version=prompt_version, max_tokens=max_tokens,
+                                    temperature=temperature, extra=extra)
+
     async def generate(self, client: httpx.AsyncClient, *, image_bytes: bytes, prompt: str,
                        prompt_version: str, max_tokens: int, temperature: float = 0.2,
                        extra: Optional[Dict[str, Any]] = None) -> Response:
+        return await self._generate(client, image_bytes=image_bytes, prompt=prompt,
+                                    prompt_version=prompt_version, max_tokens=max_tokens,
+                                    temperature=temperature, extra=extra)
+
+    async def _generate(self, client: httpx.AsyncClient, *, image_bytes: bytes, prompt: str,
+                        prompt_version: str, max_tokens: int, temperature: float = 0.2,
+                        extra: Optional[Dict[str, Any]] = None) -> Response:
         settings: Dict[str, Any] = {"max_tokens": max_tokens, "temperature": temperature}
         if extra:
             settings.update(extra)
@@ -333,16 +350,17 @@ class CaptionClient:
             record["cached"] = True
             return Response.from_record(record)
 
+        if image_bytes:
+            content: list = [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {
+                    "url": "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode()}},
+            ]
+        else:
+            content = prompt
         body = {
             "model": self.api_model,
-            "messages": [{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {
-                        "url": "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode()}},
-                ],
-            }],
+            "messages": [{"role": "user", "content": content}],
             **settings,
         }
         response = Response(

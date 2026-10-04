@@ -3,7 +3,7 @@
 Updated September 27, 2026. This record captures the Ascend execution path,
 resolution-specific bucket plans and their measurements. The recipe is in
 [hero_recipe.md](hero_recipe.md); current operation and recovery are in
-[ascend_pretraining.md](ascend_pretraining.md).
+[ascend_pretraining.md](archive/ascend_pretraining.md).
 
 ## Measured improvements
 
@@ -119,7 +119,7 @@ stability evidence. The mature-model/fresh-optimizer test is not the actual
 The prepared production recipe also passed read-only amendment preflight
 against the real 184k checkpoint. The active 256p deployment is unchanged.
 Future-stage activation follows the explicit 450k handoff in
-[Ascend pretraining](ascend_pretraining.md).
+[Ascend pretraining](archive/ascend_pretraining.md).
 
 ## Recovery and monitoring qualification
 
