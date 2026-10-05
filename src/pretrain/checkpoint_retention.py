@@ -23,8 +23,7 @@ def prune_checkpoints(checkpoint, *, keep_last, max_steps, scheduler_count,
     checkpoint = Path(checkpoint)
     if checkpoint.is_symlink() or checkpoint.parent.is_symlink():
         raise ValueError("checkpoint retention requires a real run directory")
-    contract = dict(max_steps=max_steps, require_record=True,
-                    scheduler_count=scheduler_count, use_ema=use_ema,
+    contract = dict(max_steps=max_steps, scheduler_count=scheduler_count, use_ema=use_ema,
                     world_size=world_size)
     current_step = validate_checkpoint(checkpoint, **contract)
     complete = []

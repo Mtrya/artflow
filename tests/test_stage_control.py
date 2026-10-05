@@ -28,7 +28,7 @@ def checkpoint(tmp_path, step=300000, total=400000):
 
 def validate(root, **kwargs):
     return validate_checkpoint(root, max_steps=400000, stop_at_step=380000,
-                               require_record=True, scheduler_count=2, use_ema=True,
+                               scheduler_count=2, use_ema=True,
                                world_size=8, **kwargs)
 
 

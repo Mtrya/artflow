@@ -17,6 +17,7 @@ from pathlib import Path
 import shutil
 
 from src.pretrain.config import load_config
+from src.pretrain.tracking import TRACKING_RECORD, resume_run_id, write_tracking_record
 from src.pretrain.stage_control import (
     CHECKPOINT_RECORD,
     validate_checkpoint,
@@ -80,16 +81,15 @@ def check_recipe_change(old, new, *, step, active_bucket):
     return amendments
 
 
-def migrate(source, destination, config_path, *, reason):
+def migrate(source, destination, config_path, *, storage_root, reason):
     if not reason.strip():
         raise ValueError("a migration reason is required")
     source, destination = Path(source).resolve(), Path(destination).resolve()
-    config = load_config(config_path)
+    config = load_config(config_path, storage_root=storage_root)
     recipe = asdict(config)
     record = json.loads((source / CHECKPOINT_RECORD).read_text())
     step = validate_checkpoint(
-        source, max_steps=config.max_steps, require_record=True,
-        scheduler_count=2, use_ema=True, world_size=record["world_size"], device_type="npu",
+        source, max_steps=config.max_steps, scheduler_count=2, use_ema=True, world_size=record["world_size"], device_type="npu",
     )
     if destination.name != source.name or destination.exists():
         raise ValueError("destination must be a new directory with the same checkpoint_step_* name")
@@ -106,6 +106,7 @@ def migrate(source, destination, config_path, *, reason):
     if provenance_name in record["files"]:
         raise ValueError("this target recipe already has migration provenance")
     source_hashes = {name: sha256(source / name) for name in record["files"]}
+    run_id = resume_run_id(source)
     destination.mkdir(parents=True)
     for name in record["files"]:
         shutil.copy2(source / name, destination / name)
@@ -118,15 +119,19 @@ def migrate(source, destination, config_path, *, reason):
         source_completion_sha256=sha256(source / CHECKPOINT_RECORD),
         source_sha256=source_hashes, destination_sha256=destination_hashes,
         source_recipe=old, destination_recipe=recipe, amendments=amendments,
-        preserved="All training-state artifacts byte-identical; only run_config.json amended.",
+        swanlab_run_id=run_id,
+        tracking_record_added=TRACKING_RECORD not in record["files"],
+        preserved="All training-state artifacts byte-identical; recipe amended and experiment identity retained.",
     )
     # Distinct from earlier conditioning-decay provenance, which stays intact.
     (destination / provenance_name).write_text(json.dumps(provenance, indent=2) + "\n")
+    if not (destination / TRACKING_RECORD).exists():
+        write_tracking_record(destination, run_id)
     write_checkpoint_record(
         destination, step=step, max_steps=config.max_steps, scheduler_count=2,
         use_ema=True, world_size=record["world_size"], device_type="npu",
     )
-    validate_checkpoint(destination, max_steps=config.max_steps, require_record=True, device_type="npu")
+    validate_checkpoint(destination, max_steps=config.max_steps, device_type="npu")
     return provenance
 
 
@@ -136,6 +141,7 @@ if __name__ == "__main__":
     parser.add_argument("--destination", required=True)
     parser.add_argument("--config", required=True)
     parser.add_argument("--reason", required=True)
+    parser.add_argument("--storage-root", required=True)
     args = parser.parse_args()
-    report = migrate(args.source, args.destination, args.config, reason=args.reason)
+    report = migrate(args.source, args.destination, args.config, storage_root=args.storage_root, reason=args.reason)
     print(json.dumps({"destination": args.destination, "step": report["global_step"], "preserved": report["preserved"]}))

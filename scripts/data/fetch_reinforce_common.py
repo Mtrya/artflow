@@ -134,11 +134,6 @@ def parse_queries(text: str) -> List[Tuple[str, Optional[int]]]:
     return queries
 
 
-def term_budget(cap: Optional[int], kept: int) -> Optional[int]:
-    """How many more images this term may keep (None = no per-term limit)."""
-    return None if cap is None else max(0, cap - kept)
-
-
 def load_metadata(path: Path) -> Tuple[Set[str], Counter]:
     """Source ids already recorded, and how many kept images per query.
 
@@ -243,6 +238,15 @@ def download_image(session: requests.Session, url: str, dest: Path,
         try:
             with Image.open(dest) as existing:
                 width, height = existing.size
+                if shape_filter:
+                    ok, why = shape_ok(width, height, min_side, max_ratio)
+                    if not ok:
+                        return {"download_ok": False, "skip_reason": why}
+                if box and max(width, height) > box:
+                    bounded = existing.convert("RGB")
+                    bounded.thumbnail((box, box), Image.LANCZOS)
+                    bounded.save(dest, "JPEG", quality=92, optimize=True)
+                    width, height = bounded.size
                 return {"download_ok": True, "width": width, "height": height}
         except Exception:  # noqa: BLE001 - a broken leftover is refetched
             dest.unlink(missing_ok=True)
@@ -286,3 +290,34 @@ def merge_download(record: Dict, result: Dict) -> None:
         record["source_height"] = result["source_height"]
     if not record["download_ok"]:
         record["skip_reason"] = result.get("skip_reason") or "download failed"
+
+
+def download_candidates(records, download, *, workers, max_successes):
+    """Refill failed downloads from this page without exceeding the success cap.
+
+    At most the remaining success budget is in flight. The caller records each
+    yielded result before more work is submitted and retains the page cursor
+    whenever its budget stops the page early.
+    """
+    from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+
+    if workers < 1 or max_successes < 0:
+        raise ValueError("workers must be positive and success budget nonnegative")
+    pending = {}
+    remaining = iter(records)
+    successes = 0
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        while True:
+            while len(pending) < min(workers, max_successes - successes):
+                record = next(remaining, None)
+                if record is None:
+                    break
+                pending[pool.submit(download, record)] = record
+            if not pending:
+                return
+            completed, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for future in completed:
+                record = pending.pop(future)
+                result = future.result()
+                successes += bool(result.get("download_ok"))
+                yield record, result

@@ -8,10 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-try:
-    from .varlen_attention import packed_attention
-except ImportError:
-    from varlen_attention import packed_attention
+from .varlen_attention import packed_attention
 
 # Optional SDPA backend restriction for the masked (padded-text) attention
 # path; None keeps the library default.

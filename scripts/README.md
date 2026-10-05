@@ -10,7 +10,7 @@ where the data is mounted. Platform setup and credentials are in the local
 | Command | Purpose |
 |---|---|
 | `pretrain.launch` | Launch or resume one curriculum stage from a complete run config. |
-| `pretrain/ascend.sh` | Set up the Ascend environment and invoke `pretrain.launch`. |
+| `pretrain/launch.sh` | Set up the Ascend environment and invoke `pretrain.launch`. |
 | `pretrain.migrate_stage_recipe` | Apply an explicit, recorded recipe amendment to a checkpoint copy before resume. |
 | `pretrain.plan_buckets` | Fit measured calibration data and plan length boundaries and micro-batches against caption draws. |
 | `pretrain.resize_bucket_plan` | Draft fixed-boundary batch/accumulation candidates for validation on the full workload. |
@@ -20,12 +20,17 @@ Use `python -m src.pretrain.precompute --help` for VAE precomputation. Specify
 the manifest, output, resolution and device for each job. Job wrappers must
 check every worker's exit status before declaring success.
 
-## Monitoring (`scripts/monitor/`)
+Launchers, planners, recipe migration and configured dataset transfer require
+`--storage-root`. Prompts and bucket plans are tracked under `configs/` and
+resolve from the repository. The runtime root is not stored in the TOML.
 
-| Command | Purpose |
-|---|---|
-| `monitor.hero_watch` | Print recent SwanLab training and internal-health metrics for `--run USER/PROJECT/RUN`. |
-| `monitor.hero_curves` | Render metric histories for `--run USER/PROJECT/RUN --out DIRECTORY`; optionally shade `--highlight-steps START END`. |
+The planner takes `--config`, `--stage` and `--storage-root`; dataset weights
+and caption policy come from that recipe. Calibration is a flat JSON list of
+`latent_hw: [H, W]`, `txt_len`, `micro_batch`, `peak_mem_gb` and `ms_per_step`.
+Memory is peak allocated GiB (bytes / 2**30); time is milliseconds for the
+whole micro-batch DiT forward/backward. An OOM record contains the three shape
+fields and `error: "oom"`, without measurements. Convert older measurement
+formats explicitly before reuse. Planner estimates still require device validation.
 
 ## Evaluation (`scripts/eval/`)
 
@@ -68,12 +73,12 @@ replaces its image-parquet shard set; a metadata-only release updates the table.
 
 ```bash
 python -m scripts.data.transfer_precomputed upload \
-  --provider hf --repo-id OWNER/DATASET --config configs/hero.toml --stage 896p
+  --provider hf --repo-id OWNER/DATASET --config configs/pretrain.toml --stage 896p --storage-root /external/artflow
 python -m scripts.data.transfer_precomputed download \
-  --provider modelscope --repo-id OWNER/DATASET --data-root /mounted/precomputed_dataset
+  --provider modelscope --repo-id OWNER/DATASET --storage-root /external/artflow
 ```
 
 Uploads include every training source and the evaluation set in the selected
-stage. `--data-root` relocates those directory names to another mounted copy.
+stage. `--storage-root` selects the external data/model/output tree.
 Downloads fetch the selected repository. Credentials come from `HF_TOKEN`, or
 `MS_TOKEN` / `MODELSCOPE_TOKEN_PATH` for ModelScope.

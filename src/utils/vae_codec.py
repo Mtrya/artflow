@@ -118,37 +118,21 @@ def get_vae_stats(
     Returns:
         (mean, std) tuple of tensors with shape [1, C, 1, 1]
     """
-    # Load config only to be fast
-    from transformers import PretrainedConfig
+    config = AutoencoderKLQwenImage.load_config(vae_path, local_files_only=True)
+    channels = config.get("z_dim")
+    if type(channels) is not int or channels < 1:
+        raise ValueError("VAE config requires a positive z_dim")
+    stats = []
+    for name in ("latents_mean", "latents_std"):
+        values = config.get(name)
+        if not isinstance(values, (list, tuple)) or len(values) != channels:
+            raise ValueError(f"VAE {name} must contain {channels} explicit values")
+        value = torch.tensor(values, dtype=torch.float32, device=device)
+        if value.ndim != 1 or not torch.isfinite(value).all():
+            raise ValueError(f"VAE {name} must contain finite numbers")
+        if name == "latents_std" and not (value > 0).all():
+            raise ValueError("VAE latents_std must be strictly positive")
+        stats.append(value.view(1, channels, 1, 1))
+    mean, std = stats
 
-    try:
-        config = PretrainedConfig.from_pretrained(vae_path)
-    except Exception:
-        # Fallback to loading full model if config load fails (e.g. local path issues)
-        vae = AutoencoderKLQwenImage.from_pretrained(
-            vae_path, torch_dtype=torch.bfloat16, local_files_only=True
-        )
-        config = vae.config
-        del vae
-
-    if hasattr(config, "latents_mean") and config.latents_mean is not None:
-        mean = torch.tensor(config.latents_mean).view(1, -1, 1, 1)
-    else:
-        mean = torch.zeros(1, 16, 1, 1)
-
-    if hasattr(config, "latents_std") and config.latents_std is not None:
-        std = torch.tensor(config.latents_std).view(1, -1, 1, 1)
-    else:
-        std = torch.ones(1, 16, 1, 1)
-
-    if device:
-        mean = mean.to(device)
-        std = std.to(device)
-
-    # print(
-    #    mean
-    # )  # [-0.0418, -0.0157, -0.0053, -0.0127, -0.0445, 0.0351, -0.0367, 0.0239, -0.0363, -0.0044, 0.0380, -0.0015, -0.0821, -0.1100, -0.0483, 0.0077]
-    # print(
-    #    std
-    # )  # [2.3349, 2.3665, 2.3873, 2.3958, 2.3773, 2.4054, 2.3908, 2.3725, 2.3623, 2.3824, 2.4043, 2.3669, 2.3800, 2.3779, 2.3889, 2.3639]
     return mean, std

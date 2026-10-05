@@ -18,9 +18,9 @@ import numpy as np
 from scripts.pretrain.plan_buckets import (
     load_sidecar_lengths, mean_emitted_batch, resolution_lengths,
 )
-from src.dataset.captions import CaptionPolicy
 from src.dataset.mix import parse_dataset_mix
-from src.pretrain.config import load_config, flatten
+from src.dataset.sampler import load_bucket_plan
+from src.pretrain.config import load_config, flatten, stage_caption_policy
 
 
 def resize(sizes, shares, *, old_accumulation, new_accumulation, ranks, target):
@@ -70,20 +70,19 @@ def main():
     parser.add_argument("--new-accumulation", type=int, required=True)
     parser.add_argument("--ranks", type=int, required=True)
     parser.add_argument("--target-global-batch", type=float, required=True)
-    parser.add_argument("--progress-start", type=float, required=True)
-    parser.add_argument("--progress-end", type=float, required=True)
+    parser.add_argument("--storage-root", required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
     args = parser.parse_args()
-    cfg = load_config(args.config)
-    data = cfg.data
+    cfg = load_config(args.config, storage_root=args.storage_root)
     stage = cfg.stage(args.stage)
-    policy = CaptionPolicy(kind="beta", beta_start=data.caption_beta_start,
-        beta_end=data.caption_beta_end, short_reserve=data.caption_short_reserve,
-        short_threshold=data.caption_short_threshold, schedule="linear")
-    raw = json.loads(Path(stage.bucket_plan).read_text())
+    policy, (progress_start, progress_end) = stage_caption_policy(cfg, args.stage)
+    plan = load_bucket_plan(stage.bucket_plan)
+    raw = {str(resolution): [dict(max_length=b.max_length, batch_size=b.batch_size)
+                            for b in buckets]
+           for resolution, buckets in plan.by_resolution.items()}
     pooled = resolution_lengths(load_sidecar_lengths(parse_dataset_mix(flatten(cfg, args.stage)["dataset_mix"]),
-        policy=policy, progress_start=args.progress_start,
-        progress_end=args.progress_end, progress_grid=8))
+        policy=policy, progress_start=progress_start,
+        progress_end=progress_end, progress_grid=8))
     if set(map(int, raw)) != set(pooled):
         raise ValueError("plan and metadata aspect IDs differ")
     keys, sizes, shares = [], [], []
@@ -113,7 +112,7 @@ def main():
         ranks=args.ranks, target_global_batch=args.target_global_batch,
         estimated_reference_global_batch=mean_emitted_batch(shares, sizes)*args.ranks*args.old_accumulation,
         estimated_candidate_global_batch=mean_emitted_batch(shares, proposed)*args.ranks*args.new_accumulation,
-        progress_interval=[args.progress_start,args.progress_end], progress_grid=8,
+        progress_interval=[progress_start,progress_end], progress_grid=8,
         caveat="Equal-progress averaged probabilities; finite queue exposure and memory need validation.",
         buckets=[dict(aspect=a, index=i, draw_share=p, old_batch=b, candidate_batch=n)
                  for (a,i),p,b,n in zip(keys,shares,sizes,proposed)])

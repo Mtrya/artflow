@@ -54,11 +54,8 @@ swanlog
 # study material; licenses differ from this repository, so never vendored.
 /refs/
 /scored_images/
-/bucket_plans/*
-!/bucket_plans/ascend/
-/bucket_plans/ascend/*
-!/bucket_plans/ascend/hero-*-k20.json
-!/bucket_plans/ascend/*.report.md
+/models/
+/runs/
 
 # Scratch space for local job wrappers and exploratory probes. One-off code is
 # deleted once its evidence is extracted into notes; repeatable launchers and

@@ -1,10 +1,10 @@
 # Ascend hero recipe
 
 The complete runnable recipe is
-[`configs/hero.toml`](../configs/hero.toml). It explicitly specifies every
+[`configs/pretrain.toml`](../configs/pretrain.toml). It explicitly specifies every
 training tunable for all three resolution stages and rejects missing or
 unknown fields. Stage selection and checkpoint resume are operations.
-Run state and recovery details live in [Ascend pretraining](archive/ascend_pretraining.md).
+Recovery requirements are described below; machine-local run identity lives in `INSPIRE.md`.
 
 ## Model and optimization
 
@@ -24,8 +24,8 @@ Run state and recovery details live in [Ascend pretraining](archive/ascend_pretr
 Muon chunks fused QKV/modulation matrices before orthogonalization. Its update
 multiplier is `sqrt(max(1, rows/cols))` for each chunk. Conditioning matrices
 belong to AdamW. The selected decay 0.4 was installed through a full-state
-migration at 56k; [qualification and provenance](archive/ascend_pretraining.md) explain
-that continuation.
+migration at 56k. The checkpoint migration record retains the original recipe
+and state hashes; the selected decay applies to those conditioning matrices only.
 
 ## Schedule and sampling
 
@@ -95,7 +95,7 @@ conceal a recipe mismatch would invalidate recovery evidence.
   caption-length band with evaluation batch size 8. Record actual counts when
   eligibility or buckets reduce the requested set; compare matched panels/counts.
 - Image grids every 2,500 updates and at the explicit stage `grid_steps`.
-  [`hero_monitor_v1.jsonl`](../assets/eval/hero_monitor_v1.jsonl) contains
+  [`hero_monitor_v1.jsonl`](../configs/prompts/hero_monitor_v1.jsonl) contains
   12 scenes × Chinese/English × short/long captions = 48 images. Each scene
   shares its seed across its four variants. Review anatomy, architecture,
   style and layout as improved / unchanged / regressed / uncertain.
@@ -106,8 +106,9 @@ conceal a recipe mismatch would invalidate recovery evidence.
   logging every 25. Preserve per-update samples, losses and gradient records.
 
 Compare live and stored EMA loss together: smoothing can hide a live-model
-regression. Detailed fixed-panel metric interpretation and review rules are
-in [Ascend pretraining](archive/ascend_pretraining.md).
+regression. Read caption-band sample counts with their losses: underfilled bands are
+reported, and an empty band has no loss estimate. Inspect fixed-prompt
+generations before attributing an internal-scale trend to quality regression.
 
 At the completed hero checkpoint, evaluate live weights first, then compare
 stored EMA on loss, grids and KID before selecting the post-training teacher.
@@ -117,14 +118,16 @@ historical decay profiles.
 
 ## Launch, checkpoints and resolution transitions
 
-Set `paths.storage_root` in the complete run file to the prepared artifact
-root. A relative root resolves against the config file; data/model/output/
-bucket paths resolve against that root, and the prompt path against the
-config file. Platform preparation is documented in `INSPIRE.md`.
+Supply the prepared external artifact root through required `--storage-root`.
+Dataset, model and output paths are relative to that root and stay untracked.
+Prompt suites and bucket plans live in `configs/`; their paths resolve from
+the repository, independent of the working directory or TOML location. The
+resolved checkpoint recipe records both sets of absolute paths. Platform
+preparation and ordinary SwanLab login/API-key setup belong in local `INSPIRE.md`.
 
 ```bash
-python -m src.pretrain.train --config configs/hero.toml --stage 256p --check_config
-python -m scripts.pretrain.launch --config configs/hero.toml --stage 256p --nproc_per_node 16
+python -m src.pretrain.train --config configs/pretrain.toml --stage 256p --storage-root /external/artflow --check_config
+python -m scripts.pretrain.launch --config configs/pretrain.toml --stage 256p --storage-root /external/artflow --nproc_per_node 16
 ```
 
 The launcher sets the qualified NPU expandable-segments allocator policy and
@@ -144,6 +147,57 @@ while retaining global schedule progress. Any required recipe change uses a
 tested migration with provenance. SwanLab records the complete actual recipe,
 architecture version, selected stage and active bucket contents.
 
+SwanLab always starts online; configuration/authentication failures stop startup.
+A resumed checkpoint must continue its recorded experiment. New checkpoints
+include `tracking.json`; existing version-1 checkpoints recover their ID from
+`runtime.json` beside the checkpoint directories. Missing or invalid identity
+is an error. The version-1 completion and sampler formats remain supported.
+
+Moving a tracked prompt suite or bucket plan changes the resolved recipe, so
+ordinary resume deliberately rejects the old path. Use an explicit migration
+on a copy of a complete checkpoint before adopting a new checkout:
+
+```bash
+python -m scripts.pretrain.migrate_stage_recipe \
+  --source /external/artflow/runs/RUN/checkpoint_step_STEP \
+  --destination /external/artflow/recovery/checkpoint_step_STEP \
+  --config configs/pretrain.toml --storage-root /external/artflow \
+  --reason "Relocate tracked prompt suite and bucket plans into configs"
+```
+
+Keep the source checkpoint and its referenced assets available during migration.
+The tool verifies relocated prompts and completed/current bucket contents,
+records both recipes and hashes, copies the SwanLab identity, and preserves
+model, optimizer, scheduler, EMA, sampler and RNG files. Future-stage data and
+batching amendments remain explicit in the migration record. Run the launcher
+with `--resume` pointing to that copy and `--verify_resume_state` when qualifying
+recovery. Repository tests cover these state contracts; a real NPU restore and
+stage transition must still be qualified before deployment. A running job keeps
+its pinned checkout until a separately planned restart.
+
 The [infrastructure record](infra_pretrain.md) contains matched throughput,
 recovery and monitoring measurements. The current run supplies longer-term
 stability evidence.
+
+## Reading stability telemetry
+
+Read per-update loss and pre-clip gradient distributions together with nearby
+live/EMA evaluations, caption lengths, source mix and bucket workload. Cloud
+plot downsampling cannot establish a gradient median or rare-event frequency.
+Compare fixed-panel responses only at matching panel IDs, sample counts, text
+lengths and shifted times. The small fixed panel does not cover the full caption
+curriculum.
+
+Nonfinite loss or gradients stop all ranks before an optimizer update. Finite
+spikes are not skipped and there is no automatic rollback. Raw-gradient clipping
+does not bound Muon's parameter-update norm after momentum orthogonalization.
+Internal RMS, gains and directional sensitivities have no universal failure
+threshold; inspect individual layers, absolute variation, model response and
+real generations before changing an optimizer setting.
+
+If finite loss and gradients deteriorate persistently, preserve the first
+traceback, onset logs, panels, complete checkpoints and exact recipe before
+retention removes a useful predecessor. Establish a reproducible mechanism,
+then qualify any recovery or intervention with a recorded state migration.
+Metric definitions live in [stability.py](../src/pretrain/stability.py),
+[health.py](../src/pretrain/health.py) and [train.py](../src/pretrain/train.py).

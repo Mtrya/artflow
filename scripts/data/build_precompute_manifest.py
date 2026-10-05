@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Build D2–D4 precompute manifests under the shared workspace root (ARTFLOW_ROOT).
-D1 uses scripts.data.build_d1_manifest with the published metadata table.
+Build D2–D4 precompute manifests under the explicit external storage root (--storage-root).
+D1 manifest preparation is complete; this reusable builder covers D2–D4.
 
 Each output row: {image_id, local_path, captions, width, height, bbox, source}
 - local_path: absolute path under the shared workspace root
@@ -30,12 +30,12 @@ MUSEUM_SETS = [
 # + all met_imp_<artist> dirs (globbed)
 
 
-def resolve_path(work_root: str, lp: str) -> str:
+def resolve_path(storage_root: str, lp: str) -> str:
     if os.path.isabs(lp):
         return lp
     if lp.startswith("../"):
-        return os.path.normpath(os.path.join(work_root, lp[3:]))
-    return os.path.normpath(os.path.join(work_root, lp))
+        return os.path.normpath(os.path.join(storage_root, lp[3:]))
+    return os.path.normpath(os.path.join(storage_root, lp))
 
 
 def is_eval(image_id: str, eval_frac: float) -> bool:
@@ -354,10 +354,10 @@ def src_d4_pd12m(w):
 
 
 def _d4_extracted(w, sub, source_name):
-    """Sources materialized by extract_parquet_images.py."""
+    """Sources whose images have already been materialized on disk."""
     p = os.path.join(w, f"data/raw/{sub}/extracted/metadata.jsonl")
     if not os.path.exists(p):
-        print(f"  {source_name}: {p} missing (run extract_parquet_images.py first), skipped")
+        print(f"  {source_name}: {p} missing (materialize the source images before building a manifest), skipped")
         return
     with open(p) as f:
         for line in f:
@@ -407,11 +407,9 @@ SOURCES = {
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--work_root",
-                    default=os.environ.get(
-                        "ARTFLOW_ROOT"))
+    ap.add_argument("--storage-root", required=True)
     ap.add_argument("--out_dir", default=None,
-                    help="default: <work_root>/data/meta/precompute")
+                    help="default: <storage_root>/data/meta/precompute")
     ap.add_argument("--eval_frac", type=float, default=0.0015,
                     help="fraction hash-carved into light_eval.jsonl")
     ap.add_argument("--sources", nargs="+", choices=sorted(SOURCES), default=list(SOURCES))
@@ -421,9 +419,7 @@ def main():
                          "that subset's old eval rows")
     args = ap.parse_args()
 
-    if not args.work_root:
-        ap.error("pass --work_root or set ARTFLOW_ROOT")
-    w = args.work_root
+    w = args.storage_root
     out_dir = args.out_dir or os.path.join(w, "data/meta/precompute")
     os.makedirs(out_dir, exist_ok=True)
 

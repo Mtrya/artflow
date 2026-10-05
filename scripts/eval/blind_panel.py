@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
 
-DEFAULT_PROMPTS = "assets/eval/hero_monitor_v1.jsonl"
+DEFAULT_PROMPTS = str(Path(__file__).resolve().parents[2] / "configs/prompts/hero_monitor_v1.jsonl")
 TIE = "tie"
 
 
@@ -103,10 +103,7 @@ def _label_font(size: int):
             return ImageFont.truetype(candidate, size)
         except OSError:
             continue
-    try:
-        return ImageFont.load_default(size=size)
-    except TypeError:  # Pillow < 10.1 has no sized default font
-        return ImageFont.load_default()
+    return ImageFont.load_default(size=size)
 
 
 def compose_panel(image_paths: List[Path], labels: List[str], out_path: Path) -> None:

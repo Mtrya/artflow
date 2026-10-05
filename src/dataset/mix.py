@@ -3,16 +3,14 @@ Dataset mixing utilities for multi-dataset training.
 
 Provides functionality to:
 - Parse dataset mix specifications from CLI
-- Load and concatenate multiple datasets with tracking
 - Support weighted sampling across datasets
 """
 
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
-from datasets import Dataset, concatenate_datasets, load_from_disk
 
 
 @dataclass
@@ -75,39 +73,6 @@ def parse_dataset_mix(mix_spec: str) -> List[DatasetEntry]:
     return entries
 
 
-def load_mixed_dataset(
-    entries: List[DatasetEntry],
-    shuffle_seed: Optional[int] = None,
-) -> Dataset:
-    """Load and concatenate multiple datasets with dataset_id tracking.
-
-    Each dataset gets a `dataset_id` column (integer index) added before
-    concatenation for downstream tracking and weighted sampling.
-
-    Args:
-        entries: List of DatasetEntry objects from parse_dataset_mix
-        shuffle_seed: If provided, shuffle each dataset before concatenation
-
-    Returns:
-        Concatenated dataset with `dataset_id` column
-    """
-    datasets = []
-
-    for idx, entry in enumerate(entries):
-        ds = load_from_disk(str(entry.path))
-
-        # Add dataset_id column for tracking
-        ds = ds.add_column("dataset_id", [idx] * len(ds))
-
-        # Optional pre-shuffle for local randomness
-        if shuffle_seed is not None:
-            ds = ds.shuffle(seed=shuffle_seed + idx)
-
-        datasets.append(ds)
-
-    return concatenate_datasets(datasets)
-
-
 def get_dataset_weights(entries: List[DatasetEntry]) -> List[float]:
     """Extract normalized weights from dataset entries.
 
@@ -118,15 +83,3 @@ def get_dataset_weights(entries: List[DatasetEntry]) -> List[float]:
         List of weights (sums to 1.0)
     """
     return [e.weight for e in entries]
-
-
-def get_dataset_aliases(entries: List[DatasetEntry]) -> List[str]:
-    """Extract aliases from dataset entries.
-
-    Args:
-        entries: List of DatasetEntry objects
-
-    Returns:
-        List of alias strings
-    """
-    return [e.alias for e in entries]

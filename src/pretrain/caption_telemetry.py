@@ -98,8 +98,7 @@ class PolicyState:
     within-row caption selector itself used, which the trainer advances on its
     own schedule and which can therefore lag ``progress``.  ``length_preference_beta`` is
     whatever scalar places the selector between short and long captions: beta
-    for the length-preference selector, the curriculum position for the legacy
-    token-count curriculum.
+    for the length-preference selector.
     """
 
     progress: float
@@ -243,7 +242,7 @@ class CaptionTelemetry:
 
         Counts and sums are all that is needed; percentiles stay derived from
         the merged histogram, and rates stay derived from the merged counts, so
-        no rank's mean or percentile is ever averaged.  One collective per
+        no rank's mean or percentile is ever averaged.  Two small collectives per
         logging window, not per micro-batch.
         """
         import torch
@@ -251,15 +250,18 @@ class CaptionTelemetry:
         if world_size <= 1 or not torch.distributed.is_available() \
                 or not torch.distributed.is_initialized():
             return
-        # int64: every counter is an integer, and HCCL (Ascend) rejects
-        # float64 collectives while NCCL/Gloo/HCCL all take int64.
-        flat = torch.tensor(self.window_counts(), dtype=torch.int64,
+        values = self.window_counts()
+        count_end = len(_COUNT_FIELDS)
+        sum_end = count_end + len(_SUM_FIELDS)
+        counts = torch.tensor(values[:count_end] + values[sum_end:],
+                              dtype=torch.int64, device=device or "cpu")
+        sums = torch.tensor(values[count_end:sum_end], dtype=torch.float32,
                             device=device or "cpu")
-        torch.distributed.all_reduce(flat, op=torch.distributed.ReduceOp.SUM)
-        # The reduced vector already contains this rank's own counters, so it
-        # replaces the window rather than being added to it.
+        torch.distributed.all_reduce(counts, op=torch.distributed.ReduceOp.SUM)
+        torch.distributed.all_reduce(sums, op=torch.distributed.ReduceOp.SUM)
+        integers = counts.tolist()
         self._accumulator = _Accumulator()
-        self.merge_window_counts(flat.tolist())
+        self.merge_window_counts(integers[:count_end] + sums.tolist() + integers[count_end:])
 
     def _close_window(self) -> None:
         """Fold what this window accumulated into the run totals.

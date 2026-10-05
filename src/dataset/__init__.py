@@ -14,10 +14,7 @@ environments without the torch stack.
 __all__ = [
     "clean_caption",
     "format_artist_name",
-    "caption_probabilities_from_token_counts",
-    "sample_caption_index_from_token_counts",
     "get_resolution_bucket",
-    "ResolutionBucketSampler",
     "LenBucket",
     "BucketPlan",
     "RowRef",
@@ -27,9 +24,7 @@ __all__ = [
     "pad_text_to_hi",
     "RowLengthMetadata",
     "METADATA_VERSION",
-    "collate_fn",
     "parse_dataset_mix",
-    "load_mixed_dataset",
     "get_dataset_weights",
     "DatasetEntry",
 ]
@@ -37,14 +32,7 @@ __all__ = [
 _LAZY = {
     "clean_caption": (".captions", "clean_caption"),
     "format_artist_name": (".captions", "format_artist_name"),
-    "caption_probabilities_from_token_counts": (
-        ".captions", "caption_probabilities_from_token_counts"
-    ),
-    "sample_caption_index_from_token_counts": (
-        ".captions", "sample_caption_index_from_token_counts"
-    ),
     "get_resolution_bucket": (".buckets", "get_resolution_bucket"),
-    "ResolutionBucketSampler": (".sampler", "ResolutionBucketSampler"),
     "LenBucket": (".sampler", "LenBucket"),
     "BucketPlan": (".sampler", "BucketPlan"),
     "RowRef": (".sampler", "RowRef"),
@@ -54,9 +42,7 @@ _LAZY = {
     "pad_text_to_hi": (".sampler", "pad_text_to_hi"),
     "RowLengthMetadata": (".length_metadata", "RowLengthMetadata"),
     "METADATA_VERSION": (".length_metadata", "METADATA_VERSION"),
-    "collate_fn": (".sampler", "collate_fn"),
     "parse_dataset_mix": (".mix", "parse_dataset_mix"),
-    "load_mixed_dataset": (".mix", "load_mixed_dataset"),
     "get_dataset_weights": (".mix", "get_dataset_weights"),
     "DatasetEntry": (".mix", "DatasetEntry"),
 }

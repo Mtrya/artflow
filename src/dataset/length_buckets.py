@@ -319,7 +319,7 @@ def histogram_from_lengths(lengths: Iterable[int], max_length: int = MAX_SEQUENC
 
 def plan_json(boundaries_by_resolution: Mapping[int, Sequence[int]],
               batch_sizes_by_resolution: Mapping[int, Sequence[int]]) -> Dict[str, List[dict]]:
-    """Bucket plan in the shape ``src.pretrain.train.load_bucket_plan`` expects."""
+    """Bucket plan in the shape ``src.dataset.sampler.load_bucket_plan`` expects."""
     plan: Dict[str, List[dict]] = {}
     for resolution_id, boundaries in boundaries_by_resolution.items():
         batch_sizes = batch_sizes_by_resolution.get(int(resolution_id))

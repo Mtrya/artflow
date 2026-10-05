@@ -3,7 +3,7 @@
 What a bucket plan is
 ---------------------
 The trainer reads a plan as ``{resolution id: [{max_length, batch_size}, ...]}``
-(``src.pretrain.train.load_bucket_plan``).  A resolution id is one (resolution,
+(``src.dataset.sampler.load_bucket_plan``).  A resolution id is one (resolution,
 aspect) bucket of the precompute step; inside it, the plan carries K length
 buckets, each a caption-length upper bound plus the micro-batch size that runs
 on it.  The bounds decide how much padding a step wastes, the sizes decide how
@@ -50,8 +50,7 @@ to it with every bound, size, prediction, fit diagnostic and decision.
 
 Usage:
     python scripts/pretrain/plan_buckets.py \
-        --dataset /shared/precomputed/d1@256p \
-        --dataset '/shared/precomputed/d2-wikiart@256p:0.7' \
+        --config configs/pretrain.toml --stage 256p --storage-root /external/artflow \
         --calibration ceiling-256p.json \
         --image-tokens '{"1": 256, "2": 252}' \
         --buckets 10 --vram-budget-gb 42.24 \
@@ -101,11 +100,6 @@ MEMORY_LINEAR_R2 = 0.95
 # thinner group falls back to the pooled fit.
 MIN_GROUP_POINTS = 3
 
-_MEMORY_FIELDS = ("peak_mem_gb", "peak_vram_gb")
-_TIME_FIELDS = ("ms_per_step", "ms_per_sample")
-_LATENT_FIELDS = ("latent_hw", "latent", "latent_shape")
-
-
 # ---------------------------------------------------------------------------
 # Calibration points.
 # ---------------------------------------------------------------------------
@@ -128,132 +122,48 @@ class CalibrationPoint:
         return int(self.img_tokens) + int(self.txt_len)
 
 
-def _number(entry: Mapping[str, Any], names: Sequence[str]) -> Optional[float]:
-    for name in names:
-        value = entry.get(name)
-        if isinstance(value, bool) or value is None:
-            continue
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            continue
-    return None
-
-
-def _latent_from_value(value: Any) -> Optional[Tuple[int, int]]:
-    """Read a latent shape from ``[h, w]``, ``"80x80"`` or ``80``."""
-    if isinstance(value, (list, tuple)) and len(value) == 2:
-        try:
-            return (int(value[0]), int(value[1]))
-        except (TypeError, ValueError):
-            return None
-    if isinstance(value, bool) or value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return (int(value), int(value))
-    text = str(value).strip().lower()
-    if "x" in text:
-        head, _, tail = text.partition("x")
-        try:
-            return (int(head), int(tail))
-        except ValueError:
-            return None
-    try:
-        return (int(text), int(text))
-    except ValueError:
-        return None
-
-
-def _as_int(value: Any) -> Optional[int]:
-    try:
-        return int(str(value).strip())
-    except (TypeError, ValueError):
-        return None
-
-
-def _point_from_entry(entry: Mapping[str, Any], keys: Sequence[str],
-                      patch_size: int) -> Optional[CalibrationPoint]:
-    """One leaf of a sweep file as a point, from its fields or its key path.
-
-    A calibration sweep with explicit shape fields repeats the shape
-    on every leaf, so the fields alone identify the point.  An older sweep file
-    nests latent -> micro-batch -> text length and carries no shape fields, so
-    the keys the walk passed through are the fallback, read in that order.
-    """
-    memory = _number(entry, _MEMORY_FIELDS)
-    time_ms = _number(entry, _TIME_FIELDS)
-    if memory is None or time_ms is None:
-        return None
-
-    latent_hw = None
-    for field_name in _LATENT_FIELDS:
-        latent_hw = _latent_from_value(entry.get(field_name))
-        if latent_hw is not None:
-            break
-    txt_len = _number(entry, ("txt_seq", "txt_len", "text_len"))
-    micro = _number(entry, ("micro_batch", "micro", "batch_size"))
-    if latent_hw is None and keys:
-        latent_hw = _latent_from_value(keys[0])
-    if micro is None and len(keys) > 1:
-        micro = _as_int(keys[1])
-    if txt_len is None and len(keys) > 2:
-        txt_len = _as_int(keys[2])
-
-    img_tokens = _number(entry, ("img_tokens",))
-    if img_tokens is None:
-        if latent_hw is None:
-            return None
-        if latent_hw[0] % patch_size or latent_hw[1] % patch_size:
-            raise ValueError(
-                f"calibration shapes must be divisible by patch size {patch_size}; "
-                f"got {latent_hw[0]}x{latent_hw[1]}")
-        img_tokens = float((latent_hw[0] // patch_size) * (latent_hw[1] // patch_size))
-
-    if latent_hw is None or txt_len is None or micro is None:
-        return None
-    if txt_len < 1 or micro < 1 or img_tokens < 1:
-        raise ValueError(
-            "calibration point has a non-positive shape: "
-            f"img_tokens={img_tokens}, txt_len={txt_len}, micro_batch={micro}")
-    return CalibrationPoint(
-        latent_hw=(int(latent_hw[0]), int(latent_hw[1])),
-        img_tokens=int(img_tokens),
-        txt_len=int(txt_len),
-        micro_batch=int(micro),
-        peak_mem_gb=float(memory),
-        ms_per_step=float(time_ms),
-    )
-
-
 def calibration_points(payload: Any, *, patch_size: int = 2) -> List[CalibrationPoint]:
-    """Flatten a ceiling sweep into points, whatever its nesting.
+    """Read a flat list of explicit DiT forward/backward measurements.
 
-    The walk accepts the sweep's nested ``results`` object and a flat list of
-    entries alike; every leaf carrying a peak-memory and a time field becomes a
-    point, and a recorded OOM corner is skipped rather than guessed at.
+    peak_mem_gb is peak allocated memory in GiB (bytes / 2**30).
+    ms_per_step measures the whole micro-batch, including forward and backward.
+    OOM rows contain the three shape fields and error="oom", without measurements.
     """
-    points: List[CalibrationPoint] = []
-    root = payload.get("results", payload) if isinstance(payload, Mapping) else payload
-
-    def walk(node: Any, keys: Tuple[str, ...]) -> None:
-        if isinstance(node, Mapping):
-            if node.get("error") is not None:
-                return
-            point = _point_from_entry(node, keys, patch_size)
-            if point is not None:
-                points.append(point)
-                return
-            for key, value in node.items():
-                walk(value, keys + (str(key),))
-        elif isinstance(node, list):
-            for value in node:
-                walk(value, keys)
-
-    walk(root, ())
+    if not isinstance(payload, list) or not payload:
+        raise ValueError("calibration must be a nonempty flat list")
+    if type(patch_size) is not int or patch_size < 1:
+        raise ValueError("patch_size must be positive")
+    points = []
+    excluded = 0
+    shape_fields = {"latent_hw", "txt_len", "micro_batch"}
+    for index, row in enumerate(payload):
+        if not isinstance(row, dict):
+            raise ValueError(f"calibration row {index} must be an object")
+        oom = row.get("error") == "oom"
+        required = shape_fields | ({"error"} if oom else {"peak_mem_gb", "ms_per_step"})
+        if set(row) != required:
+            raise ValueError(f"calibration row {index} requires exactly {sorted(required)}")
+        shape = row["latent_hw"]
+        if (not isinstance(shape, list) or len(shape) != 2
+                or any(type(v) is not int or v < 1 or v % patch_size for v in shape)):
+            raise ValueError(f"calibration row {index}: invalid latent_hw for patch size {patch_size}")
+        if any(type(row[k]) is not int or row[k] < 1 for k in ("txt_len", "micro_batch")):
+            raise ValueError(f"calibration row {index}: shape counts must be positive integers")
+        if oom:
+            excluded += 1
+            continue
+        if any(type(row[k]) not in (int, float) or not math.isfinite(row[k]) or row[k] <= 0
+               for k in ("peak_mem_gb", "ms_per_step")):
+            raise ValueError(f"calibration row {index}: measurements must be finite and positive")
+        points.append(CalibrationPoint(
+            latent_hw=tuple(shape), img_tokens=(shape[0] // patch_size) * (shape[1] // patch_size),
+            txt_len=row["txt_len"], micro_batch=row["micro_batch"],
+            peak_mem_gb=float(row["peak_mem_gb"]), ms_per_step=float(row["ms_per_step"]),
+        ))
+    if excluded:
+        print(f"Calibration: excluded {excluded} explicitly recorded OOM measurements")
     if not points:
-        raise ValueError(
-            "no calibration points found: the file needs entries with a peak "
-            "memory field (peak_mem_gb) and a time field (ms_per_step)")
+        raise ValueError("calibration has no successful measurements")
     return points
 
 
@@ -672,20 +582,18 @@ class ResolutionLengths:
 
 
 def load_sidecar_lengths(entries: Sequence[DatasetEntry], *,
-                         policy: Optional[CaptionPolicy] = None,
+                         policy: CaptionPolicy,
                          progress_start: float = 0.0, progress_end: float = 1.0,
                          progress_grid: int = 8) -> List[DatasetLengths]:
     """Read every dataset's companion length sidecar, refusing anything unusable.
 
     Each row contributes dataset weight / row count, divided among its captions.
-    None means a uniform within-row approximation. A beta policy uses the shared
+    The recipe's beta policy uses the shared
     trainer probability function, averaged at midpoints of the stage interval.
     Progress points have equal weight (an approximation to sample exposure).
     """
-    if not 0 <= progress_start <= progress_end <= 1 or progress_grid < 1:
+    if not (0 <= progress_start <= 1 and 0 <= progress_end <= 1) or progress_grid < 1:
         raise ValueError("progress interval must lie in [0, 1] and grid must be positive")
-    if policy is not None and policy.kind != "beta":
-        raise ValueError("use None for uniform or a beta caption policy")
     points = progress_start + (np.arange(progress_grid) + 0.5) / progress_grid \
         * (progress_end - progress_start)
     records = []
@@ -717,14 +625,8 @@ def load_sidecar_lengths(entries: Sequence[DatasetEntry], *,
             for start in range(0, rows.size, 4096):
                 offsets = metadata.caption_offsets[rows[start:start + 4096]]
                 indices = offsets[:, None] + np.arange(count)[None, :]
-                if policy is None:
-                    probabilities[indices] = 1.0 / count
-                else:
-                    # Stationary training uses the full-run 64-point average,
-                    # independent of this stage's progress interval.
-                    probabilities[indices] = average_caption_probabilities(
-                        metadata.prompt_lengths[indices], policy,
-                        progress_points=None if policy.schedule == "stationary" else points)
+                probabilities[indices] = average_caption_probabilities(
+                    metadata.prompt_lengths[indices], policy, progress_points=points)
         for row in range(metadata.num_rows):
             resolution = int(metadata.resolution_ids[row])
             lengths = metadata.prompt_lengths[metadata.row_slice(row)]
@@ -1257,21 +1159,12 @@ def parse_image_tokens(spec: str, resolutions: Sequence[int]) -> Dict[int, int]:
     return tokens
 
 
-def parse_dataset_specs(values: Sequence[str]) -> List[DatasetEntry]:
-    """Dataset roots with optional mix weights, parsed by the training mix parser."""
-    if not values:
-        raise ValueError("no datasets given: pass --dataset PATH[:WEIGHT] at least once")
-    return parse_dataset_mix(" ".join(values))
-
-
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--dataset", action="append", default=[],
-                        metavar="PATH[:WEIGHT]",
-                        help="precomputed dataset root holding a caption-length "
-                             "sidecar; repeat for several, and add a trailing "
-                             "':WEIGHT' to set that dataset's mix weight (default 1)")
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--stage", required=True)
+    parser.add_argument("--storage-root", required=True)
     parser.add_argument("--calibration", required=True, metavar="JSON",
                         help="calibration sweep written by "
                              "a measured DiT forward/backward sweep")
@@ -1312,15 +1205,6 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                         help="weights in the alignment model: 'count' uses each "
                              "bucket's share of the draws, 'uniform' weights every "
                              "bucket equally (default count)")
-    parser.add_argument("--caption-policy", choices=("uniform", "beta"), default="uniform")
-    parser.add_argument("--caption-beta-start", type=float, default=-1.0)
-    parser.add_argument("--caption-beta-end", type=float, default=1.0)
-    parser.add_argument("--caption-short-reserve", type=float, default=0.20)
-    parser.add_argument("--caption-short-threshold", type=int, default=256)
-    parser.add_argument("--caption-schedule", choices=("linear", "early", "stationary"), default="linear")
-    parser.add_argument("--caption-early-at", type=float, default=0.5)
-    parser.add_argument("--progress-start", type=float, default=0.0)
-    parser.add_argument("--progress-end", type=float, default=1.0)
     parser.add_argument("--progress-grid", type=int, default=8)
     return parser.parse_args(argv)
 
@@ -1344,15 +1228,14 @@ def run(args: argparse.Namespace, argv: Sequence[str] = ()) -> int:
     if not math.isfinite(args.min_mean_batch) or args.min_mean_batch < 0:
         raise ValueError("--min-mean-batch must be finite and nonnegative")
 
-    entries = parse_dataset_specs(args.dataset)
-    policy = (CaptionPolicy(
-        kind="beta", beta_start=args.caption_beta_start, beta_end=args.caption_beta_end,
-        short_reserve=args.caption_short_reserve, short_threshold=args.caption_short_threshold,
-        schedule=args.caption_schedule, early_at=args.caption_early_at)
-        if args.caption_policy == "beta" else None)
+    from src.pretrain.config import load_config, flatten, stage_caption_policy
+
+    config = load_config(args.config, storage_root=args.storage_root)
+    entries = parse_dataset_mix(flatten(config, args.stage)["dataset_mix"])
+    policy, (progress_start, progress_end) = stage_caption_policy(config, args.stage)
     records = load_sidecar_lengths(
-        entries, policy=policy, progress_start=args.progress_start,
-        progress_end=args.progress_end, progress_grid=args.progress_grid)
+        entries, policy=policy, progress_start=progress_start,
+        progress_end=progress_end, progress_grid=args.progress_grid)
     pooled = resolution_lengths(records)
     image_tokens = parse_image_tokens(args.image_tokens, sorted(pooled))
     points = load_calibration(args.calibration, patch_size=args.patch_size)
@@ -1422,9 +1305,8 @@ def run(args: argparse.Namespace, argv: Sequence[str] = ()) -> int:
         align_gain_threshold=args.align_gain_threshold, weight_mode=args.align_weights,
         memory=memory_table, time=time_table, alignment=alignment, warnings=warnings)
     context.caption_distribution = (
-        f"{policy}; progress [{args.progress_start}, {args.progress_end}], "
-        f"{args.progress_grid} midpoints (stationary uses full-run 64-point average)"
-        if policy else "uniform within each row (approximation)")
+        f"{policy}; progress [{progress_start}, {progress_end}], "
+        f"{args.progress_grid} midpoints")
     context.mean_micro_batch = mean_emitted_batch(
         [bucket.draw_share for bucket in draft.drafts], sizes)
     context.min_mean_batch = args.min_mean_batch

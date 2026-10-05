@@ -2,7 +2,7 @@
 
 训练覆盖国画、西洋画、人物和世界知识四域，按
 256p → 640p → 896p 渐进训练。逐源权重与阶段设置以
-[`configs/hero.toml`](../configs/hero.toml) 为准；当前配方见
+[`configs/pretrain.toml`](../configs/pretrain.toml) 为准；当前配方见
 [hero_recipe.md](hero_recipe.md)，平台路径与存储操作见本机 `INSPIRE.md`。
 
 ## 数据域与训练契约
@@ -31,9 +31,10 @@
 
 D1 使用发布集 `kaupane/chinese-painting-collection` 的 metadata 作为版本依据：
 最终裁剪框、融入题款的中英文 caption，以及原始图像身份。
-[`build_d1_manifest.py`](../scripts/data/build_d1_manifest.py) 将发布 metadata
-与长 caption 按 image_id 合并，生成共享盘图像的本地路径，解析 JSON 裁剪框。
-每行最多保留中、英、长三条 caption；缺 caption 或图像文件的行单独计数。
+D1 manifest 准备已完成：发布 metadata 与长 caption 按 image_id 合并，
+记录共享盘图像路径并解析 JSON 裁剪框。每行最多保留中、英、长三条 caption；
+缺 caption 或图像文件的行单独计数。这是现有数据的来源记录，
+不再保留一次性 manifest 构建流程。
 
 来源清单保留 full/mounted/detail，剔除 rolled/junk；博物馆国画筛选使用
 Chinese culture 元数据。规则清洗处理色卡、装裱边及无效画面；bbox 在预计算

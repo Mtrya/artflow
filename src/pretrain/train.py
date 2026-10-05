@@ -30,12 +30,11 @@ from datasets import load_from_disk
 
 from ..models.artflow import ArtFlow
 from ..dataset.sampler import (
-    LenBucket,
-    BucketPlan,
     RowLengthQueueBatchSampler,
     RowDescriptorDataset,
     row_length_collate_fn,
     pad_text_to_hi,
+    load_bucket_plan,
 )
 from ..dataset.captions import CaptionPolicy
 from .caption_telemetry import CaptionTelemetry, PolicyState
@@ -53,6 +52,7 @@ from ..evaluation.eval_loss import EvalLossProbe
 from ..evaluation.prompt_grid import grid_due, run_prompt_grid_eval
 from ..evaluation.kid_eval import run_kid_eval
 from .config import load_config, flatten
+from .tracking import resume_run_id, validate_run_id, write_tracking_record
 from .stage_control import (
     CHECKPOINT_RECORD,
     stage_endpoint,
@@ -211,18 +211,20 @@ def parse_args():
         description="Ascend pretraining from one complete run config"
     )
 
-    class OneConfig(argparse.Action):
+    class OneValue(argparse.Action):
         def __call__(self, parser, namespace, value, option_string=None):
             if getattr(namespace, self.dest, None) is not None:
-                parser.error("--config accepts exactly one file")
+                parser.error(f"{option_string} accepts exactly one value")
             setattr(namespace, self.dest, value)
 
     parser.add_argument(
         "--config",
-        action=OneConfig,
+        action=OneValue,
         required=True,
         help="Complete run TOML; no overlays",
     )
+    parser.add_argument("--storage-root", action=OneValue, required=True,
+                        help="External dataset/model/output root")
     parser.add_argument("--stage", required=True, help="Stage name from the run config")
     parser.add_argument(
         "--resume",
@@ -244,62 +246,13 @@ def parse_args():
     return parser
 
 
-def load_bucket_plan(spec: str, resolution_ids) -> BucketPlan:
-    """Load a resolution-keyed bucket plan from a JSON file path or inline JSON."""
-    if os.path.isfile(spec):
-        with open(spec) as handle:
-            raw = json.load(handle)
-    else:
-        try:
-            raw = json.loads(spec)
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                "bucket_plan (config [data]) must be a JSON file or inline JSON object"
-            ) from exc
-
-    if not isinstance(raw, dict):
-        raise ValueError("bucket_plan must be an object keyed by resolution ID")
-    raw = raw.get("by_resolution", raw)
-    if not isinstance(raw, dict):
-        raise ValueError("bucket plan by_resolution must be a JSON object")
-
-    by_resolution = {}
-    for resolution_id, buckets in raw.items():
-        if not isinstance(buckets, list) or not buckets:
-            raise ValueError(f"bucket plan for resolution {resolution_id} is empty")
-        normalized = []
-        for bucket in buckets:
-            if isinstance(bucket, dict):
-                try:
-                    normalized.append(
-                        LenBucket(bucket["max_length"], bucket["batch_size"])
-                    )
-                except KeyError as exc:
-                    raise ValueError(
-                        f"bucket for resolution {resolution_id} needs max_length and batch_size"
-                    ) from exc
-            elif isinstance(bucket, (list, tuple)) and len(bucket) == 2:
-                normalized.append(LenBucket(bucket[0], bucket[1]))
-            else:
-                raise ValueError(
-                    f"bucket for resolution {resolution_id} must be [max_length, batch_size]"
-                )
-        by_resolution[int(resolution_id)] = normalized
-
-    resolution_ids = {int(resolution_id) for resolution_id in resolution_ids}
-    missing = sorted(resolution_ids.difference(by_resolution))
-    if missing:
-        raise ValueError(f"bucket plan is missing metadata resolution IDs: {missing}")
-    return BucketPlan(by_resolution)
-
-
 def main():
     cli = parse_args().parse_args()
-    config = load_config(cli.config)
+    config = load_config(cli.config, storage_root=cli.storage_root)
     args = SimpleNamespace(
         **flatten(config, cli.stage),
         **{
-            key: val for key, val in vars(cli).items() if key not in ("config", "stage")
+            key: val for key, val in vars(cli).items() if key not in ("config", "stage", "storage_root")
         },
     )
     if cli.check_config:
@@ -309,12 +262,11 @@ def main():
         raise ValueError("--verify_resume_state requires --resume")
     # Reject invalid stages/checkpoints before allocating the model or GPUs.
     resume_step = 0
-    if args.resume and args.resume != "None":
+    if args.resume:
         resume_step = validate_checkpoint(
             args.resume,
             max_steps=args.max_steps,
             stop_at_step=args.stop_at_step,
-            require_record=True,
             use_ema=True,
             device_type="npu",
         )
@@ -378,18 +330,9 @@ def main():
     run_dir = os.path.join(args.output_dir, args.run_name)
     runtime_path = os.path.join(run_dir, "runtime.json")
 
-    # SwanLab run resumption: reuse the stored run id on crash-resume so curves
-    # stay in one run instead of fragmenting across restarts.
-    swanlab_kwargs = {"experiment_name": args.run_name}
-    if args.resume and os.path.exists(runtime_path):
-        try:
-            with open(runtime_path) as f:
-                stored_run_id = json.load(f).get("swanlab_run_id")
-            if stored_run_id:
-                swanlab_kwargs["id"] = stored_run_id
-                swanlab_kwargs["resume"] = "must"
-        except Exception as e:
-            print(f"Could not read swanlab run id ({e}); starting a fresh run")
+    swanlab_kwargs = {"experiment_name": args.run_name, "mode": "online"}
+    if args.resume:
+        swanlab_kwargs.update(id=resume_run_id(args.resume), resume="must")
 
     if accelerator.is_main_process:
         accelerator.init_trackers(
@@ -402,6 +345,13 @@ def main():
             },
             init_kwargs={"swanlab": swanlab_kwargs},
         )
+
+    if accelerator.is_main_process:
+        import swanlab
+
+        actual_run_id = validate_run_id(swanlab.get_run().id)
+        if args.resume and actual_run_id != swanlab_kwargs["id"]:
+            raise ValueError("SwanLab resumed a different experiment")
 
     # Load Text Encoder (Frozen, on GPU)
     # Each rank loads its own copy on its assigned device for parallel text encoding
@@ -519,9 +469,10 @@ def main():
     # scope because it is only needed once training starts.
     from ..dataset.length_metadata import ensure_sidecar
 
-    entry_metadata = [
-        ensure_sidecar(entry.path, args.text_encoder_path) for entry in dataset_entries
-    ]
+    with accelerator.main_process_first():
+        entry_metadata = [
+            ensure_sidecar(entry.path, args.text_encoder_path) for entry in dataset_entries
+        ]
     resolution_ids = {
         int(resolution_id)
         for metadata in entry_metadata
@@ -542,11 +493,8 @@ def main():
         )
     row_dataset = RowDescriptorDataset(entry_datasets, entry_metadata)
     caption_policy = CaptionPolicy(
-        kind="beta",
         beta_start=args.caption_beta_start,
         beta_end=args.caption_beta_end,
-        schedule="linear",
-        early_at=0.5,
         short_reserve=args.caption_short_reserve,
         short_threshold=args.caption_short_threshold,
     )
@@ -615,14 +563,13 @@ def main():
 
     # Resume Logic
     resumed_step = 0
-    if args.resume and args.resume != "None":
+    if args.resume:
         accelerator.print(f"Resuming from checkpoint: {args.resume}")
         if args.stop_at_step > 0:
             validate_checkpoint(
                 args.resume,
                 max_steps=args.max_steps,
                 stop_at_step=args.stop_at_step,
-                require_record=True,
                 scheduler_count=len(schedulers),
                 use_ema=True,
                 world_size=accelerator.num_processes,
@@ -691,7 +638,7 @@ def main():
         ema_model.to(accelerator.device, dtype=dtype)
         ema_model.eval()
         ema_model.load_state_dict(model_raw.state_dict())
-        if args.resume and args.resume != "None":
+        if args.resume:
             ema_path = os.path.join(args.resume, "ema_weights.pt")
             if not os.path.isfile(ema_path):
                 raise ValueError(f"full resume requires EMA state: {ema_path}")
@@ -747,6 +694,8 @@ def main():
     # Fixed eval-loss probe (built identically on every rank; main process logs)
     eval_probe = None
     if args.eval_loss_interval > 0:
+        with accelerator.main_process_first():
+            eval_metadata = ensure_sidecar(args.eval_dataset_path, args.text_encoder_path)
         eval_probe = EvalLossProbe(
             args.eval_dataset_path,
             text_encoder,
@@ -755,6 +704,7 @@ def main():
             exit_layer=args.text_encoder_exit_layer,
             vae_mean=vae_mean,
             vae_std=vae_std,
+            metadata=eval_metadata,
             num_samples=args.eval_loss_samples,
             batch_size=args.eval_batch_size,
             device=accelerator.device,
@@ -1062,17 +1012,15 @@ def main():
             Path(save_path, "transformer_config.json").write_text(
                 json.dumps(model_raw.get_config(), indent=2) + "\n"
             )
-            # Persist runtime state for crash-resume (step + swanlab run id)
-            runtime = {"global_step": step}
-            try:
-                import swanlab
+            import swanlab
 
-                runtime["swanlab_run_id"] = getattr(swanlab.get_run(), "id", None)
-            except Exception:
-                pass
+            run_id = validate_run_id(swanlab.get_run().id)
+            write_tracking_record(save_path, run_id)
+            runtime = {"global_step": step, "swanlab_run_id": run_id}
             os.makedirs(run_dir, exist_ok=True)
-            with open(runtime_path, "w") as f:
-                json.dump(runtime, f)
+            runtime_tmp = Path(runtime_path + ".tmp")
+            runtime_tmp.write_text(json.dumps(runtime) + "\n")
+            os.replace(runtime_tmp, runtime_path)
         accelerator.wait_for_everyone()
         if accelerator.is_main_process:
             write_checkpoint_record(
