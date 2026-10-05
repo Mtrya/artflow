@@ -10,7 +10,7 @@ where the data is mounted. Platform setup and credentials are in the local
 | Command | Purpose |
 |---|---|
 | `pretrain.launch` | Launch or resume one curriculum stage from a complete run config. |
-| `pretrain/ascend.sh` | Set up the Ascend environment and invoke `pretrain.launch`. |
+| `pretrain/launch.sh` | Set up the Ascend environment and invoke `pretrain.launch`. |
 | `pretrain.migrate_stage_recipe` | Apply an explicit, recorded recipe amendment to a checkpoint copy before resume. |
 | `pretrain.plan_buckets` | Fit measured calibration data and plan length boundaries and micro-batches against caption draws. |
 | `pretrain.resize_bucket_plan` | Draft fixed-boundary batch/accumulation candidates for validation on the full workload. |
