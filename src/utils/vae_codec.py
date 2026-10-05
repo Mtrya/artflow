@@ -61,10 +61,10 @@ def decode_latents(
         List of PIL Images
     """
     device = next(model.parameters()).device
-    dtype = next(model.parameters()).device
+    dtype = next(model.parameters()).dtype
 
     # Add temporal dimension [b, c, 1, h, w]
-    latents = latents.unsqueeze(2).to(device).to(dtype)
+    latents = latents.unsqueeze(2).to(device=device, dtype=dtype)
 
     with torch.no_grad():
         reconstructed = model.decode(latents).sample

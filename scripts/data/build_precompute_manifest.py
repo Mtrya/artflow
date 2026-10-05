@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Build unified precompute manifests from all data sources under the shared
-workspace root (ARTFLOW_ROOT).
+Build D2–D4 precompute manifests under the shared workspace root (ARTFLOW_ROOT).
+D1 uses scripts.data.build_d1_manifest with the published metadata table.
 
 Each output row: {image_id, local_path, captions, width, height, bbox, source}
 - local_path: absolute path under the shared workspace root
 - captions:   list[str] (zh/en/etc., empty strings dropped)
 - width/height: int or null (null -> resolution pre-filter skipped)
-- bbox:       normalized [0,1000]^2 [x1,y1,x2,y2] or null (D1 artifact crops)
+- bbox:       normalized [0,1000]^2 [x1,y1,x2,y2] or null
 
 A stable hash carve-out (~eval_frac of every source) goes to light_eval.jsonl
 and is excluded from the train manifests. light_eval is precomputed into its
@@ -55,58 +55,7 @@ def clean_caps(*caps):
     return out
 
 
-def norm_bbox(bb):
-    """Return bbox as float list, or None."""
-    if not bb or len(bb) != 4:
-        return None
-    try:
-        return [float(v) for v in bb]
-    except (TypeError, ValueError):
-        return None
-
-
 # ---------------------------------------------------------------- sources
-
-def src_d1(w):
-    from src.dataset.ocr_merge import append_ocr_block, clean_ocr_lines
-
-    p = os.path.join(w, "data/meta/d1/d1_metadata.jsonl")
-    uncroppable = 0
-    with open(p) as f:
-        for line in f:
-            d = json.loads(line)
-            bb = norm_bbox(d.get("bbox"))
-            if d.get("artifacts") and bb is None:
-                # Artifacts were seen but no box was produced for them.  The
-                # row is still kept: dropping it would lose artwork to a
-                # detector's failure to localise a colour chart.
-                uncroppable += 1
-            # The earlier labelling pass kept a transcription of the text in
-            # the image in its own field, which nothing consumed.  Fold it into
-            # both captions so the characters reach training.
-            zh = d.get("caption_zh")
-            en = d.get("caption_en")
-            ocr = clean_ocr_lines(d.get("ocr_text") or "")
-            if ocr:
-                if zh:
-                    zh = append_ocr_block(zh, ocr, "zh")
-                if en:
-                    en = append_ocr_block(en, ocr, "en")
-            yield {
-                "image_id": d["image_id"],
-                "local_path": resolve_path(w, d["local_path"]),
-                "captions": clean_caps(zh, en),
-                "width": None,
-                "height": None,
-                "bbox": bb,
-                "source": "d1_" + d.get("source", "unknown"),
-                # Kept so a caption can name the artist or the title when it
-                # reads naturally.  The caption prompt is free to omit them.
-                "artist": d.get("artist"),
-                "title": d.get("title"),
-            }
-    print(f"  d1: artifacts seen but no box produced: {uncroppable} (kept)")
-
 
 def src_d2_wikiart(w):
     p = os.path.join(w, "data/raw/wikiart215k/metadata.jsonl")
@@ -247,6 +196,69 @@ def src_d3_pexels(w):
             }
 
 
+def src_d4_pexels(w):
+    """Top-up photographs from Pexels: limbs, architecture, nature, city, cosplay.
+
+    Same contract as src_d3_pexels: the uploader's alt text is the row's short
+    caption.  alt is empty often enough that the drop here is material.
+    """
+    p = os.path.join(w, "data/raw/pexels_d4/metadata.jsonl")
+    with open(p) as f:
+        for line in f:
+            d = json.loads(line)
+            if not d.get("download_ok"):
+                continue
+            caps = clean_caps(d.get("alt"))
+            if not caps:
+                continue
+            yield {
+                "image_id": d["source_id"],
+                "local_path": resolve_path(w, d["local_path"]),
+                "captions": caps,
+                "width": d.get("width"),
+                "height": d.get("height"),
+                "bbox": None,
+                "source": "d4_pexels",
+            }
+
+
+def src_d4_extra2(w):
+    """Reinforcement batch: iNaturalist, Met+AIC, Commons and Pexels photos.
+
+    Same contract as src_d4_pexels: the source's own description (``alt``) is
+    the row's short caption, which is what the harvest emits for every row it
+    keeps.  The four harvests share one source label, so the mixture and the
+    domain map keep working on a single name; the origin directory is not
+    preserved in the row.
+    """
+    for sub in ("reinforce_inat", "reinforce_museum", "reinforce_commons",
+                "reinforce_pexels"):
+        p = os.path.join(w, f"data/raw/{sub}/metadata.jsonl")
+        if not os.path.exists(p):
+            print(f"  d4_extra2: {sub}: {p} missing, skipped")
+            continue
+        n = 0
+        with open(p) as f:
+            for line in f:
+                d = json.loads(line)
+                if not d.get("download_ok"):
+                    continue
+                caps = clean_caps(d.get("alt"))
+                if not caps:
+                    continue
+                n += 1
+                yield {
+                    "image_id": d["source_id"],
+                    "local_path": resolve_path(w, d["local_path"]),
+                    "captions": caps,
+                    "width": d.get("width"),
+                    "height": d.get("height"),
+                    "bbox": None,
+                    "source": "d4_extra2",
+                }
+        print(f"  d4_extra2: {sub}: {n} rows")
+
+
 def _d4_from_metadata(w, sub, source_name):
     p = os.path.join(w, f"data/raw/{sub}/metadata.jsonl")
     with open(p) as f:
@@ -377,12 +389,13 @@ def src_d4_inat(w):
 
 
 SOURCES = {
-    "d1": src_d1,
     "d2_wikiart": src_d2_wikiart,
     "d2_museum": src_d2_museum,
     "d3_human": src_d3_human,
     "d3_people": src_d3_people,
     "d3_pexels": src_d3_pexels,
+    "d4_pexels": src_d4_pexels,
+    "d4_extra2": src_d4_extra2,
     "d4_vintage": src_d4_vintage,
     "d4_relaion": src_d4_relaion,
     "d4_pd12m": src_d4_pd12m,
@@ -401,13 +414,15 @@ def main():
                     help="default: <work_root>/data/meta/precompute")
     ap.add_argument("--eval_frac", type=float, default=0.0015,
                     help="fraction hash-carved into light_eval.jsonl")
-    ap.add_argument("--sources", nargs="*", default=list(SOURCES.keys()))
+    ap.add_argument("--sources", nargs="+", choices=sorted(SOURCES), default=list(SOURCES))
     ap.add_argument("--append-eval", action="store_true",
                     help="append to light_eval.jsonl instead of truncating it; "
                          "use when rebuilding a subset of sources, after removing "
                          "that subset's old eval rows")
     args = ap.parse_args()
 
+    if not args.work_root:
+        ap.error("pass --work_root or set ARTFLOW_ROOT")
     w = args.work_root
     out_dir = args.out_dir or os.path.join(w, "data/meta/precompute")
     os.makedirs(out_dir, exist_ok=True)

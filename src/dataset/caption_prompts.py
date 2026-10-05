@@ -23,7 +23,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-PROMPT_VERSION = "cap-v6"
+PROMPT_VERSION = "cap-v7"
 
 # Retained-token bands.  A request targets the middle of its band
 # and is accepted anywhere inside it.
@@ -33,7 +33,6 @@ LENGTH_BANDS = {
     "512-895": (512, 895),
     "896-1280": (896, 1280),
 }
-BAND_NAMES = tuple(LENGTH_BANDS)
 
 WORDS_PER_TOKEN = {"en": 0.757, "zh": 1.21}
 
@@ -162,87 +161,63 @@ class CaptionRequest:
 
 
 _EN_TEMPLATE = """You are writing training captions for a text-to-image model. \
-Write one caption for the single image attached to this message.
+Describe the single image attached to this message.
 
 Length: about {target} {unit}. Acceptable range {low}-{high} {unit}. Staying \
-inside that range matters more than reaching the target, and a caption at the \
-lower end is better than one that keeps growing: stop as soon as you have \
-described what is worth describing. Reach the length by describing more of what \
-is actually there, never by repeating yourself, listing synonyms, padding with \
-generic praise, or saying the same thing again in other words.
+inside that range matters more than reaching the target: stop once you have \
+described what is worth describing. Reach the length with more visible content, \
+never with repetition, synonym lists or generic praise.
 
 {format_rules}
 
-No speculation. Write what is visible, the way someone states what they want:
-"a woman in a red silk dress", not "what appears to be a woman, possibly in a
-dress". The caption must not contain "appears to be", "appears", "seems",
-"looks like", "possibly", "probably", "perhaps", "maybe", "some kind of",
-"a type of", "or similar", or a question mark, and that list is not the whole
-of it - any other way of saying "I am not sure" is equally not allowed. Where a
-material or an object could be one of two things, name the one the picture best
-supports - "a silk dress", not "a dress that looks like silk or satin" and not
-"a silk or satin dress". Where a detail cannot be read off the picture, leave
-it out and describe something else that is visible; do not announce that it is
-unclear. Naming what is shown - an ethnicity, a garment, a material, an object,
-a colour - is a description of the picture, not an invention, so state it
-directly.
+Write plainly what is visible, the way a user states the picture they want: \
+"a woman in a red silk dress", not "what appears to be a woman, possibly in a \
+dress". No speculation of any kind - no "appears", "seems", "looks like", \
+"possibly", "probably", "some kind of", "a type of", no question marks - and \
+any other way of saying "I am not sure" is equally forbidden. Where two \
+readings are possible, name the one the picture best supports; where a detail \
+cannot be read off the picture, leave it out instead of saying it is unclear. \
+Naming a visible ethnicity, garment, material or colour is description, not \
+invention, so state it directly.
 
-Voice: write the way a person describes the picture they want to see, not the
-way a catalogue entry describes a museum object. Say what is there and where it
-is, in plain words.
+No evaluation: state what is visible, not how good it is. Do not praise the \
+work or its maker, do not judge the composition, technique or mood \
+("masterfully rendered", "beautifully composed", "conveys a serene \
+atmosphere" are not allowed).
 
-No evaluation. State what is visible, not how good it is. Do not praise the
-work or its maker, do not judge the composition, technique or mood, and do not
-summarise what the picture "conveys". Phrases like "masterfully rendered",
-"beautifully composed", "skilfully executed", "conveys a serene atmosphere",
-"demonstrates the artist's control" carry nothing a reader can picture, and are
-not allowed. When you need more length, describe visible things you have not
-covered yet - further figures, objects, text, patterns, materials, light - not
-more adjectives.
+Medium and style: name the medium explicitly and early - photograph, oil \
+painting, watercolour, drawing, print, digital artwork, or whatever is actually \
+there - with the visible evidence for it: grain, blur, brushstrokes, canvas or \
+paper texture, ink wash, halftone dots; a caption that never says what kind of \
+image this is is unusable. Never present a photograph as a painting or the \
+reverse; when a picture could pass for either, follow the strongest visible \
+evidence. Then name the style at the level the picture shows: when visible \
+traits - stroke, palette, light, flat or modelled forms, pattern, composition - \
+identify a style, movement or period (Impressionism, Post-Impressionism, \
+Symbolism, Realism, Baroque, and so on), name it together with the traits that \
+carry it. For a picture whose style is visible, "an oil painting" alone leaves \
+the caption incomplete. Do not invent what the picture cannot show: artists, \
+exact dates, places, or movements its visible traits do not support.
 
-Medium and style: the caption must name the medium explicitly and early -
-photograph, oil painting, watercolour, drawing, print, digital artwork, or
-whatever is actually there - together with the visible evidence for it: film
-grain, lens blur, brushstrokes, canvas or paper texture, ink wash, halftone
-dots. A caption that never says what kind of image this is is unusable. Do not
-describe a photograph as a painting or a painting as a photograph. Where the
-style of the making is visible - loose or tight brushwork, high-contrast
-lighting, flat colour areas, wet or dry ink - describe those visible traits in
-plain words. Do not assign the work to a school or movement you cannot verify,
-and do not invent a period or an attribution. When a picture could pass for
-either a photograph or a painting, decide from the strongest visible evidence
-and name the one it is.
-
-People and dress: when people are visible, describe how they look - skin tone,
-hair, apparent age, what they are wearing - and name the ethnicity or region
-their visible features point to (East Asian, South Asian, Southeast Asian,
-African, European, Middle Eastern, Latin American). Leave the region out only
-when the picture really does not show enough to tell; do not put a nationality
-on a face that does not indicate one. Give a garment its own name when you know
-it - hanfu, kimono, hanbok, sari, ao dai, cheongsam, kaftan, abaya, hijab,
-thobe, dashiki, kente, lederhosen - and otherwise describe its cut, fabric and
-pattern. A picture with people in it is not fully described if their appearance
-is never mentioned. State this the way you state everything else; do not rate
-or compliment anyone's looks.
+People: when people are visible, describe skin tone, hair, apparent age and \
+dress, and name the ethnicity or region their features point to (East Asian, \
+South Asian, Southeast Asian, African, European, Middle Eastern, Latin \
+American); leave it out only when the picture truly cannot tell. Give a \
+garment its own name when you know it - hanfu, kimono, hanbok, sari, ao dai, \
+cheongsam, kaftan, abaya, dashiki - and otherwise describe its cut, fabric and \
+pattern. Do not rate or compliment anyone's looks.
 
 Grounding rules:
-- Every statement must be visible in this image or come from the metadata below.
-- If the metadata names an artist or a title, you may name them where it reads
-  naturally - in the opening sentence, for instance - but it is equally fine to
-  leave them out and describe only what is in the picture. Never name an artist
-  or a title that the metadata does not give.
-- Do not invent an artist, title, date, place, collection history, symbolism, \
-or the maker's intention.
-- Do not guess at what is outside the frame, and do not describe a different \
-image from the one attached.
-- If the image contains any writing - an inscription, a poem, a signature, a \
-seal, a printed label - transcribe what you can actually read inside the \
-caption itself, in quotation marks, and say where it sits. Do not summarise it \
-as "an inscription" and do not invent characters you cannot read.
-- Do not open with "This image", "The image", "This painting", or any similar \
-pointer phrase. Starting with the medium is natural and expected: "A photograph \
-of ...", "An oil painting ...", "A pencil drawing ...". Otherwise start with the \
-content itself.
+- Every statement must come from this image or the metadata below; do not \
+describe what is outside the frame.
+- Metadata may name an artist or a title - name them or leave them out - and \
+never add anything it does not give.
+- If the image contains readable writing - an inscription, a signature, a seal, \
+a printed label - transcribe it in quotation marks inside the caption and say \
+where it sits; never invent characters you cannot read.
+- Do not open with "This image", "The image", "This painting" or any similar \
+pointer phrase: start with the medium ("A photograph of ...", "An oil painting \
+...") or with the content itself.
 
 {domain_rules}
 {metadata_block}{extra_notes}
@@ -251,35 +226,38 @@ Output only the caption text. No headings, no preamble, no closing remarks."""
 
 _ZH_TEMPLATE = """你为文生图模型撰写训练用的图像描述。请为随本条消息附上的这张图写一条描述。
 
-长度：约 {target} {unit}。可接受范围 {low}–{high} {unit}。控制在范围内比写满目标字数更重要，\
-宁可写到范围下限、也不要越写越长：值得写的内容写完就停。请通过描述画面中真实存在的内容来达到长度，\
-不要靠重复、堆砌近义词、空泛的赞美或把写过的内容换个说法再写一遍来凑字数。
+长度：约 {target} {unit}。可接受范围 {low}–{high} {unit}。控制在范围内比写满目标更重要：\
+值得写的写完就停。靠描述画面里真实存在的内容来达到长度，不要重复、堆砌近义词或空泛赞美。
 
 {format_rules}
 
-不要写猜测。像用户点单一样直接陈述看得见的东西："一位穿红色丝绸长裙的女性"，而不是"看起来像是一位女性，可能穿着长裙"。\
-描述里不允许出现"看起来""像是""似乎是""好像是""大概是""可能是""也许是""某种""之类的"，也不要用问号；\
-这个清单没有列全，其他任何表示"我不确定"的说法同样不许用。\
-材质或器物只能在两种之间二选一时，写画面更支持的那一种，不要写"像是丝绸或缎面"、也不要写"丝绸或缎面的裙子"。\
-画面里读不出来的细节就不写，改去写别的看得见的内容，也不要专门说明"这里看不清"。\
-写出画面里看得见的东西——族裔、服饰、材质、器物、颜色——是在描述画面，不是编造，直接写出来。
+像用户点单一样直接写看得见的东西："一位穿红色丝绸长裙的女性"，不写"看起来像是一位女性，可能穿着长裙"。\
+不允许任何猜测——不写"看起来""像是""似乎是""可能是""某种"之类的词，也不用问号；\
+其他任何表示"我不确定"的说法同样禁止。两种读法都说得通时，写画面更支持的那一种；\
+读不出来的细节就不写，不要专门说明"这里看不清"。写出看得见的族裔、服饰、材质、器物、颜色是在描述画面，不是编造，直接写出来。
 
-语气：写成一个用户在描述自己想要的那张画，而不是美术馆图录在描述一件藏品。用朴素的话说清画面上有什么、在哪里、是什么样。
+不要评价：只写看得见的东西，不评判它好不好；不夸作品或作者，不评价构图、技法、气韵（"笔法细腻""技艺精湛""意境深远"之类禁止）。
 
-不要评价。只写看得见的东西，不评判它好不好。不要夸作品或作者，不要评价构图、技法、气韵，也不要总结画面"传达"了什么。"笔法细腻""技艺精湛""构图巧妙""虚实结合""意境深远""栩栩如生""恰到好处""十分自然"这类说法读者想象不出任何东西，禁止使用。长度不够时，继续写画面中还没提到的具体内容——别处的人物、器物、文字、纹样、材质、光线——而不是加形容词。
+媒介与风格：描述必须在开头或显要位置点明媒介——照片、油画、水彩、素描、版画、数字绘画，\
+或画面里实际是什么——并写出可见依据：胶片颗粒、镜头虚化、笔触、画布或纸张纹理、水墨晕染、网点；\
+完全没有说明画面类型的描述不可用。不要把照片写成画，也不要把画写成照片；两者不好区分时，\
+按最明显的可见证据写。风格要写到画面真正显示的那一层：当可见特征——笔触、色彩、光线、平涂或明暗塑造、纹样、构图——\
+足以指认某个风格、流派或时期（印象派、后印象派、象征主义、写实主义、巴洛克等）时，把它写出来，\
+并给出支撑它的画面特征。风格可见的作品，只写"油画"是不完整的。不要写画面没有显示的内容：\
+作者、确切年代、地点，或画面特征并不支持的流派。
 
-媒介与风格：描述必须在开头或显要位置用自己的话点明媒介——照片、油画、水彩、素描、版画、数字绘画，或画面里实际是什么——并写出可见的依据：胶片颗粒、镜头虚化、笔触、画布或纸张纹理、水墨晕染、网点。完全没有说明画面类型的描述不可用。不要把照片写成画，也不要把画写成照片。如果制作方式的风格特征可见——笔触松散还是紧实、光线对比强烈、色块平涂、墨色干湿——用朴素的话描述这些可见特征。不要把作品归于你无法核实的流派或时期，也不要编造年代或归属。照片和绘画不好区分时，\
-按最明显的可见证据判断它到底是哪一种，然后按那一种写。
-
-人物与服饰：画面里出现人物时，要写清他们的样子——肤色、发色发型、大致年龄、穿的是什么——并写出可见特征指向的族裔或地域（东亚、南亚、东南亚、非洲、欧洲、中东、拉丁美洲）。只有画面确实看不出时才不写，不要给看不出族裔的脸硬安一个国籍。服饰有专名就用专名（汉服、和服、韩服、纱丽、奥黛、旗袍、唐装、藏袍、蒙古袍、苗族银饰、长袍、头巾等），没有专名就写清款式、面料和纹样。画面里明明有人物却完全不提他们长什么样，这样的描述是不完整的。和写其他内容一样平实地写，不要评价或夸赞谁的长相。
+人物：画面里出现人物时，写清肤色、发型、大致年龄和服饰，以及可见特征指向的族裔或地域\
+（东亚、南亚、东南亚、非洲、欧洲、中东、拉丁美洲）；只有画面确实看不出时才不写。\
+服饰有专名就用专名（汉服、和服、韩服、纱丽、奥黛、旗袍、长袍、头巾等），没有专名就写清款式、面料和纹样。\
+不要评价或夸赞谁的长相。
 
 依据要求：
-- 每一句话都必须来自这张图上可见的内容，或来自下方给出的元数据。
-- 元数据里如果给出了作者或作品名，可以在读起来自然的地方提一下（比如开头一句），也可以完全不提、只写画面里有什么。元数据里没有的作者或作品名，一个字都不要写。
-- 不要编造作者、标题、年代、地点、收藏史、象征含义或创作意图。
-- 不要猜测画面之外的内容，也不要描述与附图无关的另一张图。
-- 画面里如果有文字——题诗、题款、署名、印章、印刷标签——把你能真正认出来的字直接写进描述里，用引号括起，并说明它在什么位置。不要只笼统地说"有题跋"，也不要把认不出的字编造出来。
-- 不要用"这张图片""这幅画""该作品""这是一幅"之类的指代式开头。以媒介开头是自然且应当的，例如"一张照片里……""一幅油画……""一张铅笔素描……"；否则直接从内容写起。
+- 每句话都必须来自这张图上可见的内容或下方给出的元数据；不要描述画面之外的内容。
+- 元数据给出作者或作品名时，可以自然提及，也可以完全不提；元数据没有的作者、标题、年代、地点、\
+象征含义或创作意图，一律不写、不编造。
+- 画面里能认出的文字——题款、署名、印章、印刷标签——用引号写进描述并说明位置；认不出的字不要编造。
+- 不要用"这张图片""这幅画""该作品"之类的指代式开头；以媒介开头（"一张照片里……""一幅油画……"）\
+或直接从内容写起。
 
 {domain_rules}
 {metadata_block}{extra_notes}
@@ -320,27 +298,41 @@ _DOMAIN_RULES = {
         "chinese_painting": "This is a Chinese ink or colour painting. Use the "
             "accurate vocabulary of the medium: brushwork (outline, texture "
             "strokes, wet or dry ink), ink tonality, washes, silk or paper "
-            "ground, mounting, seals and inscriptions. If you can read an "
-            "inscription or a seal, quote only the characters you can actually "
-            "read and say where it sits; if you cannot read it, describe its "
-            "position and shape instead. Never turn unreadable text into "
-            "invented characters.\n",
+            "ground, mounting, seals and inscriptions. Name the style where "
+            "the visible traits show it - gongbi or xieyi, ink or blue-green "
+            "colouring, literati or academic painting, and the school or "
+            "period character the brushwork and composition point to - with "
+            "the traits that carry it. Quote only characters you can actually "
+            "read from an inscription or seal; describe its position and shape "
+            "instead of inventing characters.\n",
         "western_art": "This is a Western painting or drawing. Use accurate "
             "vocabulary for medium and technique (support, ground, impasto, "
-            "glazing, brush or pencil handling), and for pictorial "
-            "construction (perspective, modelling, chiaroscuro, palette).\n",
+            "glazing, brush or pencil handling) and for pictorial construction "
+            "(perspective, modelling, chiaroscuro, palette). Name the "
+            "art-historical style the visible character points to - "
+            "Impressionism, Post-Impressionism, Symbolism, Realism, "
+            "Romanticism, Neoclassicism, Baroque, Rococo, academic painting, "
+            "genre, still life, portraiture, landscape, geometric abstraction "
+            "- with the traits (stroke, palette, light, composition, subject) "
+            "that support it; a caption that stops at \"oil painting\" leaves "
+            "the style unstated. Where no named style fits the picture, "
+            "describe the traits themselves.\n",
         "photograph": "This is a photograph. Describe the subject, the light, "
             "the framing, the depth of field, and any visible lens or exposure "
             "characteristics. Do not call it a painting.\n",
     },
     "zh": {
         "generic": "用准确、具体的名词描述物体、材质和动作，写清观者能够指认的东西。\n",
-        "chinese_painting": "这是一幅中国画。请使用准确的媒介词汇：笔法（勾勒、皴法、干笔湿笔）、\
-墨色浓淡、设色与渲染、绢本或纸本、装裱形制、印章与题跋。如果题字或印文能够辨认，只引用你确实认得的字，\
-并说明它所在的位置；如果认不出来，就描述它的位置和形态，不要把认不出的字编造出来。\n",
-        "western_art": "这是一幅西洋绘画或素描。请使用准确的媒介与技法词汇（基底、底子、厚涂、罩染、\
-笔触或铅笔线条），以及构图词汇（透视、明暗塑造、明暗对照、色调）。\n",
-        "photograph": "这是一张照片。请描述主体、光线、取景、景深，以及可见的镜头或曝光特征，\
+        "chinese_painting": "这是一幅中国画。用准确的媒介词汇：笔法（勾勒、皴法、干湿笔）、\
+墨色浓淡、设色与渲染、绢本或纸本、装裱形制、印章与题跋。画面特征能看出的风格要写出来——\
+工笔还是写意、水墨还是青绿设色、文人画还是院体，以及笔法与构图指向的流派或时代特征——\
+并给出支撑它的画面特征。题字或印文只引用你确实认得的字并说明位置，认不出的不要编造。\n",
+        "western_art": "这是一幅西洋绘画或素描。用准确的媒介与技法词汇（基底、底子、厚涂、罩染、\
+笔触处理）和构图词汇（透视、明暗塑造、明暗对照、色调）。画面特征指向的艺术史风格要点名——\
+印象派、后印象派、象征主义、写实主义、浪漫主义、新古典主义、巴洛克、洛可可、学院派、\
+风俗画、静物、肖像、风景、几何抽象——并给出支撑它的画面特征（笔触、色彩、光线、构图、题材）；\
+只写“油画”而风格缺位是不完整的。归不进任何有名字的风格时，就朴素描述特征本身。\n",
+        "photograph": "这是一张照片。描述主体、光线、取景、景深，以及可见的镜头或曝光特征，\
 不要把它说成绘画。\n",
     },
 }

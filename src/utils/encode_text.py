@@ -31,15 +31,14 @@ def _encode_early_exit(
     exit_layer: int,
     use_cache: bool,
 ) -> torch.Tensor:
-    """Frozen-LM forward that STOPS after layers[exit_layer-1].
+    """Stop the frozen LM once ``hidden_states[exit_layer]`` is available.
 
     True early exit: skips layers exit_layer..N instead of running
     a full forward and slicing hidden_states[exit_layer]. HF semantics make the
-    hook output bit-identical to the slice: hidden_states[i] is the output of
-    layers[i-1], before the final norm. No autograd graph exists (no_grad
-    caller), so aborting the forward mid-way via an exception in a forward
-    hook is safe; the hook fires synchronously right after the layer's output
-    is computed.
+    intermediate slice equal to layers[i-1]'s output, before the final norm.
+    The last hidden state includes the final norm, so that exit hooks the norm
+    instead. No autograd graph exists (no_grad caller); the hook aborts the
+    forward synchronously after the requested features have been computed.
     """
     layers = model.model.layers
     k = int(exit_layer)
@@ -58,13 +57,10 @@ def _encode_early_exit(
             captured["hidden"] = output
         raise _EarlyExit(captured["hidden"])
 
-    # Registering on layers[k - 1] yields the same tensor the full-forward
-    # path returns as hidden_states[k]: HF numbers the embedding as
-    # hidden_states[0] and the output of layers[i - 1] as hidden_states[i],
-    # both before the final norm. Aborting here is therefore bit-identical to
-    # running the remaining layers and slicing afterwards — the skipped
-    # layers simply never compute.
-    handle = layers[k - 1].register_forward_hook(_hook)
+    # HF's final hidden_states entry is normalized; intermediate entries are
+    # decoder-block outputs. Hook the same boundary used by full-forward eval.
+    stop_module = model.model.norm if k == len(layers) else layers[k - 1]
+    handle = stop_module.register_forward_hook(_hook)
     try:
         model.model(
             input_ids=input_ids,
@@ -185,7 +181,8 @@ def encode_text(
             (the embedding output is index 0).
         exit_mode: ``full_forward_slice`` runs all layers and selects
             ``hidden_states[exit_layer]``; ``stop_at_layer`` stops the forward
-            after that layer. The default is ``full_forward_slice``.
+            after that layer (including final normalization at the last layer).
+            The default is ``full_forward_slice``.
         fast_slice: replace the per-sequence gather/pad repack with one slice of
             the padded hidden tensor. Same conditioning features; removes a
             device-to-host sync per call. Requires right padding.

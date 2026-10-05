@@ -11,10 +11,12 @@ import hashlib
 import json
 import math
 import os
+import re
 from contextlib import nullcontext
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
+from accelerate.utils import gather_object
 
 import swanlab
 
@@ -34,12 +36,47 @@ def load_prompt_suite(path: str) -> List[Dict[str, Any]]:
             line = line.strip()
             if line:
                 prompts.append(json.loads(line))
+    ids = [p["id"] for p in prompts]
+    if len(ids) != len(set(ids)):
+        raise ValueError("prompt IDs must be unique")
+    for prompt in prompts:
+        resolved_prompt_seed(prompt)
+        if "scene_id" in prompt:
+            if not re.fullmatch(r"[a-zA-Z0-9_-]+", prompt["scene_id"]):
+                raise ValueError("scene_id must be a safe filename component")
+            if prompt.get("lang") not in ("zh", "en") or prompt.get("variant") not in ("short", "long"):
+                raise ValueError("scene prompts require lang=zh/en and variant=short/long")
+    scenes = {}
+    for prompt in prompts:
+        if "scene_id" in prompt:
+            scenes.setdefault(prompt["scene_id"], []).append(prompt)
+    for scene, records in scenes.items():
+        variants = {(p["lang"], p["variant"]) for p in records}
+        if len(records) != 4 or len(variants) != 4:
+            raise ValueError(f"scene {scene} requires exactly four language/length variants")
+        if len({resolved_prompt_seed(p) for p in records}) != 1:
+            raise ValueError(f"scene {scene} variants must share a seed")
+        if len({_aspect(p) for p in records}) != 1:
+            raise ValueError(f"scene {scene} variants must share an aspect ratio")
     return prompts
 
 
 def prompt_seed(prompt_id: str) -> int:
     """Deterministic per-prompt noise seed."""
     return int(hashlib.md5(prompt_id.encode("utf-8")).hexdigest()[:8], 16)
+
+
+def resolved_prompt_seed(prompt: Dict[str, Any]) -> int:
+    """Explicit seeds pair variants; old suites retain ID-derived noise."""
+    seed = prompt.get("seed", prompt_seed(prompt["id"]))
+    if type(seed) is not int or not 0 <= seed < 2**63:
+        raise ValueError("prompt seed must be an integer in [0, 2**63)")
+    return seed
+
+
+def grid_due(step: int, interval: int, extra_steps: List[int]) -> bool:
+    """Global-step triggers stay fixed across crash resumes; overlaps run once."""
+    return step in extra_steps or (interval > 0 and step > 0 and step % interval == 0)
 
 
 def bucket_shapes_from_dataset(dataset_path: str, scan_rows: int = 2000) -> Dict[int, Tuple[int, int]]:
@@ -117,7 +154,7 @@ def sample_prompt_images(
 
     This is the per-prompt sampling shared by the training-time prompt grid and
     the offline blind-panel generator, so the same checkpoint and prompt yield
-    the same image in both: the noise seed comes from ``prompt_seed(id)``, the
+    the same noise in both: the seed is explicit or comes from ``prompt_seed(id)``, the
     sampler is ``sample_ode`` (Euler) from t=0 to t=1, text conditioning is
     ``encode_text`` and latents are decoded with the VAE's own statistics.
 
@@ -159,7 +196,7 @@ def sample_prompt_images(
                     torch.randn(
                         (16, h_lat, w_lat),
                         generator=torch.Generator(device="cpu").manual_seed(
-                            prompt_seed(p["id"])
+                            resolved_prompt_seed(p)
                         ),
                     )
                     for p in chunk
@@ -200,6 +237,7 @@ def run_prompt_grid_eval(
     eval_dataset_path: str = "./precomputed_dataset/light-eval@256p",
     batch_size: int = 8,
     ode_steps: int = 50,
+    weights: str = "unspecified",
 ) -> None:
     """Generate fixed-seed samples for the prompt suite and log grids."""
     from diffusers import AutoencoderKLQwenImage
@@ -243,37 +281,63 @@ def run_prompt_grid_eval(
         amp_context=accelerator.autocast,
     )
 
-    # Gather across ranks
-    if num_processes > 1 and hasattr(accelerator, "gather_object"):
-        gathered = accelerator.gather_object(results)
-    else:
-        gathered = [results]
+    # Accelerate exposes this as a utility, not an Accelerator method.
+    # It concatenates rank-local lists and is a no-op on a single process.
+    all_results = gather_object(results)
 
     if accelerator.is_main_process:
         os.makedirs(os.path.join(save_path, "samples"), exist_ok=True)
-        all_results = [r for part in gathered for r in part]
-        # Regroup by bucket for grids
-        grids: Dict[int, List[Tuple[Dict[str, Any], torch.Tensor]]] = {}
+        # Gathering groups by rank; restore suite order so changing GPU count
+        # does not rearrange the images within each bucket.
+        prompt_order = {p["id"]: i for i, p in enumerate(prompts)}
+        all_results.sort(key=lambda result: prompt_order[result[0]["id"]])
+        # New panels pair language/length variants per scene. Old suites keep
+        # their bucket grids. Include the bucket in the key to avoid stacking
+        # differently shaped images from malformed scene records.
+        grids = {}
         for p, img in all_results:
-            grids.setdefault(p["_bucket"], []).append((p, img))
+            key = (p.get("scene_id", ""), p["_bucket"])
+            grids.setdefault(key, []).append((p, img))
 
-        for bid, items in sorted(grids.items()):
+        for (scene, bid), items in sorted(grids.items()):
             h_lat, w_lat = shapes[bid]
+            if scene:
+                order = {("zh", "short"): 0, ("en", "short"): 1,
+                         ("zh", "long"): 2, ("en", "long"): 3}
+                items.sort(key=lambda item: order[(item[0]["lang"], item[0]["variant"])])
             images = torch.stack([img for _, img in items])
-            captions = [p["text"] for p, _ in items]
+            captions = [
+                f"{p['lang']} / {p['variant']} / seed={resolved_prompt_seed(p)}: "
+                f"{p['text'][:240]}" if scene else p["text"]
+                for p, _ in items
+            ]
+            label = f"{scene}_bucket{bid}" if scene else f"bucket{bid}"
             grid_path = os.path.join(
                 save_path,
                 "samples",
-                f"grid_step_{current_step:06d}_bucket{bid}_{h_lat * 8}x{w_lat * 8}.png",
+                f"grid_step_{current_step:06d}_{label}_{h_lat * 8}x{w_lat * 8}.png",
             )
-            _ = make_image_grid(images, save_path=grid_path, normalize=True, value_range=(0, 1))
-            caption = format_prompt_caption(captions[:4]) if captions else ""
+            _ = make_image_grid(images, cols=2 if scene else None,
+                                save_path=grid_path, normalize=True, value_range=(0, 1))
+            caption = format_prompt_caption(captions, limit=len(captions))
             media = (
                 swanlab.Image(grid_path, caption=caption)
                 if caption
                 else swanlab.Image(grid_path)
             )
-            accelerator.log({f"grid/bucket{bid}_{h_lat * 8}x{w_lat * 8}": media}, step=current_step)
+            accelerator.log({f"grid/{label}_{h_lat * 8}x{w_lat * 8}": media}, step=current_step)
+        # Preserve the full text and exact sampling identity, not only the
+        # shortened grid caption visible in SwanLab.
+        with open(os.path.join(save_path, "samples", f"panel_step_{current_step:06d}.json"), "w") as handle:
+            json.dump({"step": current_step, "solver": "euler", "ode_steps": ode_steps,
+                       "cfg_scale": 1.0, "precision": "bf16",
+                       "solver_precision": "fp32", "timestep_precision": "fp32",
+                       "exit_layer": exit_layer,
+                       "weights": weights, "pooling": pooling,
+                       "eval_dataset_path": eval_dataset_path,
+                       "prompts": [{**p, "seed": resolved_prompt_seed(p),
+                                    "latent_shape": shapes[p["_bucket"]]} for p in prompts]},
+                      handle, ensure_ascii=False, indent=2)
         print(f"Logged {len(grids)} prompt grids at step {current_step}")
 
     del vae

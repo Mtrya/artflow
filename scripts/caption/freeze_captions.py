@@ -22,7 +22,31 @@ from pathlib import Path
 
 from src.dataset.caption_prompts import CaptionRequest, check_caption
 
-from .consolidate import load
+
+def load(paths) -> dict:
+    """Keep the latest caption per request, retaining failures with no text."""
+    records = {}
+    for path in paths:
+        with Path(path).open(encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if "image_id" not in record:
+                    continue
+                if record.get("text"):
+                    record.pop("error", None)
+                    record.pop("transient", None)
+                key = (record["image_id"], record.get("model"))
+                previous = records.get(key)
+                # Keep the last record that has text; fall back to the last one.
+                if previous is None or record.get("text") or not previous.get("text"):
+                    records[key] = record
+    return records
 
 
 def freeze(records, tokenizer) -> tuple:

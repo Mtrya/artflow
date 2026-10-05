@@ -38,6 +38,7 @@ and reports the aggregate metrics only; the omission is stated on stdout,
 because that run's curve cannot be read by caption length.
 """
 
+import os
 import zipfile
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -63,8 +64,8 @@ from ..utils.encode_text import encode_text
 
 def _autocast_ctx(device: torch.device):
     """Match training-time numerics (accelerate bf16 mixed precision)."""
-    if device.type == "cuda":
-        return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+    if device.type in ("cuda", "npu", "xpu"):
+        return torch.autocast(device_type=device.type, dtype=torch.bfloat16)
     import contextlib
 
     return contextlib.nullcontext()
@@ -82,7 +83,7 @@ def _announce(message: str) -> None:
 # One forward keeps every layer's hidden state of the whole call live at once
 # (output_hidden_states), so the peak scales with batch x padded length; 64
 # captions at the 2048-token cap peak around 8 GB, which fits beside the
-# training state on a 48 GB card.
+# training state on a 64 GB card.
 _ENCODE_CHUNK = 64
 
 
@@ -413,8 +414,12 @@ class EvalLossProbe:
                 z0 = torch.stack([self.noise[i] for i in idxs]).to(
                     self.device, torch.bfloat16
                 )
-                txt = self.txt[idxs].to(self.device)
-                txt_mask = self.txt_mask[idxs].to(self.device)
+                # Retained features are right-padded. The full probe's widest
+                # caption need not determine every batch's attention length.
+                # Keep one masked position for an entirely empty text batch.
+                width = max(1, int(self.txt_mask[idxs].sum(dim=1).max()))
+                txt = self.txt[idxs, :width].to(self.device)
+                txt_mask = self.txt_mask[idxs, :width].to(self.device)
                 txt_pooled = (
                     self.txt_pooled[idxs].to(self.device)
                     if self.txt_pooled is not None
@@ -422,6 +427,12 @@ class EvalLossProbe:
                 )
                 bs = z1.shape[0]
                 slots = [self._slots[i] for i in idxs]
+                if os.environ.get("ART_EVAL_PROBE_DEBUG"):
+                    print(
+                        f"[probe-debug] batch {gstart}/{len(group)} bs={bs} "
+                        f"txt_w={txt.shape[1]} latent={z1.shape[-2]}x{z1.shape[-1]}",
+                        flush=True,
+                    )
 
                 for ti, t_val in enumerate(self.t_grid):
                     t = torch.full((bs,), t_val, device=self.device)

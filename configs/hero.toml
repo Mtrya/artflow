@@ -1,0 +1,308 @@
+# Complete Ascend pretraining run. All tunables are required; no overlays.
+# Relative storage_root is resolved from this file. Dataset/model/output paths
+# are relative to storage_root; prompts_file is relative to this file.
+# Bucket plans and accumulation target 16 Ascend 910B2C cards.
+# Measurement conditions and transition checks are in notes/infra_pretrain.md.
+
+[paths]
+storage_root = "../.."
+vae = "models/e2e-qwenimage-vae"
+output_dir = "runs"
+
+[model]
+hidden_size = 1152
+num_heads = 16
+double_stream_depth = 1
+single_stream_depth = 24
+# 8/3 gives a 3072-wide gated FFN at hidden size 1152. Aligned matrix
+# dimensions improve Ascend training throughput with negligible capacity loss.
+mlp_ratio = 2.6666666666666665
+
+[text_encoder]
+path = "models/Qwen3-0.6B"
+exit_layer = 20
+
+[optim]
+learning_rate = 1e-4
+start_learning_rate = 1e-5
+min_learning_rate = 5e-6
+lr_warmup_steps = 20000
+max_grad_norm = 1.0
+adam_wd = 0.01
+# Separate decay for txt_pooled_proj.weight and the two c_mlp matrices.
+# At peak AdamW LR, 0.4 gives shrinkage 4e-5/update without changing the
+# decay of embeddings, biases, output projection or normalization gains.
+adam_conditioning_wd = 0.4
+adam_eps = 1e-8
+adam_betas = [0.9, 0.95]
+# Original Muon convention: square/wide chunks use multiplier 1, tall chunks
+# use sqrt(rows/cols). Weight decay is multiplied by the base learning rate.
+muon_lr = 0.02
+# Peak shrinkage is 0.02 * 0.0015 = 3e-5 per update.
+muon_wd = 0.0015
+muon_momentum = 0.95
+
+[data]
+caption_dropout_prob = 0.1
+curriculum_start = 0.0
+curriculum_end = 1.0
+caption_beta_start = -1.0
+caption_beta_end = 1.0
+caption_short_reserve = 0.20
+caption_short_threshold = 256
+
+[train]
+run_name = "ascend-hero-pretrain"
+seed = 42
+num_workers = 8
+ema_decay = 0.9999
+ema_update_interval = 1
+logit_normal_mu = 0.0
+logit_normal_sigma = 1.0
+checkpoint_interval = 2000
+checkpoint_keep_last = 2
+eval_interval = 2500
+steady_state_skip_steps = 50
+caption_loss_weight_reference = 128
+
+[eval]
+batch_size = 8
+loss_interval = 500
+loss_samples = 512
+prompts_file = "../assets/eval/hero_monitor_v1.jsonl"
+ode_steps = 50
+# Zero disables final KID evaluation.
+kid_num_fake = 2000
+
+[telemetry]
+log_interval = 25
+swanlab_project = "artflow"
+health_interval = 250
+stability_interval = 100
+
+[[stages]]
+name = "256p"
+end_step = 450000
+gradient_accumulation_steps = 1
+bucket_plan = "bucket_plans/ascend/hero-256p-k20.json"
+eval_dataset_path = "precomputed_dataset/light-eval@256p"
+grid_steps = [450000]
+
+[[stages.datasets]]
+path = "precomputed_dataset/d1@256p"
+weight = 8.093704
+
+[[stages.datasets]]
+path = "precomputed_dataset/d2-wikiart@256p"
+weight = 19.031336
+
+[[stages.datasets]]
+path = "precomputed_dataset/d2-museum@256p"
+weight = 0.894924
+
+[[stages.datasets]]
+path = "precomputed_dataset/d3-human@256p"
+weight = 5.848249
+
+[[stages.datasets]]
+path = "precomputed_dataset/d3-people@256p"
+weight = 5.648290
+
+[[stages.datasets]]
+path = "precomputed_dataset/d3-pexels@256p"
+weight = 5.294499
+
+[[stages.datasets]]
+path = "precomputed_dataset/d3-synth-v2@256p"
+weight = 0.538081
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-inat@256p"
+weight = 0.139447
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-megalith@256p"
+weight = 0.271881
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-pd12m@256p"
+weight = 8.017465
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-vintage@256p"
+weight = 9.613874
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-zimage@256p"
+weight = 2.234124
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-relaion@256p"
+weight = 30.713667
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-extra2@256p"
+weight = 1.424928
+
+# d4-extra3: 1001 batch (30,171 rows), all three resolutions.
+[[stages.datasets]]
+path = "precomputed_dataset/d4-extra3@256p"
+weight = 2.235531
+
+[[stages]]
+name = "640p"
+end_step = 570000
+# About 528 samples/update on 16 ranks; micro-batches 5–12 by bucket.
+gradient_accumulation_steps = 3
+bucket_plan = "bucket_plans/ascend/hero-640p-k20.json"
+eval_dataset_path = "precomputed_dataset/light-eval@640p"
+grid_steps = [450000, 452000, 570000]
+
+[[stages.datasets]]
+path = "precomputed_dataset/d1@640p"
+weight = 7.909056
+
+[[stages.datasets]]
+path = "precomputed_dataset/d2-wikiart@640p"
+weight = 18.633565
+
+[[stages.datasets]]
+path = "precomputed_dataset/d2-museum@640p"
+weight = 0.875289
+
+[[stages.datasets]]
+path = "precomputed_dataset/d3-human@640p"
+weight = 5.802921
+
+[[stages.datasets]]
+path = "precomputed_dataset/d3-people-a@640p"
+weight = 2.760126
+
+[[stages.datasets]]
+path = "precomputed_dataset/d3-people-b@640p"
+weight = 2.760078
+
+[[stages.datasets]]
+path = "precomputed_dataset/d3-pexels@640p"
+weight = 5.173712
+
+[[stages.datasets]]
+path = "precomputed_dataset/d3-synth-v2@640p"
+weight = 0.525805
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-extra@640p"
+weight = 2.529468
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-pd12m@640p"
+weight = 7.834556
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-vintage@640p"
+weight = 9.394545
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-zimage@640p"
+weight = 2.184120
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-relaion-p0@640p"
+weight = 6.007972
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-relaion-p1@640p"
+weight = 6.007972
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-relaion-p2@640p"
+weight = 6.007972
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-relaion-p3@640p"
+weight = 6.007972
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-relaion-p4@640p"
+weight = 6.007923
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-extra2@640p"
+weight = 1.392420
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-extra3@640p"
+weight = 2.184530
+
+[[stages]]
+name = "896p"
+end_step = 600000
+# About 373 samples/update on 16 ranks; micro-batches 3–6 by bucket.
+gradient_accumulation_steps = 4
+bucket_plan = "bucket_plans/ascend/hero-896p-k20.json"
+eval_dataset_path = "precomputed_dataset/light-eval@896p"
+grid_steps = [570000, 572000, 600000]
+
+[[stages.datasets]]
+path = "precomputed_dataset/d1@896p"
+weight = 8.154900
+
+[[stages.datasets]]
+path = "precomputed_dataset/d2-wikiart@896p"
+weight = 19.212768
+
+[[stages.datasets]]
+path = "precomputed_dataset/d2-museum@896p"
+weight = 0.902497
+
+[[stages.datasets]]
+path = "precomputed_dataset/d3-human@896p"
+weight = 5.983298
+
+[[stages.datasets]]
+path = "precomputed_dataset/d3-people@896p"
+weight = 5.691793
+
+[[stages.datasets]]
+path = "precomputed_dataset/d3-pexels@896p"
+weight = 5.334531
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-extra@896p"
+weight = 2.293868
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-pd12m@896p"
+weight = 8.078084
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-vintage@896p"
+weight = 9.686564
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-relaion-p0@896p"
+weight = 6.194723
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-relaion-p1@896p"
+weight = 6.194723
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-relaion-p2@896p"
+weight = 6.194723
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-relaion-p3@896p"
+weight = 6.194723
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-relaion-p4@896p"
+weight = 6.194673
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-extra2@896p"
+weight = 1.435702
+
+[[stages.datasets]]
+path = "precomputed_dataset/d4-extra3@896p"
+weight = 2.252434

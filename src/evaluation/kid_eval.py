@@ -2,9 +2,11 @@
 End-of-run KID evaluation: fixed-seed fakes vs the full held-out real set.
 
 Replaces the old 200-sample FID/KID (statistically meaningless at that size and
-computed on a rotating subset). KID is the small-sample-appropriate metric
-(unbiased); 2K fakes vs 2.4K real with subset_size=100 gives a stable ranking
-signal for run comparisons (a baseline vs an ablated variant, say). FID is
+computed on a rotating subset). KID uses 2K fakes by default against the full
+resolution-specific held-out real set, with subset_size=100. Conditioning rows
+cycle deterministically if needed, with distinct seeds for generated samples;
+more generated samples do not increase the number of unique real examples.
+Report both counts and sampling uncertainty for run comparisons. FID is
 deliberately not computed here — it needs >=10K samples and belongs in the
 heavier, larger-sample evaluations.
 """
@@ -15,6 +17,7 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
+from accelerate.utils import gather_object
 
 from ..flow.solvers import sample_ode
 from ..utils.encode_text import encode_text
@@ -22,10 +25,11 @@ from ..utils.vae_codec import get_vae_stats
 from .metrics import aspect_resize_crop, calculate_kid
 
 
-def _group_by_shape(dataset, indices: List[int]) -> List[List[int]]:
+def _group_by_shape(dataset, indices: List[int], *, cycle_rows=False) -> List[List[int]]:
     groups: Dict[Tuple[int, int], List[int]] = {}
     for i in indices:
-        z = dataset[i]["latents"]
+        row = i % len(dataset) if cycle_rows else i
+        z = torch.as_tensor(dataset[row]["latents"])
         groups.setdefault((z.shape[-2], z.shape[-1]), []).append(i)
     return list(groups.values())
 
@@ -66,7 +70,11 @@ def run_kid_eval(
     vae_std = vae_std.to(dtype=torch.bfloat16)
 
     dataset = load_from_disk(dataset_path)  # unshuffled: fixed index semantics
-    num_fake = min(num_fake, len(dataset))
+    if len(dataset) == 0 or num_fake <= 0 or batch_size <= 0:
+        raise ValueError("KID requires nonempty data and positive fake/batch counts")
+    # Fake IDs are global, independent of rank count and batching. When fewer
+    # real rows exist than requested fakes, cycle conditioning rows but retain
+    # a distinct seed per fake. Never silently reduce the requested sample count.
 
     def to_uint8(images: torch.Tensor) -> torch.Tensor:
         images = torch.clamp((images + 1) / 2, 0, 1).float().cpu()
@@ -87,14 +95,14 @@ def run_kid_eval(
 
     def gen_fake(indices: List[int]) -> torch.Tensor:
         outs = []
-        for group in _group_by_shape(dataset, indices):
+        for group in _group_by_shape(dataset, indices, cycle_rows=True):
             for start in range(0, len(group), batch_size):
                 idxs = group[start : start + batch_size]
                 caps = []
                 for i in idxs:
-                    c = dataset[i]["captions"]
+                    c = dataset[i % len(dataset)]["captions"]
                     caps.append(c[1] if len(c) > 1 else c[0])
-                shapes = torch.as_tensor(dataset[idxs[0]]["latents"]).shape
+                shapes = torch.as_tensor(dataset[idxs[0] % len(dataset)]["latents"]).shape
                 noise = torch.stack(
                     [
                         torch.randn(
@@ -128,16 +136,18 @@ def run_kid_eval(
     real_local = decode_real(list(range(len(dataset)))[process_index::max(1, num_processes)])
     fake_local = gen_fake(list(range(num_fake))[process_index::max(1, num_processes)])
 
-    if num_processes > 1 and hasattr(accelerator, "gather_object"):
-        real_parts = accelerator.gather_object(real_local)
-        fake_parts = accelerator.gather_object(fake_local)
-    else:
-        real_parts, fake_parts = [real_local], [fake_local]
+    # This is an Accelerate utility, not an Accelerator method. Wrap each
+    # CPU image tensor in a list: the utility concatenates rank-local lists.
+    # Empty shards are retained until the main rank assembles the global set.
+    real_parts = gather_object([real_local])
+    fake_parts = gather_object([fake_local])
 
     metrics: Dict[str, float] = {}
     if accelerator.is_main_process:
         real = torch.cat([p for p in real_parts if len(p) > 0])
         fake = torch.cat([p for p in fake_parts if len(p) > 0])
+        if len(real) != len(dataset) or len(fake) != num_fake:
+            raise ValueError("KID gather did not include the complete real/fake sample sets")
         kid_mean, kid_std = calculate_kid(
             real, fake, subset_size=100, device=device, batch_size=64, return_std=True
         )

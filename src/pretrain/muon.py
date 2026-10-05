@@ -1,0 +1,273 @@
+"""
+Muon optimizer (MomentUm Orthogonalized by Newton-Schulz) with chunked
+orthogonalization for fused matrices.
+
+Adapted from Keller Jordan's reference implementation
+(https://github.com/KellerJordan/Muon). Update scaling matches PyTorch Muon's
+`original` convention: sqrt(max(1, rows / cols)) for each orthogonalized
+matrix. Square and wide matrices use multiplier 1; tall matrices receive
+an aspect-ratio correction. The default base LR is 0.02 in this convention.
+Decoupled weight decay uses the base LR, without the shape multiplier.
+
+Fused QKV, AdaLN modulation and gated-FFN projections contain functionally
+distinct matrices. The `chunks` group field splits them into row chunks for
+independent orthogonalization (CMuon, arXiv:2608.02502). Each chunk's own shape
+determines its update multiplier; same-shaped chunks are batched for execution.
+
+Param routing convention (see build_param_groups):
+- Muon: 2D hidden weights (attention projections, FFN, modulation/QKV with
+  chunk hints).
+- AdamW (separate optimizer): embeddings, patch conv, final layer, norms,
+  biases, timestep/conditioning MLPs, and anything with ndim != 2.
+
+DDP-safe: gradients are identical across ranks after all-reduce and
+Newton-Schulz is deterministic, so all ranks compute identical updates.
+"""
+
+import math
+from typing import List, Optional
+
+import torch
+from torch import nn
+
+
+# These matrices determine the amplitude of the shared conditioning signal.
+# Their decay is independent of embeddings, biases and branch-normalization
+# gains; applying the same strong decay to all auxiliary parameters changes
+# a substantially larger part of the model.
+CONDITIONING_WEIGHTS = frozenset({
+    "txt_pooled_proj.weight", "c_mlp.0.weight", "c_mlp.2.weight",
+})
+
+
+@torch.no_grad()
+def _zeropower_via_newtonschulz5(G: torch.Tensor, steps: int = 5) -> torch.Tensor:
+    """Orthogonalize G via quintic Newton-Schulz iteration (bf16 by default)."""
+    assert G.ndim == 2
+    a, b, c = (3.4445, -4.7750, 2.0315)
+    X = G.to(torch.bfloat16)
+    transposed = G.size(0) > G.size(1)
+    if transposed:
+        X = X.mT
+    # Normalize so the spectral norm is <= 1 before iterating.
+    X = X / (X.norm() + 1e-7)
+    for _ in range(steps):
+        A = X @ X.mT
+        B = b * A + c * (A @ A)
+        X = a * X + B @ X
+    if transposed:
+        X = X.mT
+    return X
+
+
+@torch.no_grad()
+def _zeropower_via_newtonschulz5_batched(G: torch.Tensor, steps: int = 5):
+    """Batched Newton-Schulz over a stack [N, r, c] of same-shaped matrices.
+
+    Same iteration as the 2D version, but the per-matrix GEMMs become one bmm
+    so the GPU is not left waiting on a chain of small kernels. Returns a list
+    of [r, c] tensors.
+    """
+    assert G.ndim == 3
+    X = G.to(torch.bfloat16)
+    transposed = X.shape[1] > X.shape[2]
+    if transposed:
+        X = X.mT
+    norms = X.flatten(1).norm(dim=1).clamp_min(1e-7).view(-1, 1, 1)
+    X = X / norms
+    a, b, c = (3.4445, -4.7750, 2.0315)
+    for _ in range(steps):
+        A = X @ X.mT
+        B = b * A + c * (A @ A)
+        X = a * X + B @ X
+    if transposed:
+        X = X.mT
+    return list(X.unbind(0))
+
+
+class Muon(torch.optim.Optimizer):
+    """
+    Muon for 2D hidden-layer weights.
+
+    Param group fields beyond the standard ones:
+        chunks (int): split the [m, n] matrix into this many row chunks and
+            orthogonalize each independently (1 = no chunking).
+    """
+
+    def __init__(
+        self,
+        params,
+        lr: float = 0.02,
+        momentum: float = 0.95,
+        nesterov: bool = True,
+        ns_steps: int = 5,
+        weight_decay: float = 0.0,
+    ):
+        defaults = dict(
+            lr=lr,
+            momentum=momentum,
+            nesterov=nesterov,
+            ns_steps=ns_steps,
+            weight_decay=weight_decay,
+            chunks=1,
+        )
+        super().__init__(params, defaults)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+
+        for group in self.param_groups:
+            lr = group["lr"]
+            momentum = group["momentum"]
+            wd = group["weight_decay"]
+            chunks = group["chunks"]
+
+            # Pass 1: momentum/nesterov (elementwise) and collect the matrices
+            # that need orthogonalization. Weight decay is applied here because
+            # it is independent of the NS result and must run once per param,
+            # not once per chunk.
+            entries = []
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                g = p.grad
+                state = self.state[p]
+                if "momentum_buffer" not in state:
+                    state["momentum_buffer"] = torch.zeros_like(g)
+                buf = state["momentum_buffer"]
+                buf.lerp_(g, 1.0 - momentum)
+                g = g.lerp_(buf, momentum) if group["nesterov"] else buf
+
+                if wd > 0:
+                    p.mul_(1.0 - lr * wd)
+
+                m, n = p.shape
+                if chunks > 1:
+                    assert m % chunks == 0, f"chunks={chunks} does not divide {m}"
+                    rows = m // chunks
+                    gs = g.reshape(chunks, rows, n)
+                    scale = math.sqrt(max(1.0, rows / n))
+                    for index in range(chunks):
+                        entries.append(
+                            (p.narrow(0, index * rows, rows), gs[index], scale)
+                        )
+                else:
+                    entries.append((p, g, math.sqrt(max(1.0, m / n))))
+
+            if len(entries) > 1:
+                # Pass 2: one bmm chain per distinct matrix shape. Same NS math
+                # per matrix, without a serial chain of tiny GEMM launches.
+                by_shape = {}
+                for entry in entries:
+                    by_shape.setdefault(tuple(entry[1].shape), []).append(entry)
+                for items in by_shape.values():
+                    stacked = torch.stack([item[1] for item in items])
+                    updates = _zeropower_via_newtonschulz5_batched(
+                        stacked, group["ns_steps"]
+                    )
+                    for (dest, _, scale), updated in zip(items, updates):
+                        dest.add_(updated.to(dest.dtype), alpha=-lr * scale)
+                continue
+
+            for dest, matrix, scale in entries:
+                updated = _zeropower_via_newtonschulz5(matrix, group["ns_steps"])
+                dest.add_(updated.to(dest.dtype), alpha=-lr * scale)
+
+        return loss
+
+
+def _chunk_hint(name: str, shape: torch.Size) -> int:
+    """Row-chunk count for fused matrices (CMuon). 1 = treat as a single matrix."""
+    if "qkv" in name and shape[0] == 3 * shape[1]:
+        return 3
+    if "modulation" in name and shape[0] % shape[1] == 0 and shape[0] > shape[1]:
+        return shape[0] // shape[1]  # 6xdim -> 6, 3xdim -> 3
+    if "up_proj" in name and shape[0] == 2 * ((shape[0]) // 2) and shape[0] > shape[1]:
+        # GatedFeedForward fused gate|linear projection -> 2 chunks
+        return 2
+    return 1
+
+
+def build_param_groups(
+    model: nn.Module,
+    muon_lr: float,
+    muon_wd: float,
+    adam_lr: float,
+    adam_wd: float,
+    adam_conditioning_wd: float,
+    adam_eps: float,
+    adam_betas: tuple[float, float],
+    muon_momentum: float,
+) -> List[torch.optim.Optimizer]:
+    """
+    Split model parameters into Muon (2D hidden) and AdamW (everything else)
+    groups and return [muon_optimizer, adamw_optimizer].
+
+    AdamW-routed: embeddings (x/txt), patch conv, final layer, timestep and
+    conditioning MLPs (t_embedder has no params; c_mlp/txt_pooled_proj are
+    small conditioning heads), all norms and biases, and the MSRoPE buffers
+    never appear here (no grad). The three conditioning matrices have their
+    own AdamW decay group; conditioning biases retain the ordinary decay.
+    """
+    adam_name_patterns = (
+        "x_embedder",
+        "txt_embedder",
+        "txt_pooled_proj",
+        "c_mlp",
+        "final_layer",
+    )
+
+    muon_groups: dict[int, dict] = {}
+    adam_params = []
+    conditioning_params = []
+
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        if name in CONDITIONING_WEIGHTS:
+            conditioning_params.append(p)
+            continue
+        is_adam = p.ndim != 2 or any(pat in name for pat in adam_name_patterns)
+        if is_adam:
+            adam_params.append(p)
+            continue
+        chunks = _chunk_hint(name, p.shape)
+        if chunks not in muon_groups:
+            muon_groups[chunks] = {
+                "params": [],
+                "chunks": chunks,
+            }
+        muon_groups[chunks]["params"].append(p)
+
+    optimizers: List[torch.optim.Optimizer] = []
+    if muon_groups:
+        optimizers.append(
+            Muon(
+                [muon_groups[c] for c in sorted(muon_groups)],
+                lr=muon_lr,
+                momentum=muon_momentum,
+                weight_decay=muon_wd,
+            )
+        )
+    adam_groups = []
+    if adam_params:
+        adam_groups.append(dict(params=adam_params, weight_decay=adam_wd))
+    if conditioning_params:
+        adam_groups.append(
+            dict(params=conditioning_params, weight_decay=adam_conditioning_wd)
+        )
+    if adam_groups:
+        optimizers.append(
+            torch.optim.AdamW(
+                adam_groups,
+                lr=adam_lr,
+                weight_decay=adam_wd,
+                betas=adam_betas,
+                eps=adam_eps,
+            )
+        )
+    return optimizers

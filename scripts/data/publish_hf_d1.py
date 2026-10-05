@@ -1,117 +1,205 @@
-"""Publish the current Chinese-painting metadata to HuggingFace.
+"""Stage and optionally publish D1 metadata and image parquet on Hugging Face.
 
-The image shards stay as they are: the dataset ships the uncropped photograph
-plus the box that isolates the artwork, so a consumer can crop or not.  What
-changes is the per-image record, which is what this script rebuilds and uploads:
+Every row carries final crop boxes and OCR-enriched captions from --metadata.
+--captions supplies accepted long captions. --images embeds unchanged source
+photographs in viewer-compatible parquet with bounded shards and row groups.
+Metadata-only publication updates the caption/crop table independently.
 
-* one ``bbox`` per row — the box from the second cropping round where it exists,
-  the first-round box otherwise;
-* the transcription of in-image text folded into ``caption_zh`` / ``caption_en``;
-* ``caption_long``, the new long caption added by the enrichment pass, where one
-  exists.
-
-Run on the machine that holds the metadata and the caption output ($W is the
-shared workspace root, $ARTFLOW_ROOT):
-
-    HF_TOKEN=... python -m scripts.data.publish_hf_d1 \
-        --metadata $W/data/meta/d1/d1_metadata.jsonl \
-        --captions data/caption_enrich/production/captions.jsonl \
-        --out $W/hf_d1_staging/metadata.parquet --upload
+    python -m scripts.data.publish_hf_d1 --metadata d1_metadata.jsonl \
+        --captions captions_final.jsonl --out-dir staging/d1 --images
+    # Add --upload --repo-id OWNER/DATASET to publish the staged release.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
-from collections import defaultdict
+import math
+import shutil
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict
 
-REPO_ID = "kaupane/chinese-painting-collection"
-PARQUET_PATH = "metadata/metadata.parquet"
-README_PATH = "README.md"
-CARD = Path(__file__).resolve().parents[2] / "data" / "hf_d1" / "README.md"
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+COLUMNS = ["image_id", "shard", "source", "object_no", "title", "artist",
+           "category", "culture", "view_type", "caption_zh", "caption_en",
+           "caption_long", "ocr_text", "artifacts", "bbox"]
+
+SCHEMA = pa.schema([
+    ("image_id", pa.string()),
+    ("shard", pa.string()),
+    ("source", pa.string()),
+    ("object_no", pa.string()),
+    ("title", pa.string()),
+    ("artist", pa.string()),
+    ("category", pa.string()),
+    ("culture", pa.string()),
+    ("view_type", pa.string()),
+    ("caption_zh", pa.string()),
+    ("caption_en", pa.string()),
+    ("caption_long", pa.string()),
+    ("ocr_text", pa.string()),
+    ("artifacts", pa.list_(pa.string())),
+    ("bbox", pa.list_(pa.float32())),
+    ("image", pa.struct([("bytes", pa.binary()), ("path", pa.string())])),
+])
+
+# The dataset viewer takes column types from the "huggingface" key of the parquet
+# schema metadata.  Without it the image column is presented as a struct of bytes
+# and the viewer cannot render thumbnails, which is the point of publishing
+# parquet at all.
+FEATURES = {name: {"dtype": "string", "_type": "Value"} for name in COLUMNS}
+FEATURES["artifacts"] = {"feature": {"dtype": "string", "_type": "Value"},
+                         "_type": "Sequence"}
+FEATURES["bbox"] = {"feature": {"dtype": "float32", "_type": "Value"},
+                    "_type": "Sequence"}
+FEATURES["image"] = {"_type": "Image"}
 
 
-def load_long_captions(path: str, accepted_only: bool) -> Dict[str, List[Dict]]:
-    """Long captions per image, newest last.
+def schema_metadata() -> Dict[bytes, bytes]:
+    return {b"huggingface": json.dumps({"info": {"features": FEATURES}}).encode()}
 
-    ``accepted_only`` keeps captions that failed the acceptance check out.  A
-    caption that only missed its length window is still used, because the
-    training bucket plan can accommodate any length.
-    """
+
+def load_long_captions(path: Path | None) -> dict[str, str]:
+    """Keep the latest usable caption per image, including length-only rejects."""
     from src.dataset.caption_prompts import length_only_reject
 
-    by_image: Dict[str, List[Dict]] = defaultdict(list)
-    if not path or not os.path.exists(path):
-        return by_image
-    for line in Path(path).open(encoding="utf-8"):
-        if not line.strip():
-            continue
-        record = json.loads(line)
-        if not record.get("text"):
-            continue
-        if accepted_only and not (record.get("accepted")
-                                  or length_only_reject(record.get("reject_reasons"))):
-            continue
-        by_image[record["image_id"]].append(record)
-    return by_image
+    captions = {}
+    if path is None:
+        return captions
+    with Path(path).open(encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if row.get("text") and (row.get("accepted") or
+                                    length_only_reject(row.get("reject_reasons"))):
+                captions[row["image_id"]] = row["text"]
+    return captions
 
 
-def main() -> None:
+def crop_box(value) -> list[float] | None:
+    """The published crop box, as four numbers.
+
+    The metadata table stores it as a JSON string rather than a list, so a row
+    that carries a box and a row that does not are both strings as far as this
+    build is concerned.  Passing the string through would make every cropped
+    row fail the crop at precompute time and be dropped, so it is parsed here.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text or text in {"[]", "null"}:
+            return None
+        value = json.loads(text)
+    box = [float(component) for component in value]
+    return box or None
+
+
+def write_release(metadata: Path, captions: Path | None, out: Path, *,
+                  images: bool = False, shard_gb: float = 1.0,
+                  row_group_rows: int = 16) -> dict[str, int]:
+    """Write a fresh staging directory; missing requested images fail the build."""
+    if not math.isfinite(shard_gb) or shard_gb <= 0 or row_group_rows <= 0:
+        raise ValueError("shard-gb and row-group-rows must be positive")
+    if out.exists() and any(out.iterdir()):
+        raise ValueError(f"staging directory must be empty: {out}")
+    long_captions = load_long_captions(captions)
+    out.mkdir(parents=True, exist_ok=True)
+    image_dir = out / "default" / "train"
+    if images:
+        image_dir.mkdir(parents=True)
+    metadata_rows, image_rows = [], []
+    current_bytes = shard = with_long = 0
+    seen = set()
+
+    def flush():
+        nonlocal current_bytes, shard
+        if not image_rows:
+            return
+        table = pa.Table.from_pylist(image_rows, schema=SCHEMA)
+        table = table.replace_schema_metadata(schema_metadata())
+        path = image_dir / f"part-{shard:05d}.parquet"
+        pq.write_table(table, path, compression="zstd", row_group_size=row_group_rows,
+                       write_page_index=True)
+        image_rows.clear()
+        current_bytes = 0
+        shard += 1
+
+    with Path(metadata).open(encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            image_id = record["image_id"]
+            if image_id in seen:
+                raise ValueError(f"duplicate image_id: {image_id}")
+            seen.add(image_id)
+            row = {key: record.get(key) for key in COLUMNS}
+            row["bbox"] = crop_box(record.get("bbox"))
+            row["artifacts"] = list(record.get("artifacts") or [])
+            row["caption_long"] = long_captions.get(image_id, record.get("caption_long"))
+            with_long += bool(row["caption_long"])
+            metadata_rows.append(row)
+            if images:
+                local_path = record.get("local_path")
+                if not local_path or not Path(local_path).is_file():
+                    raise FileNotFoundError(f"image {image_id}: {local_path}")
+                payload = Path(local_path).read_bytes()
+                image_rows.append({**row, "image": {"bytes": payload,
+                                                    "path": Path(local_path).name}})
+                current_bytes += len(payload)
+                if current_bytes >= shard_gb * 1024 ** 3:
+                    flush()
+    if not metadata_rows:
+        raise ValueError("metadata contains no rows")
+    flush()
+    metadata_dir = out / "metadata"
+    metadata_dir.mkdir()
+    metadata_schema = pa.schema([SCHEMA.field(name) for name in COLUMNS])
+    pq.write_table(pa.Table.from_pylist(metadata_rows, schema=metadata_schema),
+                   metadata_dir / "metadata.parquet", compression="zstd")
+    return {"rows": len(metadata_rows), "long_captions": with_long, "image_shards": shard}
+
+
+def upload_release(out: Path, repo_id: str, *, images: bool):
+    """Publish one release commit; replace the image shard set when supplied."""
+    from huggingface_hub import HfApi
+
+    return HfApi().upload_folder(
+        repo_id=repo_id, repo_type="dataset", folder_path=str(out),
+        allow_patterns=["metadata/*.parquet", "default/train/*.parquet", "README.md"],
+        delete_patterns=["default/train/*.parquet"] if images else None,
+    )
+
+
+def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--metadata", required=True)
-    parser.add_argument("--captions", default=None, help="enrichment output JSONL")
-    parser.add_argument("--out", required=True, help="output parquet path")
+    parser.add_argument("--metadata", type=Path, required=True)
+    parser.add_argument("--captions", type=Path)
+    parser.add_argument("--out-dir", type=Path, required=True, help="fresh staging directory")
+    parser.add_argument("--images", action="store_true")
+    parser.add_argument("--shard-gb", type=float, default=1.0)
+    parser.add_argument("--row-group-rows", type=int, default=16)
+    parser.add_argument("--card", type=Path, help="optional dataset README")
     parser.add_argument("--upload", action="store_true")
-    parser.add_argument("--all-captions", action="store_true",
-                        help="include captions that failed the acceptance check")
+    parser.add_argument("--repo-id", help="existing Hugging Face dataset repository")
     args = parser.parse_args()
-
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
-    long_captions = load_long_captions(args.captions, not args.all_captions)
-    print(f"long captions for {len(long_captions)} images")
-
-    rows = []
-    with_long = 0
-    for line in Path(args.metadata).open(encoding="utf-8"):
-        if not line.strip():
-            continue
-        record = json.loads(line)
-        record.pop("local_path", None)
-        extra = long_captions.get(record["image_id"], [])
-        record["caption_long"] = extra[-1]["text"] if extra else None
-        if extra:
-            with_long += 1
-        rows.append(record)
-
-    columns = list(rows[0])
-    table = pa.Table.from_pylist([{k: r.get(k) for k in columns} for r in rows])
-    out_path = Path(args.out)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(table, out_path, compression="zstd")
-    print(f"{len(rows)} rows, {with_long} with a long caption -> {out_path} "
-          f"({out_path.stat().st_size / 1e6:.1f} MB)")
-
+    if args.upload and not args.repo_id:
+        parser.error("--upload requires --repo-id")
+    if args.card and not args.card.is_file():
+        parser.error(f"dataset card does not exist: {args.card}")
+    stats = write_release(args.metadata, args.captions, args.out_dir,
+                          images=args.images, shard_gb=args.shard_gb,
+                          row_group_rows=args.row_group_rows)
+    if args.card:
+        shutil.copyfile(args.card, args.out_dir / "README.md")
+    print(f"{stats} -> {args.out_dir}")
     if args.upload:
-        from huggingface_hub import HfApi
-
-        api = HfApi(token=os.environ["HF_TOKEN"])
-        api.upload_file(path_or_fileobj=str(out_path), path_in_repo=PARQUET_PATH,
-                        repo_id=REPO_ID, repo_type="dataset")
-        print(f"uploaded {PARQUET_PATH}")
-        if CARD.is_file():
-            api.upload_file(path_or_fileobj=str(CARD), path_in_repo=README_PATH,
-                            repo_id=REPO_ID, repo_type="dataset")
-            print(f"uploaded {README_PATH}")
-        previews = CARD.parent / "previews"
-        if previews.is_dir():
-            api.upload_folder(folder_path=str(previews), path_in_repo="previews",
-                              repo_id=REPO_ID, repo_type="dataset")
-            print(f"uploaded previews ({len(list(previews.glob('*.jpg')))} files)")
+        upload_release(args.out_dir, args.repo_id, images=args.images)
+        print(f"uploaded to {args.repo_id}")
 
 
 if __name__ == "__main__":

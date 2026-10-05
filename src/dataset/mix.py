@@ -7,6 +7,7 @@ Provides functionality to:
 - Support weighted sampling across datasets
 """
 
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
@@ -42,7 +43,7 @@ def parse_dataset_mix(mix_spec: str) -> List[DatasetEntry]:
         ValueError: If weights are invalid or paths are malformed
     """
     entries = []
-    parts = mix_spec.strip().split()
+    parts = shlex.split(mix_spec)
 
     for part in parts:
         if ":" in part:

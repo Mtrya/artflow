@@ -16,13 +16,17 @@ import torch.nn.functional as F
 from abc import ABC, abstractmethod
 
 # SD3-style resolution-dependent time shift.
-# Anchor: 256×256 image → 32×32 latent (patch_size=2) → 16×16 = 256 tokens → shift 1.0
-#         1024×1024 image → 128×128 latent              → 64×64 = 4096 tokens → shift 3.0
-# Log-linear interpolation between anchors, clamped at both ends.
+# SD3 (Esser et al., 2024, Eq. 23) derives the shift from matching the
+# uncertainty about the clean image across resolutions:
+#     alpha = sqrt(m / n),
+# where n and m are the pixel counts of the reference and target resolutions.
+# With a fixed VAE and patch size, token count is proportional to pixel count,
+# so the same ratio applies to token counts. Reference: 256 tokens (256×256
+# image → 32×32 latent, patch_size=2 → 16×16 patches) gets shift 1.0.
+# SD3 empirically found little quality difference among shift values above
+# 1.5 and used 3.0 at 1024×1024, where the formula gives 4.0 — so the formula
+# values used here sit inside the range they found acceptable.
 _SHIFT_BASE_TOKENS = 256      # 256×256 → 32×32 latent → 16×16 patches
-_SHIFT_MAX_TOKENS = 4096      # 1024×1024 → 128×128 latent → 64×64 patches
-_SHIFT_MIN = 1.0
-_SHIFT_MAX = 3.0
 
 
 def resolution_time_shift(z: torch.Tensor, patch_size: int = 2) -> float:
@@ -30,15 +34,22 @@ def resolution_time_shift(z: torch.Tensor, patch_size: int = 2) -> float:
     _, _, h, w = z.shape
     n_tokens = (h * w) / (patch_size ** 2)
     if n_tokens <= _SHIFT_BASE_TOKENS:
-        return _SHIFT_MIN
-    log_range = math.log(_SHIFT_MAX_TOKENS) - math.log(_SHIFT_BASE_TOKENS)
-    ratio = (math.log(n_tokens) - math.log(_SHIFT_BASE_TOKENS)) / log_range
-    return _SHIFT_MIN + (_SHIFT_MAX - _SHIFT_MIN) * min(ratio, 1.0)
+        return 1.0
+    return math.sqrt(n_tokens / _SHIFT_BASE_TOKENS)
 
 
 def apply_time_shift(t: torch.Tensor, shift: float) -> torch.Tensor:
-    """Apply the SD3 shift transform: t' = (s * t) / (1 + (s - 1) * t)."""
-    return (shift * t) / (1 + (shift - 1) * t)
+    """Apply the SD3 shift transform in this repo's timestep convention.
+
+    SD3 (Esser et al., 2024, Eq. 23) uses t=0 for data and t=1 for noise and
+    pushes timesteps toward the noisy end at higher resolutions:
+        u' = (s * u) / (1 + (s - 1) * u).
+    This repo uses the opposite convention (t=0 noise, t=1 data), so the same
+    transform applied to u = 1 - t yields:
+        t' = t / (s - (s - 1) * t),
+    which decreases t (moves toward noise) when shift > 1.
+    """
+    return t / (shift - (shift - 1) * t)
 
 
 def shift_timesteps(
@@ -130,129 +141,6 @@ class BaseAlgorithm(ABC):
             Scalar loss value
         """
         pass
-
-
-class ScoreMatchingDiffusion(BaseAlgorithm):
-    """
-    Score matching with VP-SDE diffusion path.
-    """
-
-    def __init__(self, beta_min: float = 0.1, beta_max: float = 20.0):
-        self.beta_min = beta_min
-        self.beta_max = beta_max
-
-    def _marginal_prob_std(self, t: torch.Tensor) -> torch.Tensor:
-        log_mean_coeff = (
-            -0.25 * t**2 * (self.beta_max - self.beta_min) - 0.5 * t * self.beta_min
-        )
-        std = torch.sqrt(1.0 - torch.exp(2.0 * log_mean_coeff))
-        return std
-
-    def sample_zt(
-        self, z0: torch.Tensor, z1: torch.Tensor, t: torch.Tensor
-    ) -> torch.Tensor:
-        if t.dim() == 1:
-            t = t.view(-1, 1, 1, 1)
-
-        log_mean_coeff = (
-            -0.25 * t**2 * (self.beta_max - self.beta_min) - 0.5 * t * self.beta_min
-        )
-        mean_coeff = torch.exp(log_mean_coeff)
-        std = torch.sqrt(1.0 - torch.exp(2.0 * log_mean_coeff))
-        z_t = mean_coeff * z1 + std * z0
-        return z_t
-
-    def compute_loss(
-        self,
-        model_output: torch.Tensor,
-        z0: torch.Tensor,
-        z1: torch.Tensor,
-        t: torch.Tensor,
-        sample_weights: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        if t.dim() == 1:
-            t = t.view(-1, 1, 1, 1)
-
-        std = self._marginal_prob_std(t)
-
-        if sample_weights is not None:
-            return sample_weighted_mse(model_output * std + z0, sample_weights)
-
-        # Stable formulation:
-        # loss = || s(x, t) - s_target ||^2 * std^2
-        #      = || s(x, t) - (-z0/std) ||^2 * std^2
-        #      = || s(x, t) * std + z0 ||^2
-        weighted_loss = ((model_output * std + z0) ** 2).mean()
-
-        return weighted_loss
-
-
-class FlowMatchingDiffusion(BaseAlgorithm):
-    """
-    Flow matching with VP-SDE diffusion path
-    """
-
-    def __init__(self, beta_min: float = 0.1, beta_max: float = 20.0):
-        self.beta_min = beta_min
-        self.beta_max = beta_max
-
-    def _marginal_prob_std(self, t: torch.Tensor) -> torch.Tensor:
-        log_mean_coeff = (
-            -0.25 * t**2 * (self.beta_max - self.beta_min) - 0.5 * t * self.beta_min
-        )
-        std = torch.sqrt(1.0 - torch.exp(2.0 * log_mean_coeff))
-        return std
-
-    def _velocity_target(
-        self, z0: torch.Tensor, z1: torch.Tensor, t: torch.Tensor
-    ) -> torch.Tensor:
-        if t.dim() == 1:
-            t = t.view(-1, 1, 1, 1)
-
-        beta_t = self.beta_min + t * (self.beta_max - self.beta_min)
-
-        log_mean_coeff = (
-            -0.25 * t**2 * (self.beta_max - self.beta_min) - 0.5 * t * self.beta_min
-        )
-        mean_coeff = torch.exp(log_mean_coeff)
-        std = torch.sqrt(1.0 - torch.exp(2.0 * log_mean_coeff))
-
-        # v_t = d(mean)/dt * z1 + d(std)/dt * z0
-        # d(mean)/dt = mean * (-0.5 * beta_t)
-        # d(std)/dt = beta_t * (1 - std^2) / (2 * std)  <-- derived from std^2 = 1 - mean^2
-
-        dmean_dt = -0.5 * beta_t * mean_coeff
-        dstd_dt = beta_t * (1.0 - std**2) / (2.0 * std + 1e-6)
-
-        velocity = dmean_dt * z1 + dstd_dt * z0
-        return velocity
-
-    def sample_zt(
-        self, z0: torch.Tensor, z1: torch.Tensor, t: torch.Tensor
-    ) -> torch.Tensor:
-        if t.dim() == 1:
-            t = t.view(-1, 1, 1, 1)
-
-        log_mean_coeff = (
-            -0.25 * t**2 * (self.beta_max - self.beta_min) - 0.5 * t * self.beta_min
-        )
-        mean_coeff = torch.exp(log_mean_coeff)
-        std = torch.sqrt(1.0 - torch.exp(2.0 * log_mean_coeff))
-
-        return mean_coeff * z1 + std * z0
-
-    def compute_loss(
-        self,
-        model_output: torch.Tensor,
-        z0: torch.Tensor,
-        z1: torch.Tensor,
-        t: torch.Tensor,
-        sample_weights: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        velocity_target = self._velocity_target(z0, z1, t)
-        if sample_weights is not None:
-            return sample_weighted_mse(model_output - velocity_target, sample_weights)
-        return F.mse_loss(model_output, velocity_target)
 
 
 class FlowMatchingOT(BaseAlgorithm):

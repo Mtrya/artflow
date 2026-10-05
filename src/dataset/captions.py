@@ -219,6 +219,7 @@ def average_caption_probabilities(
     policy: CaptionPolicy,
     weights: Optional[np.ndarray] = None,
     grid: int = 64,
+    progress_points: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Schedule-averaged caption probabilities.
 
@@ -227,6 +228,9 @@ def average_caption_probabilities(
     over beta, because the mapping from beta to probabilities is nonlinear.
     ``weights`` optionally reweights progress points by expected sample-draw
     exposure; a uniform grid assumes progress and draws are proportional.
+    ``progress_points`` optionally supplies explicit positions, allowing offline
+    planners to average a resolution stage rather than the whole run. Existing
+    callers retain the full-run grid and stationary sampler behavior.
 
     Accepts either one row's lengths (1-D) or a matrix of equal-length rows
     (2-D, one row per sample) and returns probabilities with the same shape.
@@ -235,17 +239,25 @@ def average_caption_probabilities(
     if values.ndim == 1:
         if values.size == 0:
             raise ValueError("average probabilities require at least one caption")
-        return average_caption_probabilities(values[None, :], policy, weights, grid)[0]
+        return average_caption_probabilities(
+            values[None, :], policy, weights, grid, progress_points)[0]
     if values.ndim != 2 or values.shape[1] == 0:
         raise ValueError("lengths must be a 1-D row or a 2-D matrix")
     if values.shape[1] == 1:
         return np.ones_like(values)
 
     values = np.maximum(values, 1.0)
-    points = np.linspace(0.0, 1.0, grid)
+    points = (np.linspace(0.0, 1.0, grid) if progress_points is None
+              else np.asarray(progress_points, dtype=np.float64))
+    if points.ndim != 1 or not points.size or not np.all(np.isfinite(points)) \
+            or np.any((points < 0) | (points > 1)):
+        raise ValueError("progress points must be a nonempty vector in [0, 1]")
     if weights is None:
-        weights = np.ones(grid, dtype=np.float64)
+        weights = np.ones(points.size, dtype=np.float64)
     weights = np.asarray(weights, dtype=np.float64)
+    if weights.shape != points.shape or not np.all(np.isfinite(weights)) \
+            or np.any(weights < 0) or weights.sum() <= 0:
+        raise ValueError("progress weights must match points and have positive mass")
     weights = weights / weights.sum()
 
     total = np.zeros_like(values)
@@ -273,4 +285,3 @@ def average_caption_probabilities(
                                      probabilities)
         total += weight * probabilities
     return total
-

@@ -1,7 +1,7 @@
 """ArtFlow - Flow Matching DiT for Artistic Image Generation"""
 
 __version__ = "0.1.0"
-__all__ = ["ArtFlow", "ArtFlowPipeline", "ArtFlowPipelineOutput"]
+__all__ = ["ArtFlow"]
 
 
 def __getattr__(name):
@@ -9,8 +9,4 @@ def __getattr__(name):
     if name == "ArtFlow":
         from .models.artflow import ArtFlow
         return ArtFlow
-    if name in ("ArtFlowPipeline", "ArtFlowPipelineOutput"):
-        from .pipeline.artflow_pipeline import ArtFlowPipeline, ArtFlowPipelineOutput
-        return {"ArtFlowPipeline": ArtFlowPipeline,
-                "ArtFlowPipelineOutput": ArtFlowPipelineOutput}[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -7,7 +7,7 @@ This module provides utilities for data handling including:
 - Dataset precomputation with VAE encoding
 - Multi-dataset mixing for training
 
-Imports are lazy (PEP 562): fetchers/clean/label_vlm must work in data-only
+Imports are lazy (PEP 562) so that caption-only utilities work in data-only
 environments without the torch stack.
 """
 

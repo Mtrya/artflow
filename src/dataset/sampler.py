@@ -221,7 +221,7 @@ class BucketPlan:
 
     Each resolution maps to ordered ``LenBucket`` values.  A length is assigned
     to the first bucket whose ``max_length`` is greater than or equal to it, so
-    a retained length of 1280 is valid when the final bound is 1280.
+    a retained length equal to the final bound is still valid.
     """
 
     def __init__(self, by_resolution: Mapping[int, Sequence[LenBucket | Tuple[int, int]]]):
@@ -631,20 +631,29 @@ class RowLengthQueueBatchSampler(Sampler[List[RowRef]]):
         }
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
-        """Restore queues and replay unacknowledged emitted batches first."""
+        """Restore queues and replay unacknowledged emitted batches first.
+
+        The saved cycle list may be shorter than this sampler's: a deliberate
+        recipe amendment may append new datasets to the mixture (their rows
+        sit above every saved dataset id, so queued RowRefs stay valid).
+        Restored datasets take their saved cycle and cursor; appended
+        datasets keep the fresh constructor-built cycle at cursor 0. Saved
+        cycles longer than this sampler's are never acceptable.
+        """
         if int(state.get("version", -1)) != self.STATE_VERSION:
             raise ValueError("unsupported RowLengthQueueBatchSampler state version")
         cycles = state["cycles"]
         cursors = state["cursors"]
-        if len(cycles) != len(self._cycles) or len(cursors) != len(self._cursors):
+        if len(cursors) != len(cycles) or len(cycles) > len(self._cycles):
             raise ValueError("state metadata entries do not match this sampler")
         if any(cursor < 0 or cursor > len(cycle) for cycle, cursor in zip(cycles, cursors)):
             raise ValueError("invalid row-cycle cursor in sampler state")
 
         self._stage = min(max(float(state["stage"]), 0.0), 1.0)
         self._rng.setstate(state["rng_state"])
-        self._cycles = [[int(row_idx) for row_idx in cycle] for cycle in cycles]
-        self._cursors = [int(cursor) for cursor in cursors]
+        for dataset_id, (cycle, cursor) in enumerate(zip(cycles, cursors)):
+            self._cycles[dataset_id] = [int(row_idx) for row_idx in cycle]
+            self._cursors[dataset_id] = int(cursor)
         self._queues = defaultdict(deque)
         for key, refs in state["queues"].items():
             normalized_key = (int(key[0]), int(key[1]))
@@ -659,8 +668,18 @@ class RowLengthQueueBatchSampler(Sampler[List[RowRef]]):
         self._next_batch_id = int(state["next_batch_id"])
 
 
-def row_length_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Strict collate for row-level length-bucketed batches."""
+def row_length_collate_fn(
+    batch: List[Dict[str, Any]], *, return_numpy: bool = False
+) -> Dict[str, Any]:
+    """Strict collate for row-level length-bucketed batches.
+
+    With ``return_numpy=True`` every array payload leaves the worker as a
+    numpy array instead of a torch tensor. numpy is pickled by value through
+    the worker->main queue, while tensors are transferred through shared
+    memory — which dies with bus errors on pods whose /dev/shm is tiny
+    (Ascend nodes ship 64MB). The training loop converts back with
+    ``torch.from_numpy`` after the queue crossing.
+    """
     if not batch:
         raise ValueError("row_length_collate_fn requires a non-empty batch")
 
@@ -692,7 +711,7 @@ def row_length_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         if len(set(values)) != 1:
             raise ValueError(f"mixed {name} values in one row-length batch")
 
-    latents = [torch.as_tensor(field(sample, "latents")) for sample in batch]
+    latents = [field(sample, "latents") for sample in batch]
     latent_shape = tuple(latents[0].shape)
     if any(tuple(latent.shape) != latent_shape for latent in latents[1:]):
         raise ValueError("mixed latent shapes in one row-length batch")
@@ -714,8 +733,26 @@ def row_length_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     dataset_ids = [int(field(sample, "dataset_id", "entry_id")) for sample in batch]
     row_indices = [int(field(sample, "row_idx", "row_index")) for sample in batch]
 
+    if return_numpy:
+        return {
+            "latents": np.stack([np.asarray(latent) for latent in latents], axis=0),
+            "captions": captions,
+            "dataset_ids": np.asarray(dataset_ids, dtype=np.int64),
+            "row_indices": np.asarray(row_indices, dtype=np.int64),
+            "row_positions": list(zip(dataset_ids, row_indices)),
+            "caption_indices": np.asarray(
+                [int(field(sample, "caption_idx", "caption_index")) for sample in batch],
+                dtype=np.int64,
+            ),
+            "resolution_bucket_ids": np.asarray(resolution_ids, dtype=np.int64),
+            "retained_lengths": np.asarray(retained_lengths, dtype=np.int64),
+            "len_bucket_idx": len_bucket_ids[0],
+            "bucket_hi": bucket_his[0],
+            "batch_id": batch_ids[0],
+        }
+
     return {
-        "latents": torch.stack(latents, dim=0),
+        "latents": torch.stack([torch.as_tensor(latent) for latent in latents], dim=0),
         "captions": captions,
         "dataset_ids": torch.tensor(dataset_ids, dtype=torch.long),
         "row_indices": torch.tensor(row_indices, dtype=torch.long),

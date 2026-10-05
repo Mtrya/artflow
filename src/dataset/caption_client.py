@@ -54,9 +54,15 @@ class Provider:
 
 DEEPSEEK_ROOT = "https://api.deepseek.com"
 
+# College self-hosted endpoint (SII internal network only; see
+# notes/posttrain_preflight.md).  Serves Qwen3.8-27B, the only multimodal
+# model on the college deployment; the key lives in the environment, never here.
+SII_ROOT = "https://cqhbod8bjjjbcoakk8pmeebgkaq9akcq.openapi-sj.sii.edu.cn/v1"
+
 PROVIDERS = {
     "zenmux": Provider(name="zenmux", root=ZENMUX_ROOT, key_env="ZENMUX_API_KEY"),
     "deepseek": Provider(name="deepseek", root=DEEPSEEK_ROOT, key_env="DEEPSEEK_API_KEY"),
+    "sii": Provider(name="sii", root=SII_ROOT, key_env="SII_VLM_API_KEY"),
     "openrouter": Provider(
         name="openrouter", root=OPENROUTER_ROOT, key_env="OPENROUTER_API_KEY",
         extra_headers={"HTTP-Referer": "https://github.com/kaupane/artflow",
@@ -314,9 +320,26 @@ class CaptionClient:
         }
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:32]
 
+    async def generate_text(self, client: httpx.AsyncClient, *, prompt: str,
+                            prompt_version: str, max_tokens: int,
+                            temperature: float = 0.2,
+                            extra: Optional[Dict[str, Any]] = None) -> Response:
+        """Text-only request (classification, prompt writing).  Same cache,
+        retry and cost accounting as image calls, with an empty fingerprint."""
+        return await self._generate(client, image_bytes=b"", prompt=prompt,
+                                    prompt_version=prompt_version, max_tokens=max_tokens,
+                                    temperature=temperature, extra=extra)
+
     async def generate(self, client: httpx.AsyncClient, *, image_bytes: bytes, prompt: str,
                        prompt_version: str, max_tokens: int, temperature: float = 0.2,
                        extra: Optional[Dict[str, Any]] = None) -> Response:
+        return await self._generate(client, image_bytes=image_bytes, prompt=prompt,
+                                    prompt_version=prompt_version, max_tokens=max_tokens,
+                                    temperature=temperature, extra=extra)
+
+    async def _generate(self, client: httpx.AsyncClient, *, image_bytes: bytes, prompt: str,
+                        prompt_version: str, max_tokens: int, temperature: float = 0.2,
+                        extra: Optional[Dict[str, Any]] = None) -> Response:
         settings: Dict[str, Any] = {"max_tokens": max_tokens, "temperature": temperature}
         if extra:
             settings.update(extra)
@@ -327,16 +350,17 @@ class CaptionClient:
             record["cached"] = True
             return Response.from_record(record)
 
+        if image_bytes:
+            content: list = [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {
+                    "url": "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode()}},
+            ]
+        else:
+            content = prompt
         body = {
             "model": self.api_model,
-            "messages": [{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {
-                        "url": "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode()}},
-                ],
-            }],
+            "messages": [{"role": "user", "content": content}],
             **settings,
         }
         response = Response(
@@ -391,19 +415,6 @@ class CaptionClient:
             cache_path.write_text(json.dumps(response.to_record(), ensure_ascii=False),
                                   encoding="utf-8")
         return response
-
-
-async def run_batch(client: CaptionClient, jobs: List[Dict[str, Any]],
-                    progress: Optional[Any] = None) -> List[Response]:
-    """Run ``jobs`` concurrently, where each job is a kwargs dict for ``generate``."""
-    async with httpx.AsyncClient() as http:
-        tasks = [client.generate(http, **job) for job in jobs]
-        results = []
-        for coro in asyncio.as_completed(tasks):
-            results.append(await coro)
-            if progress is not None:
-                progress(results)
-        return results
 
 
 def summarise(responses: List[Response]) -> Dict[str, Any]:

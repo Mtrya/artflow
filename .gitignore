@@ -14,8 +14,11 @@ settings*json
 # Intermediate documents and tests
 *.md
 !README.md
+!AGENTS.md
 !notes/*.md
-notes/dataset_plan.md
+!SKILL.md
+!/.agents/rule-examples.md
+/notes/archive/*.md
 test*
 
 # Large files
@@ -47,5 +50,27 @@ swanlog
 /precomputed_dataset/
 /output/
 /literature/
+# Cloned reference implementations (DMD2, DMDR, DiffusionNFT, ...), read-only
+# study material; licenses differ from this repository, so never vendored.
+/refs/
 /scored_images/
-/bucket_plans/
+/bucket_plans/*
+!/bucket_plans/ascend/
+/bucket_plans/ascend/*
+!/bucket_plans/ascend/hero-*-k20.json
+!/bucket_plans/ascend/*.report.md
+
+# Scratch space for local job wrappers and exploratory probes. One-off code is
+# deleted once its evidence is extracted into notes; repeatable launchers and
+# tools are promoted into scripts/. Nothing here is supported or shipped.
+/jobs/*
+
+# Credentials and machine-local operational state must never be published.
+.env
+.env.*
+!.env.example
+*.netrc
+.netrc
+*.pem
+*.key
+/INSPIRE.md
