@@ -1,7 +1,7 @@
 # Ascend hero recipe
 
 The complete runnable recipe is
-[`configs/hero.toml`](../configs/hero.toml). It explicitly specifies every
+[`configs/pretrain.toml`](../configs/pretrain.toml). It explicitly specifies every
 training tunable for all three resolution stages and rejects missing or
 unknown fields. Stage selection and checkpoint resume are operations.
 Recovery requirements are described below; machine-local run identity lives in `INSPIRE.md`.
@@ -126,8 +126,8 @@ resolved checkpoint recipe records both sets of absolute paths. Platform
 preparation and ordinary SwanLab login/API-key setup belong in local `INSPIRE.md`.
 
 ```bash
-python -m src.pretrain.train --config configs/hero.toml --stage 256p --storage-root /external/artflow --check_config
-python -m scripts.pretrain.launch --config configs/hero.toml --stage 256p --storage-root /external/artflow --nproc_per_node 16
+python -m src.pretrain.train --config configs/pretrain.toml --stage 256p --storage-root /external/artflow --check_config
+python -m scripts.pretrain.launch --config configs/pretrain.toml --stage 256p --storage-root /external/artflow --nproc_per_node 16
 ```
 
 The launcher sets the qualified NPU expandable-segments allocator policy and
@@ -161,7 +161,7 @@ on a copy of a complete checkpoint before adopting a new checkout:
 python -m scripts.pretrain.migrate_stage_recipe \
   --source /external/artflow/runs/RUN/checkpoint_step_STEP \
   --destination /external/artflow/recovery/checkpoint_step_STEP \
-  --config configs/hero.toml --storage-root /external/artflow \
+  --config configs/pretrain.toml --storage-root /external/artflow \
   --reason "Relocate tracked prompt suite and bucket plans into configs"
 ```
 

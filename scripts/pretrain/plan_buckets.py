@@ -50,7 +50,7 @@ to it with every bound, size, prediction, fit diagnostic and decision.
 
 Usage:
     python scripts/pretrain/plan_buckets.py \
-        --config configs/hero.toml --stage 256p --storage-root /external/artflow \
+        --config configs/pretrain.toml --stage 256p --storage-root /external/artflow \
         --calibration ceiling-256p.json \
         --image-tokens '{"1": 256, "2": 252}' \
         --buckets 10 --vram-budget-gb 42.24 \

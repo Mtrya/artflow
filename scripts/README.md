@@ -73,7 +73,7 @@ replaces its image-parquet shard set; a metadata-only release updates the table.
 
 ```bash
 python -m scripts.data.transfer_precomputed upload \
-  --provider hf --repo-id OWNER/DATASET --config configs/hero.toml --stage 896p --storage-root /external/artflow
+  --provider hf --repo-id OWNER/DATASET --config configs/pretrain.toml --stage 896p --storage-root /external/artflow
 python -m scripts.data.transfer_precomputed download \
   --provider modelscope --repo-id OWNER/DATASET --storage-root /external/artflow
 ```

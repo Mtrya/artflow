@@ -22,7 +22,7 @@ from src.dataset.mix import DatasetEntry
 def recipe(tmp_path):
     # The shipped file supplies a complete input, not any expected test value.
     config = load_config(
-        REPOSITORY_ROOT / "configs/hero.toml", storage_root=tmp_path / "heavy"
+        REPOSITORY_ROOT / "configs/pretrain.toml", storage_root=tmp_path / "heavy"
     )
     return replace(
         config,
@@ -44,7 +44,7 @@ def recipe(tmp_path):
 
 def test_config_assets_resolve_from_repository_after_chdir(tmp_path, monkeypatch):
     path = tmp_path / "recipe.toml"
-    text = (REPOSITORY_ROOT / "configs/hero.toml").read_text()
+    text = (REPOSITORY_ROOT / "configs/pretrain.toml").read_text()
     text = text.replace(
         "configs/prompts/hero_monitor_v1.jsonl", "configs/prompts/fixture.jsonl"
     )

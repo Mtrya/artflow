@@ -1,7 +1,7 @@
 """Launch one Ascend stage from a complete recipe, resuming complete checkpoints.
 
 Run with the prepared environment and data already installed:
-  python -m scripts.pretrain.launch --config configs/hero.toml --stage 256p --storage-root /external/artflow --nproc_per_node 16
+  python -m scripts.pretrain.launch --config configs/pretrain.toml --stage 256p --storage-root /external/artflow --nproc_per_node 16
 
 The platform owns environment setup, resource selection and retry policy. This
 launcher owns the single-writer lock, checkpoint preflight and worker lifetime.

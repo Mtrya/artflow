@@ -2,7 +2,7 @@
 
 训练覆盖国画、西洋画、人物和世界知识四域，按
 256p → 640p → 896p 渐进训练。逐源权重与阶段设置以
-[`configs/hero.toml`](../configs/hero.toml) 为准；当前配方见
+[`configs/pretrain.toml`](../configs/pretrain.toml) 为准；当前配方见
 [hero_recipe.md](hero_recipe.md)，平台路径与存储操作见本机 `INSPIRE.md`。
 
 ## 数据域与训练契约
