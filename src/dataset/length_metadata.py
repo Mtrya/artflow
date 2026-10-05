@@ -155,15 +155,6 @@ class RowLengthMetadata:
     def num_captions(self) -> int:
         return int(self.prompt_lengths.size)
 
-    @property
-    def lengths(self) -> np.ndarray:
-        """Compatibility alias for the retained prompt lengths."""
-        return self.prompt_lengths
-
-    @property
-    def version(self) -> Any:
-        return self.metadata_version
-
     def validate_against_dataset(self, dataset: Any) -> None:
         """Reject row or prompt-contract mismatches before training starts."""
         if len(dataset) != self.num_rows:
@@ -211,28 +202,27 @@ class RowLengthMetadata:
                 "caption_offsets",
                 "prompt_lengths",
                 "metadata_version",
+                "metadata_info",
             }
             missing = required.difference(data.files)
             if missing:
                 raise ValueError(f"metadata is missing fields: {sorted(missing)}")
-            version = data["metadata_version"]
-            if np.ndim(version) == 0:
-                version = version.item()
-            else:
-                version = version.tolist()
-            metadata_info = None
-            if "metadata_info" in data.files:
-                raw_info = data["metadata_info"]
-                raw_info = raw_info.item() if np.ndim(raw_info) == 0 else raw_info.tolist()
-                metadata_info = json.loads(raw_info)
+            version = data["metadata_version"].item()
+            if version != METADATA_VERSION:
+                raise ValueError(f"unsupported metadata version: {version!r}")
+            raw_info = data["metadata_info"].item()
+            if not isinstance(raw_info, str):
+                raise ValueError("metadata_info must be a JSON string")
+            metadata_info = json.loads(raw_info)
+            if not isinstance(metadata_info, dict):
+                raise ValueError("metadata_info must contain the prompt contract")
+            for name in ("resolution_ids", "caption_offsets", "prompt_lengths"):
+                if data[name].ndim != 1 or data[name].dtype.kind not in "iu":
+                    raise ValueError(f"{name} must be a one-dimensional integer array")
             return cls(
                 resolution_ids=data["resolution_ids"],
                 caption_offsets=data["caption_offsets"],
-                # v1 sidecars used zero for an empty retained sequence; normalize
-                # that legacy representation to the current one-token contract.
-                prompt_lengths=np.maximum(
-                    data["prompt_lengths"], RETAINED_MIN_LENGTH
-                ),
+                prompt_lengths=data["prompt_lengths"],
                 metadata_version=version,
                 metadata_info=metadata_info,
             )
@@ -334,6 +324,25 @@ def sidecar_path(dataset_dir: str) -> Path:
     return Path(dataset_dir) / SIDECAR_FILENAME
 
 
+def _dataset_shards(root: Path):
+    """Read the authoritative HF row order; never infer it from filenames."""
+    state = json.loads((root / "state.json").read_text(encoding="utf-8"))
+    files = state.get("_data_files")
+    if not isinstance(files, list) or not files:
+        raise ValueError(f"{root}/state.json must list ordered _data_files")
+    filenames = []
+    for item in files:
+        name = item.get("filename") if isinstance(item, dict) else None
+        if not isinstance(name, str) or Path(name).name != name:
+            raise ValueError(f"invalid shard filename in {root}/state.json")
+        if not (root / name).is_file():
+            raise ValueError(f"missing dataset shard: {root / name}")
+        filenames.append(name)
+    if len(set(filenames)) != len(filenames):
+        raise ValueError(f"duplicate shards in {root}/state.json")
+    return state, filenames
+
+
 def _source_signature(dataset_dir: str, tokenizer_path: str) -> str:
     """Cheap cache identity: small state file plus shard/tokenizer file stats.
 
@@ -341,13 +350,7 @@ def _source_signature(dataset_dir: str, tokenizer_path: str) -> str:
     rewrites and local tokenizer updates, not edits that preserve file stats.
     """
     root = Path(dataset_dir)
-    state_path = root / "state.json"
-    state = json.loads(state_path.read_text()) if state_path.is_file() else {}
-    filenames = [item["filename"] for item in state.get("_data_files", [])]
-    if not filenames:
-        filenames = sorted(path.name for path in root.glob("data-*.arrow"))
-    if not filenames:
-        raise ValueError(f"no HF Arrow data files found under {root}")
+    state, filenames = _dataset_shards(root)
 
     def file_stats(paths):
         result = []
@@ -385,22 +388,12 @@ def _load_text_columns(dataset_dir: str) -> Any:
     a saved torch formatter.
 
     Shards are read in the order recorded in ``state.json``, which is the row
-    order training's ``load_from_disk`` will see; a lexicographic glob over
-    ``data-*.arrow`` is the fallback for directories without a state file.
+    order training's ``load_from_disk`` will see. Missing manifests are errors.
     """
     from datasets import Dataset, concatenate_datasets
 
     root = Path(dataset_dir)
-    state_path = root / "state.json"
-    if state_path.is_file():
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-        filenames = [item["filename"] for item in state.get("_data_files", [])]
-    else:
-        filenames = []
-    if not filenames:
-        filenames = sorted(path.name for path in root.glob("data-*.arrow"))
-    if not filenames:
-        raise ValueError(f"no HF Arrow data files found under {root}")
+    _, filenames = _dataset_shards(root)
 
     shards = [
         Dataset.from_file(str(root / filename)).select_columns(
@@ -438,6 +431,7 @@ def ensure_sidecar(dataset_dir: str, tokenizer_path: str) -> RowLengthMetadata:
     """
     path = sidecar_path(dataset_dir)
     signature = _source_signature(dataset_dir, tokenizer_path)
+    reason = "sidecar is missing"
     if path.is_file():
         try:
             metadata = RowLengthMetadata.load(path)
@@ -445,12 +439,14 @@ def ensure_sidecar(dataset_dir: str, tokenizer_path: str) -> RowLengthMetadata:
             # A file written by an older code version can hold the same fields
             # with different meaning, so the format version is part of identity
             # too.
-            if fresh and metadata.metadata_version == METADATA_VERSION:
+            if fresh:
                 return metadata
-        except (OSError, ValueError, EOFError, zipfile.BadZipFile):
+            reason = "dataset or tokenizer identity changed"
+        except (OSError, ValueError, EOFError, zipfile.BadZipFile) as exc:
             # Partial write or an unreadable archive: the companion is derived
             # data, so rebuilding it from the shards is always safe.
-            pass
+            reason = str(exc)
+    print(f"Rebuilding {path}: {reason}", flush=True)
     metadata = build_from_dataset(dataset_dir, tokenizer_path)
     metadata.save(path)
     return metadata

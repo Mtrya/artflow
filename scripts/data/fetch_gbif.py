@@ -37,7 +37,6 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -51,6 +50,7 @@ from scripts.data.fetch_reinforce_common import (
     add_skip,
     base_record,
     download_image,
+    download_candidates,
     get_json,
     load_metadata,
     load_state,
@@ -59,7 +59,6 @@ from scripts.data.fetch_reinforce_common import (
     parse_queries,
     save_state,
     shape_ok,
-    term_budget,
     thread_session,
 )
 
@@ -190,9 +189,6 @@ def harvest(args, session: requests.Session) -> None:
             kept_term = kept_by_query.get(term, 0)
             progress = state.setdefault(term, {"offset": 0, "exhausted": False})
             if progress.get("exhausted") or (cap is not None and kept_term >= cap):
-                if cap is not None and kept_term >= cap and not progress.get("exhausted"):
-                    progress["exhausted"] = True
-                    save_state(state_path, state)
                 continue
             taxon_key = progress.get("taxon_key")
             if taxon_key is None:
@@ -256,34 +252,30 @@ def harvest(args, session: requests.Session) -> None:
                         record["local_path"] = str(images_dir / f"{source_id}.jpg")
                         queued.add(source_id)
                         todo.append(record)
-                budget = term_budget(cap, kept_term)
-                if budget is not None:
-                    todo = todo[:budget]
-                if todo:
-                    with ThreadPoolExecutor(max_workers=args.workers) as pool:
-                        futures = {
-                            pool.submit(download_image, thread_session(),
-                                        record["image_url"], Path(record["local_path"]),
-                                        box=BOX,
-                                        shape_filter=not record["source_width"],
-                                        min_side=args.min_side,
-                                        max_ratio=args.max_ratio): record
-                            for record in todo
-                        }
-                        for future in as_completed(futures):
-                            record = futures[future]
-                            merge_download(record, future.result())
-                            meta.write(json.dumps(record, ensure_ascii=False) + "\n")
-                            done.add(record["source_id"])
-                            written += 1
-                            if record["download_ok"]:
-                                kept_term += 1
-                                total_kept += 1
+                budget = min(args.target - total_kept, cap - kept_term if cap is not None else args.target)
+                def download(record):
+                    return download_image(
+                        thread_session(), record["image_url"], Path(record["local_path"]),
+                        box=BOX, shape_filter=not record["source_width"], min_side=args.min_side,
+                        max_ratio=args.max_ratio)
+
+                for record, result in download_candidates(
+                        todo, download, workers=args.workers, max_successes=budget):
+                    merge_download(record, result)
+                    meta.write(json.dumps(record, ensure_ascii=False) + "\n")
                     meta.flush()
+                    done.add(record["source_id"])
+                    written += 1
+                    if record["download_ok"]:
+                        kept_term += 1
+                        total_kept += 1
+                meta.flush()
+                if total_kept >= args.target or (cap is not None and kept_term >= cap):
+                    # Revisit this page on resume; metadata skips completed candidates.
+                    save_state(state_path, state)
+                    break
                 offset += len(results)
                 progress["offset"] = offset
-                if cap is not None and kept_term >= cap:
-                    progress["exhausted"] = True
                 if payload.get("endOfRecords", True) or offset >= MAX_RESULTS:
                     progress["exhausted"] = True
                 save_state(state_path, state)

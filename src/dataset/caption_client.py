@@ -1,6 +1,6 @@
 """ZenMux chat-completions client for caption generation and review.
 
-Every request is cached on disk under a key derived from the exact inputs that
+Each successful nonempty response is cached under a key derived from the inputs that
 determine the response: the encoded image bytes, the model, the prompt text,
 and every request parameter.  A changed prompt therefore cannot silently reuse
 an old response, and re-running a batch costs nothing for rows already done.
@@ -285,9 +285,8 @@ class Response:
 class CaptionClient:
     """Async client with a per-request disk cache.
 
-    ``cache_dir`` holds one JSON file per request key.  Failed requests are
-    cached too, marked with their error, so a rerun does not pay for the same
-    deterministic failure again; delete the file to retry.
+    ``cache_dir`` reuses only successful, nonempty responses. Failures remain
+    in the caller's attempt history and are eligible for a new request.
     """
 
     def __init__(self, cache_dir: str | Path, model: str, pricing: Optional[ModelPricing] = None,
@@ -347,8 +346,9 @@ class CaptionClient:
         cache_path = self.cache_dir / f"{key}.json"
         if cache_path.is_file():
             record = json.loads(cache_path.read_text(encoding="utf-8"))
-            record["cached"] = True
-            return Response.from_record(record)
+            if not record.get("error") and isinstance(record.get("text"), str) and record["text"].strip():
+                record["cached"] = True
+                return Response.from_record(record)
 
         if image_bytes:
             content: list = [
@@ -411,7 +411,7 @@ class CaptionClient:
                 if not response.text:
                     response.error = "empty content"
                 break
-        if not response.transient:
+        if not response.error and response.text.strip():
             cache_path.write_text(json.dumps(response.to_record(), ensure_ascii=False),
                                   encoding="utf-8")
         return response

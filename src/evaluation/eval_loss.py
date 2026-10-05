@@ -33,13 +33,11 @@ instead.  Each band also reports the number of samples it was measured on,
 because a band that could not be filled to the requested size gives a noisier
 number: the shortfall is reported rather than silently measured on less data.
 
-A dataset without a usable sidecar falls back to one implicit caption per row
-and reports the aggregate metrics only; the omission is stated on stdout,
-because that run's curve cannot be read by caption length.
+The probe requires validated caption-length metadata; it never changes caption
+selection when metadata is unavailable.
 """
 
 import os
-import zipfile
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -161,27 +159,6 @@ def _band_candidates(
     return selection
 
 
-def _load_sidecar(dataset_path: str, dataset: Any) -> Tuple[Any, str]:
-    """Row-length metadata for the probe's dataset, plus why it is unusable.
-
-    A sidecar that does not describe this dataset is worse than no sidecar: the
-    band of a row would be read off another row's lengths.  Missing, unreadable
-    and mismatched files all fall back instead of failing the run.
-    """
-    from ..dataset.length_metadata import RowLengthMetadata, sidecar_path
-
-    path = sidecar_path(dataset_path)
-    try:
-        metadata = RowLengthMetadata.load(path)
-    except (OSError, ValueError, EOFError, zipfile.BadZipFile, AttributeError) as exc:
-        return None, f"cannot read {path} ({type(exc).__name__}: {exc})"
-    try:
-        metadata.validate_against_dataset(dataset)
-    except ValueError as exc:
-        return None, f"{path} does not describe this dataset ({exc})"
-    return metadata, ""
-
-
 def _load_rows(
     dataset: Any, rows: Sequence[int]
 ) -> Dict[int, Tuple[List[str], torch.Tensor]]:
@@ -233,6 +210,7 @@ class EvalLossProbe:
         exit_layer: Optional[int],
         vae_mean: torch.Tensor,
         vae_std: torch.Tensor,
+        metadata: Any,
         num_samples: int = 512,
         batch_size: int = 64,
         t_grid: Tuple[float, ...] = (0.15, 0.4, 0.65, 0.9),
@@ -265,54 +243,20 @@ class EvalLossProbe:
         canonical_rank = np.empty(total_rows, dtype=np.int64)
         canonical_rank[permutation] = np.arange(total_rows, dtype=np.int64)
 
-        metadata, unusable = _load_sidecar(dataset_path, dataset)
-        # (dataset row, caption index or None for the positional rule, band)
-        entries: List[Tuple[int, Optional[int], Optional[str]]] = []
-        loaded: Dict[int, Tuple[List[str], torch.Tensor]] = {}
-        while metadata is not None:
-            entries = []
-            for name, rows, captions in _band_candidates(
-                metadata.caption_offsets,
-                metadata.prompt_lengths,
-                canonical_rank,
-                self.num_samples,
-            ):
-                for row, caption in zip(rows.tolist(), captions.tolist()):
-                    entries.append((row, caption, name))
-            if not entries:
-                # A caption longer than the last band is kept by precompute
-                # rather than cut to it, so an eval set can hold none at all.
-                metadata = None
-                unusable = (
-                    "no caption of this dataset has a retained length inside a "
-                    "reported band "
-                    f"({', '.join(name for name, _, _ in LENGTH_BINS)})"
-                )
-                break
-            loaded = _load_rows(dataset, {row for row, _, _ in entries})
-            missing_row = _row_with_other_caption_count(metadata, loaded)
-            if missing_row is None:
-                break
-            # Captions can be appended to a dataset without its sidecar being
-            # rebuilt; the row count still matches, but every later row's band
-            # would be read off the wrong lengths.
-            metadata = None
-            unusable = (
-                f"row {missing_row} holds {len(loaded[missing_row][0])} captions "
-                "where the length sidecar describes a different number"
-            )
-        if metadata is None:
-            _announce(
-                f"[eval-loss] caption bands are off ({unusable}). One caption is "
-                "taken per row by list position and no per-band metric is "
-                "reported; this probe's loss cannot be read by caption length."
-            )
-            entries = [
-                (int(permutation[position]), None, None)
-                for position in range(min(self.num_samples, total_rows))
-            ]
-            loaded = _load_rows(dataset, {row for row, _, _ in entries})
-        self.banded = metadata is not None
+        metadata.validate_against_dataset(dataset)
+        entries: List[Tuple[int, int, str]] = []
+        for name, rows, captions in _band_candidates(
+            metadata.caption_offsets, metadata.prompt_lengths,
+            canonical_rank, self.num_samples,
+        ):
+            entries.extend((row, caption, name)
+                           for row, caption in zip(rows.tolist(), captions.tolist()))
+        if not entries:
+            raise ValueError("eval-loss probe has no caption samples in its length bands")
+        loaded = _load_rows(dataset, {row for row, _, _ in entries})
+        missing_row = _row_with_other_caption_count(metadata, loaded)
+        if missing_row is not None:
+            raise ValueError(f"eval metadata caption count differs at row {missing_row}")
 
         # Distinct rows in canonical order: a row that serves several bands is
         # loaded once, and its noise is drawn once, so both of its samples see
@@ -334,14 +278,12 @@ class EvalLossProbe:
             noise_by_row[row] = torch.randn(z.shape, generator=gen)
 
         self.captions: List[str] = []
-        self.bands: List[Optional[str]] = []
+        self.bands: List[str] = []
         self.sample_rows: List[int] = []
         self.latents: List[torch.Tensor] = []
         self.noise: List[torch.Tensor] = []
         for row, caption_index, band in entries:
             captions = loaded[row][0]
-            if caption_index is None:
-                caption_index = 1 if len(captions) > 1 else 0
             self.captions.append(captions[caption_index])
             self.bands.append(band)
             self.sample_rows.append(row)
@@ -356,31 +298,29 @@ class EvalLossProbe:
         self.groups = list(shape_groups.values())
 
         # Slot 0 aggregates every sample; each band owns one slot after it.
-        self.band_names = [name for name, _, _ in LENGTH_BINS] if self.banded else []
+        self.band_names = [name for name, _, _ in LENGTH_BINS]
         slots = {name: index + 1 for index, name in enumerate(self.band_names)}
-        self._slots = [slots.get(band, 0) for band in self.bands]
+        self._slots = [slots[band] for band in self.bands]
 
         self.band_sample_counts = {name: 0 for name in self.band_names}
         images_per_band: Dict[int, int] = {}
         for band, row in zip(self.bands, self.sample_rows):
-            if band is not None:
-                self.band_sample_counts[band] += 1
-                images_per_band[row] = images_per_band.get(row, 0) + 1
+            self.band_sample_counts[band] += 1
+            images_per_band[row] = images_per_band.get(row, 0) + 1
         self.paired_images = sum(1 for count in images_per_band.values() if count > 1)
         self.band_shortfall = {
             name: max(self.num_samples - count, 0)
             for name, count in self.band_sample_counts.items()
         }
-        if self.banded:
-            short = {name: gap for name, gap in self.band_shortfall.items() if gap}
-            if short:
-                missing = ", ".join(
-                    f"{name} needs {gap} more" for name, gap in short.items()
-                )
-                _announce(
-                    "[eval-loss] caption-length bands below the requested "
-                    f"{self.num_samples} samples: {missing}"
-                )
+        short = {name: gap for name, gap in self.band_shortfall.items() if gap}
+        if short:
+            missing = ", ".join(
+                f"{name} needs {gap} more" for name, gap in short.items()
+            )
+            _announce(
+                "[eval-loss] caption-length bands below the requested "
+                f"{self.num_samples} samples: {missing}"
+            )
 
         # Pre-encode text once (fixed captions; identical across probes and
         # runs).  The encode runs in chunks: one forward keeps every layer's
@@ -468,6 +408,5 @@ class EvalLossProbe:
                 metrics[f"eval/loss/band_{name}"] = (
                     sums[:, slot].sum() / counts[:, slot].sum()
                 )
-        if self.banded:
-            metrics["eval/paired_images"] = float(self.paired_images)
+        metrics["eval/paired_images"] = float(self.paired_images)
         return metrics

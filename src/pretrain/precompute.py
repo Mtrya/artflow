@@ -141,16 +141,8 @@ def main():
                 split = args.split
             dataset = load_dataset(args.dataset_name, split=split)
 
-    # Process caption fields
-    raw_caption_fields = args.caption_fields
-    if isinstance(raw_caption_fields, list):
-        # Flatten and split
-        caption_fields = []
-        for item in raw_caption_fields:
-            caption_fields.extend([x.strip() for x in item.split(",") if x.strip()])
-    else:
-        # Should be list due to nargs="*", but just in case
-        caption_fields = [x.strip() for x in raw_caption_fields.split(",") if x.strip()]
+    caption_fields = [field.strip() for item in args.caption_fields
+                      for field in item.split(",") if field.strip()]
 
     # Parse buckets
     buckets = parse_resolution_buckets(args.resolution_buckets, args.index_offset)

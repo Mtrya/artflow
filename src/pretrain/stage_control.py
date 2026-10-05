@@ -99,7 +99,6 @@ def validate_checkpoint(
     stop_at_step=0,
     expected_step=None,
     min_step=0,
-    require_record=False,
     scheduler_count=None,
     use_ema=False,
     world_size=None,
@@ -117,11 +116,7 @@ def validate_checkpoint(
         )
     record_path = root / CHECKPOINT_RECORD
     if not record_path.is_file():
-        if require_record:
-            raise ValueError(
-                f"missing {record_path}; staged resume requires a completed checkpoint with recorded global T"
-            )
-        return step  # Legacy, non-staged resume: scheduler files are checked by the trainer.
+        raise ValueError(f"missing {record_path}; resume requires a completed checkpoint")
     record = json.loads(record_path.read_text(encoding="utf-8"))
     if record.get("version") != 1 or record.get("complete") is not True:
         raise ValueError("checkpoint completion record is invalid")
@@ -214,7 +209,6 @@ def main():
         expected_step=args.expected_step,
         min_step=args.min_step,
         world_size=args.world_size,
-        require_record=True,
         scheduler_count=2,
         use_ema=True,
     )

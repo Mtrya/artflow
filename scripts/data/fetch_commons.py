@@ -8,7 +8,7 @@ so the mime type is checked and only ``image/jpeg`` survives: that is what
 keeps diagrams, maps, logos, screenshots and scans out of a photo batch, and
 it is deliberately not loosened.  The shape filter runs on the imageinfo
 width and height before the download, using the same 1792 px box maths as
-fetch_pexels.  The file that lands on disk is the 1792-wide ``thumburl``.
+fetch_pexels.  The downloaded thumbnail is bounded locally to the same 1792 px longest side.
 
 Each row keeps the file's description (HTML stripped, ``ImageDescription``
 falling back to the cleaned file title) as ``alt``, the cleaned title as
@@ -16,7 +16,7 @@ falling back to the cleaned file title) as ``alt``, the cleaned title as
 the ``LicenseShortName`` as ``license``.
 
 Output, under ``--out``:
-    images/com-<pageid>.jpg        the 1792-wide thumbnail
+    images/com-<pageid>.jpg        JPEG bounded to a 1792 px longest side
     metadata.jsonl                 one row per candidate, appended as it goes
     state.json                     per-term gsrcontinue cursor and exhaustion
     fetch.log                      progress, written by the caller's redirect
@@ -27,7 +27,7 @@ finished once it has ``cap`` kept images or the search stops continuing; a
 rerun skips the recorded page ids and the finished terms without re-issuing
 their requests, and a partially walked term resumes from its gsrcontinue
 cursor.  ``--target`` counts the rows that hold an image, so a resumed run
-stops after that many more downloads.  API requests are paced to stay under
+stops when the total kept-image count reaches the target.  API requests are paced to stay under
 the hourly limit; the downloads run on a small thread pool, since one search
 page yields up to 50 files.
 """
@@ -38,7 +38,6 @@ import argparse
 import json
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -52,6 +51,7 @@ from scripts.data.fetch_reinforce_common import (
     add_skip,
     base_record,
     download_image,
+    download_candidates,
     get_json,
     load_metadata,
     load_state,
@@ -61,7 +61,6 @@ from scripts.data.fetch_reinforce_common import (
     save_state,
     shape_ok,
     strip_html,
-    term_budget,
     thread_session,
 )
 
@@ -176,9 +175,6 @@ def harvest(args, session: requests.Session) -> None:
             kept_term = kept_by_query.get(term, 0)
             progress = state.setdefault(term, {"exhausted": False})
             if progress.get("exhausted") or (cap is not None and kept_term >= cap):
-                if cap is not None and kept_term >= cap and not progress.get("exhausted"):
-                    progress["exhausted"] = True
-                    save_state(state_path, state)
                 continue
             while True:
                 if total_kept >= args.target or (cap is not None and kept_term >= cap):
@@ -221,32 +217,29 @@ def harvest(args, session: requests.Session) -> None:
                     record["local_path"] = str(images_dir / f"{source_id}.jpg")
                     queued.add(source_id)
                     todo.append(record)
-                budget = term_budget(cap, kept_term)
-                if budget is not None:
-                    todo = todo[:budget]
-                if todo:
-                    with ThreadPoolExecutor(max_workers=args.workers) as pool:
-                        futures = {
-                            pool.submit(download_image, thread_session(),
-                                        record["image_url"], Path(record["local_path"]),
-                                        box=None, shape_filter=False,
-                                        min_side=args.min_side,
-                                        max_ratio=args.max_ratio): record
-                            for record in todo
-                        }
-                        for future in as_completed(futures):
-                            record = futures[future]
-                            merge_download(record, future.result())
-                            meta.write(json.dumps(record, ensure_ascii=False) + "\n")
-                            done.add(record["source_id"])
-                            written += 1
-                            if record["download_ok"]:
-                                kept_term += 1
-                                total_kept += 1
+                budget = min(args.target - total_kept, cap - kept_term if cap is not None else args.target)
+                def download(record):
+                    return download_image(
+                        thread_session(), record["image_url"], Path(record["local_path"]),
+                        box=BOX, shape_filter=False, min_side=args.min_side,
+                        max_ratio=args.max_ratio)
+
+                for record, result in download_candidates(
+                        todo, download, workers=args.workers, max_successes=budget):
+                    merge_download(record, result)
+                    meta.write(json.dumps(record, ensure_ascii=False) + "\n")
                     meta.flush()
-                if cap is not None and kept_term >= cap:
-                    progress["exhausted"] = True
-                elif payload.get("continue"):
+                    done.add(record["source_id"])
+                    written += 1
+                    if record["download_ok"]:
+                        kept_term += 1
+                        total_kept += 1
+                meta.flush()
+                if total_kept >= args.target or (cap is not None and kept_term >= cap):
+                    # Revisit this page on resume; metadata skips completed candidates.
+                    save_state(state_path, state)
+                    break
+                if payload.get("continue"):
                     progress["continue"] = payload["continue"]
                 else:
                     progress["exhausted"] = True

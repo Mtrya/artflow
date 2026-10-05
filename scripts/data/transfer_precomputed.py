@@ -1,8 +1,8 @@
 """Transfer precomputed datasets through Hugging Face or ModelScope.
 
 Upload takes the training and evaluation directories from a run config's stage.
---data-root can relocate those directories to another mounted copy of the data.
-Download places a repository snapshot under --data-root. Repositories must
+Dataset paths are resolved under the explicit --storage-root.
+Download places a repository snapshot under <storage-root>/precomputed_dataset. Repositories must
 already exist with the intended visibility.
 
 Credentials: HF_TOKEN for Hugging Face; MS_TOKEN or MODELSCOPE_TOKEN_PATH
@@ -10,9 +10,9 @@ Credentials: HF_TOKEN for Hugging Face; MS_TOKEN or MODELSCOPE_TOKEN_PATH
 SDK in the transfer environment.
 
     python -m scripts.data.transfer_precomputed upload --provider hf \
-        --repo-id OWNER/DATASET --config configs/hero.toml --stage 896p
+        --repo-id OWNER/DATASET --config configs/hero.toml --stage 896p --storage-root /external/artflow
     python -m scripts.data.transfer_precomputed download --provider modelscope \
-        --repo-id OWNER/DATASET --data-root "$ARTFLOW_ROOT/precomputed_dataset"
+        --repo-id OWNER/DATASET --storage-root /external/artflow
 """
 
 from __future__ import annotations
@@ -25,17 +25,17 @@ from pathlib import Path
 
 
 def stage_directories(config_path: str, stage_name: str,
-                      data_root: Path | None = None) -> list[Path]:
+                      storage_root: Path) -> list[Path]:
     from src.pretrain.config import load_config
 
-    stage = load_config(config_path).stage(stage_name)
+    stage = load_config(config_path, storage_root=storage_root).stage(stage_name)
     directories = {}
     for value in [entry.path for entry in stage.datasets] + [stage.eval_dataset_path]:
         original = Path(value)
         if original.name in directories and directories[original.name] != original:
             raise ValueError(f"different directories share the name {original.name!r}")
         directories[original.name] = original
-    paths = [data_root / name if data_root else path for name, path in directories.items()]
+    paths = list(directories.values())
     missing = [str(path) for path in paths if not (path / "state.json").is_file()]
     if missing:
         raise FileNotFoundError(f"missing precomputed datasets: {missing}")
@@ -109,21 +109,19 @@ def main():
     parser.add_argument("action", choices=("upload", "download"))
     parser.add_argument("--provider", choices=("hf", "modelscope"), required=True)
     parser.add_argument("--repo-id", required=True)
-    parser.add_argument("--data-root", type=Path)
+    parser.add_argument("--storage-root", type=Path, required=True)
     parser.add_argument("--config", help="complete run TOML for upload")
     parser.add_argument("--stage", help="stage to upload, including its evaluation set")
     args = parser.parse_args()
     if args.action == "upload":
         if not args.config or not args.stage:
             parser.error("upload requires --config and --stage")
-        paths = stage_directories(args.config, args.stage, args.data_root)
+        paths = stage_directories(args.config, args.stage, args.storage_root)
         upload(args.provider, args.repo_id, paths)
     else:
-        if not args.data_root:
-            parser.error("download requires --data-root")
         if args.config or args.stage:
             parser.error("download selects a repository; --config/--stage apply to upload")
-        download(args.provider, args.repo_id, args.data_root)
+        download(args.provider, args.repo_id, args.storage_root / "precomputed_dataset")
 
 
 if __name__ == "__main__":

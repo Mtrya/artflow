@@ -1,7 +1,7 @@
 """Launch one Ascend stage from a complete recipe, resuming complete checkpoints.
 
 Run with the prepared environment and data already installed:
-  python -m scripts.pretrain.launch --config configs/hero.toml --stage 256p --nproc_per_node 16
+  python -m scripts.pretrain.launch --config configs/hero.toml --stage 256p --storage-root /external/artflow --nproc_per_node 16
 
 The platform owns environment setup, resource selection and retry policy. This
 launcher owns the single-writer lock, checkpoint preflight and worker lifetime.
@@ -19,6 +19,7 @@ import time
 from src.pretrain.config import load_config, flatten
 from src.pretrain.stage_control import validate_checkpoint, CHECKPOINT_RECORD
 from src.pretrain.train import parse_args
+from src.pretrain.tracking import resume_run_id
 
 
 def resolve_resume(config, stage_name, world_size):
@@ -48,7 +49,6 @@ def resolve_resume(config, stage_name, world_size):
                 candidate,
                 max_steps=config.max_steps,
                 stop_at_step=stage.end_step,
-                require_record=True,
                 scheduler_count=2,
                 use_ema=True,
                 world_size=world_size,
@@ -66,7 +66,6 @@ def resolve_resume(config, stage_name, world_size):
             candidate,
             max_steps=config.max_steps,
             stop_at_step=stage.end_step,
-            require_record=True,
             scheduler_count=2,
             use_ema=True,
             world_size=world_size,
@@ -136,7 +135,7 @@ def main():
     args = parser.parse_args()
     if args.nproc_per_node < 1:
         parser.error("--nproc_per_node must be positive")
-    config = load_config(args.config)
+    config = load_config(args.config, storage_root=args.storage_root)
     resolved = flatten(config, args.stage)
     run = Path(config.paths.output_dir) / resolved["run_name"]
     run.mkdir(parents=True, exist_ok=True)
@@ -156,12 +155,12 @@ def main():
                 max_steps=config.max_steps,
                 stop_at_step=resolved["stop_at_step"],
                 min_step=resolved["stage_start"],
-                require_record=True,
                 scheduler_count=2,
                 use_ema=True,
                 world_size=args.nproc_per_node,
                 device_type="npu",
             )
+            resume_run_id(resume)
             from dataclasses import asdict
 
             if json.loads((resume / "run_config.json").read_text()) != asdict(config):
@@ -184,6 +183,8 @@ def main():
             str(Path(args.config).resolve()),
             "--stage",
             args.stage,
+            "--storage-root",
+            config.paths.storage_root,
         ]
         if resume:
             command += ["--resume", str(resume)]

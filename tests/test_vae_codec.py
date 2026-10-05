@@ -37,3 +37,28 @@ def test_decode_latents_casts_for_vae_and_returns_rgb_images(latent_dtype, vae_d
         assert image.size == (3, 2)
         expected = np.broadcast_to(np.array(rgb, dtype=np.uint8), (2, 3, 3))
         np.testing.assert_array_equal(np.asarray(image), expected)
+
+
+@pytest.mark.parametrize('fault', [None, 'missing', 'channels', 'zero', 'nan'])
+def test_stats_require_explicit_matching_finite_arrays(tmp_path, fault):
+    import json
+    from src.utils.vae_codec import get_vae_stats
+
+    config = dict(z_dim=2, latents_mean=[.25, -.5], latents_std=[2., 4.])
+    if fault == 'missing':
+        del config['latents_mean']
+    elif fault == 'channels':
+        config['z_dim'] = 3
+    elif fault == 'zero':
+        config['latents_std'][1] = 0
+    elif fault == 'nan':
+        config['latents_mean'][0] = float('nan')
+    (tmp_path / 'config.json').write_text(json.dumps(config))
+    if fault:
+        with pytest.raises(ValueError):
+            get_vae_stats(str(tmp_path))
+    else:
+        mean, std = get_vae_stats(str(tmp_path))
+        assert mean.shape == std.shape == (1, 2, 1, 1)
+        assert mean.flatten().tolist() == [.25, -.5]
+        assert std.flatten().tolist() == [2., 4.]

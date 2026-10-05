@@ -2,8 +2,7 @@
 
 This record captures the Ascend execution path,
 resolution-specific bucket plans and their measurements. The recipe is in
-[hero_recipe.md](hero_recipe.md); current operation and recovery are in
-[ascend_pretraining.md](archive/ascend_pretraining.md).
+[hero_recipe.md](hero_recipe.md), including launch and recovery requirements.
 
 ## Measured improvements
 
@@ -84,9 +83,9 @@ Selected plan SHA-256 values:
 - 640p: `71f9599966773ba54e20bac5daf8de8a52c4f60dc9c0305ec9c8dbc8c168b066`
 - 896p: `9cc148738b14f40a6fa34b53843559db5173e936b8275dbe9a681493b3aed824`
 
-Detailed calibration, comparison and tail evidence is archived locally under
-`notes/archive/bucket_qualification_0927*`. Platform artifact locations are in
-`INSPIRE.md`.
+Platform artifact locations and retained measurement files are recorded in
+local `INSPIRE.md`. The measurement scope and selected-plan hashes above are
+the repository record.
 
 A bounded native curriculum then exercised **256p→640p→896p**, using
 diagnostic endpoints 2/16 and stopping at 40 while retaining the 600k scheduler
@@ -117,9 +116,9 @@ stability evidence. The mature-model/fresh-optimizer test is not the actual
 450k/570k continuation and does not justify changing its optimizer recipe.
 
 The prepared production recipe also passed read-only amendment preflight
-against the real 184k checkpoint. The active 256p deployment is unchanged.
-Future-stage activation follows the explicit 450k handoff in
-[Ascend pretraining](archive/ascend_pretraining.md).
+against the real 184k checkpoint without modifying that checkpoint.
+Stage activation follows the strict checkpoint migration and recovery procedure
+in [the recipe](hero_recipe.md#launch-checkpoints-and-resolution-transitions).
 
 ## Recovery and monitoring qualification
 

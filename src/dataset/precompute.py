@@ -86,7 +86,6 @@ def precompute(
     min_aesthetic_score: float = 0.0,
     min_watermark_prob: float = 0.6,
     bbox_field: Optional[str] = None,
-    write_length_metadata: bool = True,
     tokenizer_path: Optional[str] = "Qwen/Qwen3-0.6B",
 ) -> Dataset:
     """
@@ -114,13 +113,6 @@ def precompute(
                     ([x1, y1, x2, y2], Gemini-style). When present, the image is
                     cropped to the box (scaled to actual size) right after fetch,
                     before bucketing. Malformed boxes drop the sample.
-        write_length_metadata: Whether the caller that saves the returned
-                    dataset is expected to persist its companion caption-length
-                    metadata (see ``write_length_metadata`` below).  This
-                    function itself never writes the companion file: the
-                    returned Dataset does not know the directory it will be
-                    saved to, and the companion must describe exactly the rows
-                    that end up on disk.
         tokenizer_path: Tokenizer checkpoint used to tokenize captions for the
                     companion metadata file (local directory or Hugging Face
                     id; loaded offline with ``local_files_only=True``).

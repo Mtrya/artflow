@@ -9,11 +9,12 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, Sampler
 
+from ..utils.prompt_contract import MAX_SEQUENCE_LENGTH
+
+from .length_metadata import RowLengthMetadata
 from .captions import (
     CaptionPolicy,
-    average_caption_probabilities,
     caption_probabilities_from_lengths,
-    sample_caption_index_from_token_counts,
 )
 
 
@@ -26,180 +27,6 @@ def _weighted_index(rng, probabilities) -> int:
         if draw < cumulative:
             return index
     return len(probabilities) - 1
-
-
-def _stationary_probabilities(entry, policy: CaptionPolicy) -> np.ndarray:
-    """Per-caption schedule-averaged probabilities for one dataset.
-
-    Rows are grouped by caption count so the grid computation is done once per
-    group instead of once per row.
-    """
-    offsets = np.asarray(entry.caption_offsets)
-    lengths = np.asarray(entry.prompt_lengths, dtype=np.float64)
-    counts = np.diff(offsets)
-    result = np.zeros(lengths.size, dtype=np.float64)
-    if lengths.size == 0:
-        return result
-    for count in np.unique(counts):
-        rows = np.where(counts == count)[0]
-        if count == 1:
-            result[offsets[rows]] = 1.0
-            continue
-        matrix = np.stack([lengths[offsets[r]:offsets[r + 1]] for r in rows])
-        averaged = average_caption_probabilities(matrix, policy)
-        for position, row_idx in enumerate(rows):
-            result[offsets[row_idx]:offsets[row_idx + 1]] = averaged[position]
-    return result
-from .length_metadata import RowLengthMetadata
-from ..utils.prompt_contract import MAX_SEQUENCE_LENGTH
-
-
-# A bucket plan cannot bound more tokens than the prompt contract retains.
-MAX_RETAINED_LENGTH = MAX_SEQUENCE_LENGTH
-
-
-class ResolutionBucketSampler(Sampler):
-    """Group legacy samples by resolution with optional dataset weighting."""
-
-    def __init__(
-        self,
-        dataset,
-        batch_size: int,
-        num_replicas: int = 1,
-        rank: int = 0,
-        shuffle: bool = True,
-        drop_last: bool = True,
-        dataset_weights: Optional[List[float]] = None,
-    ):
-        self.dataset = dataset
-        self.batch_size = batch_size
-        self.num_replicas = num_replicas
-        self.rank = rank
-        self.shuffle = shuffle
-        self.drop_last = drop_last
-        self.dataset_weights = dataset_weights
-
-        self._all_bucket_ids = np.asarray(self._get_column("resolution_bucket_id"))
-        self._rank_indices = np.arange(len(self.dataset))[self.rank :: self.num_replicas]
-
-        if self.dataset_weights is not None:
-            self._all_dataset_ids = np.asarray(self._get_column("dataset_id"))
-            self._dataset_indices = self._build_dataset_indices()
-
-    def _get_column(self, column_name: str) -> List:
-        try:
-            return self.dataset[column_name]
-        except (KeyError, TypeError):
-            return [self.dataset[i][column_name] for i in range(len(self.dataset))]
-
-    def _build_dataset_indices(self) -> Dict[int, np.ndarray]:
-        rank_dataset_ids = self._all_dataset_ids[self._rank_indices]
-        unique_ids = np.unique(rank_dataset_ids)
-        return {
-            int(ds_id): self._rank_indices[rank_dataset_ids == ds_id]
-            for ds_id in unique_ids
-        }
-
-    def _build_batches_for_dataset(self, dataset_id: int) -> deque:
-        indices = self._dataset_indices[dataset_id].copy()
-        if self.shuffle:
-            np.random.shuffle(indices)
-
-        bucket_ids = self._all_bucket_ids[indices]
-        batches = []
-        for bucket_id in np.unique(bucket_ids):
-            bucket_indices = indices[bucket_ids == bucket_id]
-            for start in range(0, len(bucket_indices), self.batch_size):
-                batch = bucket_indices[start : start + self.batch_size].tolist()
-                if not self.drop_last or len(batch) == self.batch_size:
-                    batches.append(batch)
-
-        if self.shuffle:
-            random.shuffle(batches)
-        return deque(batches)
-
-    def __iter__(self):
-        if self.dataset_weights is not None:
-            yield from self._iter_weighted()
-        else:
-            yield from self._iter_simple()
-
-    def _iter_simple(self):
-        indices = self._rank_indices.copy()
-        if self.shuffle:
-            np.random.shuffle(indices)
-
-        bucket_ids = self._all_bucket_ids[indices]
-        all_batches = []
-        for bucket_id in np.unique(bucket_ids):
-            bucket_indices = indices[bucket_ids == bucket_id]
-            for start in range(0, len(bucket_indices), self.batch_size):
-                batch = bucket_indices[start : start + self.batch_size].tolist()
-                if not self.drop_last or len(batch) == self.batch_size:
-                    all_batches.append(batch)
-
-        if self.shuffle:
-            random.shuffle(all_batches)
-        yield from all_batches
-
-    def _iter_weighted(self):
-        dataset_batches: Dict[int, deque] = {
-            ds_id: self._build_batches_for_dataset(ds_id)
-            for ds_id in self._dataset_indices
-        }
-        active_datasets = {
-            ds_id: batches for ds_id, batches in dataset_batches.items() if batches
-        }
-        if not active_datasets:
-            return
-
-        total_batches = sum(len(batches) for batches in dataset_batches.values())
-        yielded = 0
-        while yielded < total_batches:
-            active_ids = list(active_datasets)
-            active_weights = [self.dataset_weights[ds_id] for ds_id in active_ids]
-            total_weight = sum(active_weights)
-            if total_weight <= 0:
-                break
-            chosen_id = random.choices(active_ids, weights=active_weights, k=1)[0]
-            if not active_datasets[chosen_id]:
-                rebuilt = self._build_batches_for_dataset(chosen_id)
-                if not rebuilt:
-                    del active_datasets[chosen_id]
-                    continue
-                active_datasets[chosen_id] = rebuilt
-            yield active_datasets[chosen_id].popleft()
-            yielded += 1
-
-    def __len__(self):
-        if self.dataset_weights is not None:
-            rank_bucket_ids = self._all_bucket_ids[self._rank_indices]
-            rank_dataset_ids = self._all_dataset_ids[self._rank_indices]
-            max_bucket = int(rank_bucket_ids.max()) + 1 if len(rank_bucket_ids) else 1
-            keys = rank_dataset_ids * max_bucket + rank_bucket_ids
-            _, counts = np.unique(keys, return_counts=True)
-            return int(np.sum(counts // self.batch_size))
-
-        bucket_ids = self._all_bucket_ids[self._rank_indices]
-        _, counts = np.unique(bucket_ids, return_counts=True)
-        return int(np.sum(counts // self.batch_size))
-
-
-def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
-    """Collate legacy precomputed samples."""
-    latents = [sample["latents"] for sample in batch]
-    captions = [sample["captions"] for sample in batch]
-    bucket_ids = [sample["resolution_bucket_id"] for sample in batch]
-    result = {
-        "latents": torch.stack(latents, dim=0),
-        "captions": captions,
-        "resolution_bucket_ids": torch.tensor(bucket_ids, dtype=torch.long),
-    }
-    if "dataset_id" in batch[0]:
-        result["dataset_ids"] = torch.tensor(
-            [sample["dataset_id"] for sample in batch], dtype=torch.long
-        )
-    return result
 
 
 @dataclass(frozen=True)
@@ -248,10 +75,6 @@ class BucketPlan:
     def by_resolution(self) -> Mapping[int, Tuple[LenBucket, ...]]:
         return self._by_resolution
 
-    @property
-    def buckets(self) -> Mapping[int, Tuple[LenBucket, ...]]:
-        return self._by_resolution
-
     def __getitem__(self, resolution_id: int) -> Tuple[LenBucket, ...]:
         return self.buckets_for(resolution_id)
 
@@ -263,9 +86,9 @@ class BucketPlan:
 
     def bucket_for(self, resolution_id: int, retained_length: int) -> Tuple[int, LenBucket]:
         retained_length = int(retained_length)
-        if retained_length < 0 or retained_length > MAX_RETAINED_LENGTH:
+        if retained_length < 0 or retained_length > MAX_SEQUENCE_LENGTH:
             raise ValueError(
-                f"retained length must be in [0, {MAX_RETAINED_LENGTH}], got {retained_length}"
+                f"retained length must be in [0, {MAX_SEQUENCE_LENGTH}], got {retained_length}"
             )
         buckets = self.buckets_for(resolution_id)
         for index, bucket in enumerate(buckets):
@@ -281,6 +104,33 @@ class BucketPlan:
     ) -> "BucketPlan":
         buckets = tuple(buckets)
         return cls({int(resolution_id): buckets for resolution_id in resolution_ids})
+
+
+def load_bucket_plan(path, resolution_ids=()) -> BucketPlan:
+    """Read the canonical JSON file: resolution IDs map to named bucket objects."""
+    import json
+    from pathlib import Path
+
+    raw = json.loads(Path(path).read_text())
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError("bucket plan must be a nonempty object keyed by resolution ID")
+    by_resolution = {}
+    for resolution, buckets in raw.items():
+        if not resolution.isdecimal() or str(int(resolution)) != resolution:
+            raise ValueError(f"invalid resolution ID: {resolution!r}")
+        if not isinstance(buckets, list) or not buckets:
+            raise ValueError(f"resolution {resolution} needs a nonempty bucket list")
+        parsed = []
+        for bucket in buckets:
+            if not isinstance(bucket, dict) or set(bucket) != {"max_length", "batch_size"}:
+                raise ValueError("each bucket requires max_length and batch_size")
+            if any(type(value) is not int for value in bucket.values()):
+                raise ValueError("bucket bounds and batch sizes must be integers")
+            parsed.append(LenBucket(**bucket))
+        by_resolution[int(resolution)] = parsed
+    if missing := set(map(int, resolution_ids)).difference(by_resolution):
+        raise ValueError(f"bucket plan is missing metadata resolution IDs: {sorted(missing)}")
+    return BucketPlan(by_resolution)
 
 
 @dataclass(frozen=True)
@@ -308,20 +158,10 @@ class RowRef:
             self.batch_id,
         )
 
-    @property
-    def length(self) -> int:
-        return self.retained_length
-
-    @property
-    def resolution_bucket_id(self) -> int:
-        return self.resolution_id
-
-    @property
-    def bucket_index(self) -> int:
-        return self.len_bucket_idx
-
     @classmethod
     def from_state(cls, value: Sequence[int]) -> "RowRef":
+        if len(value) != 8:
+            raise ValueError("stored RowRef must contain all eight fields")
         return cls(*(int(field) for field in value))
 
 
@@ -330,14 +170,9 @@ class RowDescriptorDataset(Dataset):
 
     def __init__(
         self,
-        entry_datasets: Optional[Sequence[Any]] = None,
+        entry_datasets: Sequence[Any],
         metadata: Optional[Sequence[RowLengthMetadata]] = None,
-        *,
-        datasets: Optional[Sequence[Any]] = None,
     ):
-        if entry_datasets is not None and datasets is not None:
-            raise ValueError("pass entry_datasets or datasets, not both")
-        entry_datasets = datasets if entry_datasets is None else entry_datasets
         if not entry_datasets:
             raise ValueError("RowDescriptorDataset requires at least one entry dataset")
         self.entry_datasets = list(entry_datasets)
@@ -375,11 +210,8 @@ class RowDescriptorDataset(Dataset):
             "row_idx": int(row_ref.row_idx),
             "caption_idx": int(row_ref.caption_idx),
             "resolution_bucket_id": resolution_id,
-            "resolution_id": resolution_id,
             "retained_length": int(row_ref.retained_length),
-            "length": int(row_ref.retained_length),
             "len_bucket_idx": int(row_ref.len_bucket_idx),
-            "length_bucket_idx": int(row_ref.len_bucket_idx),
             "bucket_hi": int(row_ref.bucket_hi),
             "batch_id": int(row_ref.batch_id),
         }
@@ -399,23 +231,17 @@ class RowLengthQueueBatchSampler(Sampler[List[RowRef]]):
 
     def __init__(
         self,
-        metadata: Optional[Sequence[RowLengthMetadata]] = None,
-        bucket_plan: Optional[BucketPlan] = None,
+        metadata: Sequence[RowLengthMetadata],
+        bucket_plan: BucketPlan,
         dataset_weights: Optional[Sequence[float]] = None,
         num_replicas: int = 1,
         rank: int = 0,
         shuffle: bool = True,
         seed: int = 0,
         initial_stage: float = 0.5,
-        caption_policy: Optional[CaptionPolicy] = None,
         *,
-        entry_metadata: Optional[Sequence[RowLengthMetadata]] = None,
+        caption_policy: CaptionPolicy,
     ):
-        if metadata is not None and entry_metadata is not None:
-            raise ValueError("pass metadata or entry_metadata, not both")
-        metadata = entry_metadata if metadata is None else metadata
-        if metadata is None:
-            raise ValueError("metadata is required")
         if isinstance(metadata, RowLengthMetadata):
             metadata = [metadata]
         if not metadata:
@@ -432,15 +258,7 @@ class RowLengthQueueBatchSampler(Sampler[List[RowRef]]):
         self.shuffle = bool(shuffle)
         self._rng = random.Random(seed)
         self._stage = min(max(float(initial_stage), 0.0), 1.0)
-        self.caption_policy = caption_policy or CaptionPolicy()
-        # The stationary comparison arm holds exposure fixed by drawing from
-        # each row's schedule-averaged probabilities throughout training.  They
-        # are computed once per dataset, grouped by caption count so the
-        # computation is vectorised rather than per row.
-        self._stationary_probabilities: Optional[List[np.ndarray]] = None
-        if self.caption_policy.kind == "beta" and self.caption_policy.schedule == "stationary":
-            self._stationary_probabilities = [
-                _stationary_probabilities(entry, self.caption_policy) for entry in self.metadata]
+        self.caption_policy = caption_policy
 
         if dataset_weights is None:
             dataset_weights = [1.0] * len(self.metadata)
@@ -508,23 +326,13 @@ class RowLengthQueueBatchSampler(Sampler[List[RowRef]]):
         row_idx = self._next_row(dataset_id)
         entry = self.metadata[dataset_id]
         caption_slice = entry.row_slice(row_idx)
-        if self.caption_policy.kind == "beta":
-            retained = entry.prompt_lengths[caption_slice]
-            if self._stationary_probabilities is not None:
-                probabilities = self._stationary_probabilities[dataset_id][caption_slice]
-            else:
-                probabilities = caption_probabilities_from_lengths(
-                    retained.tolist(),
-                    self.caption_policy.beta(self._stage),
-                    self.caption_policy.short_reserve,
-                    self.caption_policy.short_threshold,
-                )
-            caption_idx = _weighted_index(self._rng, probabilities)
-        else:
-            lengths = entry.prompt_lengths[caption_slice]
-            caption_idx = sample_caption_index_from_token_counts(
-                lengths.tolist(), stage=self._stage, rng=self._rng
-            )
+        probabilities = caption_probabilities_from_lengths(
+            entry.prompt_lengths[caption_slice].tolist(),
+            self.caption_policy.beta(self._stage),
+            self.caption_policy.short_reserve,
+            self.caption_policy.short_threshold,
+        )
+        caption_idx = _weighted_index(self._rng, probabilities)
         flat_caption_idx = caption_slice.start + caption_idx
         resolution_id = int(entry.resolution_ids[row_idx])
         retained_length = int(entry.prompt_lengths[flat_caption_idx])
@@ -642,6 +450,10 @@ class RowLengthQueueBatchSampler(Sampler[List[RowRef]]):
         """
         if int(state.get("version", -1)) != self.STATE_VERSION:
             raise ValueError("unsupported RowLengthQueueBatchSampler state version")
+        required = {"version", "stage", "rng_state", "cycles", "cursors", "queues",
+                    "ready_batches", "inflight", "replay", "next_batch_id"}
+        if missing := required.difference(state):
+            raise ValueError(f"sampler state is missing fields: {sorted(missing)}")
         cycles = state["cycles"]
         cursors = state["cursors"]
         if len(cursors) != len(cycles) or len(cycles) > len(self._cycles):
@@ -659,9 +471,9 @@ class RowLengthQueueBatchSampler(Sampler[List[RowRef]]):
             normalized_key = (int(key[0]), int(key[1]))
             self._queues[normalized_key].extend(RowRef.from_state(ref) for ref in refs)
 
-        inflight = self._deserialize_batches(state.get("inflight", []))
-        replay = self._deserialize_batches(state.get("replay", []))
-        ready = self._deserialize_batches(state.get("ready_batches", []))
+        inflight = self._deserialize_batches(state["inflight"])
+        replay = self._deserialize_batches(state["replay"])
+        ready = self._deserialize_batches(state["ready_batches"])
         self._replay = deque((*inflight, *replay, *ready))
         self._ready_batches = deque()
         self._inflight = {}
@@ -683,19 +495,18 @@ def row_length_collate_fn(
     if not batch:
         raise ValueError("row_length_collate_fn requires a non-empty batch")
 
-    def field(sample: Dict[str, Any], name: str, *aliases: str) -> Any:
-        for candidate in (name, *aliases):
-            if candidate in sample:
-                return sample[candidate]
-        raise ValueError(f"row-level sample is missing field {name!r}")
+    def field(sample: Dict[str, Any], name: str) -> Any:
+        if name not in sample:
+            raise ValueError(f"row-level sample is missing field {name!r}")
+        return sample[name]
 
     resolution_ids = [
-        int(field(sample, "resolution_bucket_id", "resolution_id")) for sample in batch
+        int(field(sample, "resolution_bucket_id")) for sample in batch
     ]
     len_bucket_ids = [
-        int(field(sample, "len_bucket_idx", "length_bucket_idx")) for sample in batch
+        int(field(sample, "len_bucket_idx")) for sample in batch
     ]
-    bucket_his = [int(field(sample, "bucket_hi", "hi")) for sample in batch]
+    bucket_his = [int(field(sample, "bucket_hi")) for sample in batch]
     batch_ids = [int(field(sample, "batch_id")) for sample in batch]
     # Fail here instead of repairing: every consumer downstream assumes a
     # micro-batch is exactly one (resolution, length bucket) padded to
@@ -715,11 +526,11 @@ def row_length_collate_fn(
     latent_shape = tuple(latents[0].shape)
     if any(tuple(latent.shape) != latent_shape for latent in latents[1:]):
         raise ValueError("mixed latent shapes in one row-length batch")
-    captions = [field(sample, "captions", "caption") for sample in batch]
+    captions = [field(sample, "captions") for sample in batch]
     if not all(isinstance(caption, str) for caption in captions):
         raise ValueError("row-level captions must be strings")
     retained_lengths = [
-        int(field(sample, "retained_length", "length")) for sample in batch
+        int(field(sample, "retained_length")) for sample in batch
     ]
     if any(length < 1 or length > bucket_his[0] for length in retained_lengths):
         raise ValueError(
@@ -730,8 +541,8 @@ def row_length_collate_fn(
     if any(batch_id < 0 for batch_id in batch_ids):
         raise ValueError("batch IDs must be non-negative")
 
-    dataset_ids = [int(field(sample, "dataset_id", "entry_id")) for sample in batch]
-    row_indices = [int(field(sample, "row_idx", "row_index")) for sample in batch]
+    dataset_ids = [int(field(sample, "dataset_id")) for sample in batch]
+    row_indices = [int(field(sample, "row_idx")) for sample in batch]
 
     if return_numpy:
         return {
@@ -741,7 +552,7 @@ def row_length_collate_fn(
             "row_indices": np.asarray(row_indices, dtype=np.int64),
             "row_positions": list(zip(dataset_ids, row_indices)),
             "caption_indices": np.asarray(
-                [int(field(sample, "caption_idx", "caption_index")) for sample in batch],
+                [int(field(sample, "caption_idx")) for sample in batch],
                 dtype=np.int64,
             ),
             "resolution_bucket_ids": np.asarray(resolution_ids, dtype=np.int64),
@@ -763,7 +574,7 @@ def row_length_collate_fn(
         # rest of the batch.
         "row_positions": list(zip(dataset_ids, row_indices)),
         "caption_indices": torch.tensor(
-            [int(field(sample, "caption_idx", "caption_index")) for sample in batch],
+            [int(field(sample, "caption_idx")) for sample in batch],
             dtype=torch.long,
         ),
         "resolution_bucket_ids": torch.tensor(resolution_ids, dtype=torch.long),

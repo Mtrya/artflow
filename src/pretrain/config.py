@@ -144,6 +144,24 @@ class TrainConfig:
         return self.stages[index - 1].end_step if index else 0
 
 
+def stage_caption_policy(config: TrainConfig, stage_name: str):
+    """Use the trainer's global-step curriculum for this stage's exposure estimate."""
+    from ..dataset.captions import CaptionPolicy
+
+    data = config.data
+    policy = CaptionPolicy(
+        beta_start=data.caption_beta_start, beta_end=data.caption_beta_end,
+        short_reserve=data.caption_short_reserve,
+        short_threshold=data.caption_short_threshold,
+    )
+    interval = tuple(
+        data.curriculum_start + (data.curriculum_end - data.curriculum_start)
+        * step / config.max_steps
+        for step in (config.stage_start(stage_name), config.stage(stage_name).end_step)
+    )
+    return policy, interval
+
+
 def _decode(kind, value, location):
     if is_dataclass(kind):
         if not isinstance(value, dict):
@@ -180,8 +198,20 @@ def _decode(kind, value, location):
     return value
 
 
-def load_config(path: str | Path) -> TrainConfig:
-    """Read exactly one complete run file; paths are resolved from that file."""
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+
+
+def repository_config_path(value: str) -> Path:
+    """Resolve tracked configuration assets from the repository, never the CWD."""
+    path = Path(value)
+    resolved = (REPOSITORY_ROOT / path).resolve()
+    if path.is_absolute() or not resolved.is_relative_to(REPOSITORY_ROOT / "configs"):
+        raise ValueError(f"tracked asset must be repository-relative under configs/: {value}")
+    return resolved
+
+
+def load_config(path: str | Path, *, storage_root: str | Path) -> TrainConfig:
+    """Resolve heavy artifacts under the explicit root and tracked assets in configs/."""
     if not isinstance(path, (str, Path)):
         raise ValueError(
             "exactly one config path is required; config layering is unsupported"
@@ -189,25 +219,38 @@ def load_config(path: str | Path) -> TrainConfig:
     path = Path(path).resolve()
     try:
         with path.open("rb") as handle:
-            config = _decode(TrainConfig, tomllib.load(handle), str(path))
+            payload = tomllib.load(handle)
+            if "storage_root" in payload.get("paths", {}):
+                raise ValueError("supply storage_root with --storage-root, not in the recipe")
+            payload.setdefault("paths", {})["storage_root"] = str(Path(storage_root).resolve())
+            config = _decode(TrainConfig, payload, str(path))
     except OSError as exc:
         raise ValueError(f"cannot read config {path}: {exc}") from exc
     _validate(config)
     # Path resolution changes locations only, never fills in missing settings.
     payload = asdict(config)
-    storage = (path.parent / config.paths.storage_root).resolve()
+    storage = Path(config.paths.storage_root)
+    if storage.is_relative_to(REPOSITORY_ROOT):
+        raise ValueError("storage root must be external to the repository")
+
+    def heavy_path(value):
+        resolved = storage / value
+        if Path(value).is_absolute() or ".." in Path(value).parts:
+            raise ValueError(f"heavy artifact must be relative to storage root: {value}")
+        return str(resolved)
+
     payload["paths"]["storage_root"] = str(storage)
     for key in ("vae", "output_dir"):
-        payload["paths"][key] = str(storage / payload["paths"][key])
-    payload["text_encoder"]["path"] = str(storage / config.text_encoder.path)
+        payload["paths"][key] = heavy_path(payload["paths"][key])
+    payload["text_encoder"]["path"] = heavy_path(config.text_encoder.path)
     payload["eval"]["prompts_file"] = str(
-        (path.parent / config.eval.prompts_file).resolve()
+        repository_config_path(config.eval.prompts_file)
     )
     for stage in payload["stages"]:
-        for key in ("bucket_plan", "eval_dataset_path"):
-            stage[key] = str(storage / stage[key])
+        stage["bucket_plan"] = str(repository_config_path(stage["bucket_plan"]))
+        stage["eval_dataset_path"] = heavy_path(stage["eval_dataset_path"])
         for dataset in stage["datasets"]:
-            dataset["path"] = str(storage / dataset["path"])
+            dataset["path"] = heavy_path(dataset["path"])
     return _decode(TrainConfig, payload, str(path))
 
 

@@ -99,7 +99,7 @@ the actual hero reaches each new resolution.
 
 Review the fixed bilingual panel, live/EMA losses and internal stability
 telemetry at the recipe's cadence. Follow the evidence-based review and
-recovery rules in [Ascend pretraining](archive/ascend_pretraining.md). A concept
+recovery rules in [the training recipe](hero_recipe.md). A concept
 benchmark ran at 200k and 480k and is now retired; run a final capability
 benchmark at 600k (form to be decided) for the Stage-6 SFT go/no-go.
 
@@ -208,7 +208,7 @@ costs before deployment.
 ## Current risks
 
 - Persistent internal scale growth: follow the live/EMA, fixed-panel and
-  checkpoint evidence in [Ascend pretraining](archive/ascend_pretraining.md).
+  checkpoint evidence in [the training recipe](hero_recipe.md).
 - Resolution transitions: qualify each plan and preserve complete endpoints.
 - Caption/judge provider changes: cache responses and record exact request
   identity; measure limits again on the intended workload.

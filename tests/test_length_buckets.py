@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from src.dataset.length_buckets import dump_plan, optimal_boundaries
-from src.pretrain.train import load_bucket_plan
+from src.dataset.sampler import load_bucket_plan
 
 
 @pytest.mark.parametrize('seed', [0, 1, 7])
@@ -38,3 +38,21 @@ def test_written_plan_preserves_bucket_assignments_in_trainer(tmp_path):
                                              (1, 64, 64, 2), (2, 16, 16, 6), (2, 17, 64, 3)]:
         _, bucket = plan.bucket_for(resolution, length)
         assert (bucket.max_length, bucket.batch_size) == (bound, batch)
+
+
+@pytest.mark.parametrize('payload', [
+    {"by_resolution": {"1": [{"max_length": 8, "batch_size": 2}]}},
+    {"1": [[8, 2]]}, {"1": [{"max_length": 8}]},
+    {"1": [{"max_length": 8.5, "batch_size": 2}]},
+])
+def test_plan_rejects_noncanonical_file_formats(tmp_path, payload):
+    import json
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError):
+        load_bucket_plan(path)
+
+
+def test_inline_json_is_not_a_plan_file():
+    with pytest.raises(FileNotFoundError):
+        load_bucket_plan('{"1": [{"max_length": 8, "batch_size": 2}]}')

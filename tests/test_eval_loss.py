@@ -39,6 +39,7 @@ def test_loss_matches_analytic_sample_mean_across_bands_and_shapes(tmp_path, mon
     monkeypatch.setattr(eval_loss, 'encode_text', encode_errors)
     probe = eval_loss.EvalLossProbe(
         dataset_path=dataset_path, text_encoder=None, tokenizer=None,
+        metadata=RowLengthMetadata.load(sidecar_path(dataset_path)),
         pooling=False, exit_layer=None, vae_mean=torch.zeros(2, 1, 1),
         vae_std=torch.ones(2, 1, 1), num_samples=8, batch_size=batch_size,
         device=torch.device('cpu'),
@@ -49,3 +50,18 @@ def test_loss_matches_analytic_sample_mean_across_bands_and_shapes(tmp_path, mon
     assert metrics['eval/loss/band_513_1024'] == pytest.approx(16, rel=1e-6)
     for tag in ('015', '040', '065', '090'):
         assert metrics[f'eval/loss_t{tag}'] == pytest.approx(76 / 7, rel=1e-6)
+
+
+@pytest.mark.parametrize('fault', ['missing_contract', 'caption_count', 'empty'])
+def test_invalid_metadata_cannot_change_probe_caption_selection(tmp_path, fault):
+    from src.dataset.length_metadata import prompt_metadata_contract
+    captions = [] if fault == 'empty' else ['2', '4']
+    Dataset.from_dict({'latents': [np.zeros((2, 2, 2), dtype=np.float32)],
+                       'captions': [captions], 'resolution_bucket_id': [1]}).save_to_disk(str(tmp_path))
+    lengths = [] if fault == 'empty' else [100]
+    metadata = RowLengthMetadata(np.array([1]), np.array([0, len(lengths)]),
+        np.array(lengths, dtype=np.int64),
+        metadata_info=None if fault == 'missing_contract' else prompt_metadata_contract(1))
+    with pytest.raises(ValueError):
+        eval_loss.EvalLossProbe(str(tmp_path), None, None, False, None,
+            torch.zeros(2), torch.ones(2), metadata, device=torch.device('cpu'))
