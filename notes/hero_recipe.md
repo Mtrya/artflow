@@ -1,6 +1,6 @@
 # Ascend hero recipe
 
-Updated September 27, 2026. The complete runnable recipe is
+The complete runnable recipe is
 [`configs/hero.toml`](../configs/hero.toml). It explicitly specifies every
 training tunable for all three resolution stages and rejects missing or
 unknown fields. Stage selection and checkpoint resume are operations.
@@ -62,7 +62,7 @@ first update and are superseded. Full-workload results and limits are in
 
 ## Data additions for the later resolutions
 
-The September 27 amendments address full-body people and underexposed world
+These amendments address full-body people and underexposed world
 content. The running 256p mixture stays fixed.
 
 | Source | Current eligible rows / change | 640p weight | 896p weight |

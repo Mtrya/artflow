@@ -60,8 +60,9 @@ swanlog
 !/bucket_plans/ascend/hero-*-k20.json
 !/bucket_plans/ascend/*.report.md
 
-# Local cluster job wrappers and exploratory analysis are retained on disk,
-# not shipped as supported launch tooling. Repeatable launchers live in scripts/.
+# Scratch space for local job wrappers and exploratory probes. One-off code is
+# deleted once its evidence is extracted into notes; repeatable launchers and
+# tools are promoted into scripts/. Nothing here is supported or shipped.
 /jobs/*
 
 # Credentials and machine-local operational state must never be published.

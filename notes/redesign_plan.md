@@ -1,6 +1,6 @@
 # ArtFlow redesign plan
 
-Updated September 27, 2026. ArtFlow is a bilingual text-to-image flow-matching
+ArtFlow is a bilingual text-to-image flow-matching
 DiT, with a 532M-parameter hero and an 8-step student as the release target.
 **Pretraining and post-training target Ascend on `main`.** The hero is in its
 256p stage; post-training preparation proceeds alongside it.
@@ -12,8 +12,8 @@ DiT, with a 532M-parameter hero and an 8-step student as the release target.
 - [Pretraining infrastructure](infra_pretrain.md): measured execution gains and
   qualification limits.
 - [Dataset plan](dataset_plan.md): domains, caption contract and data additions.
-- [Post-training preflight](posttrain_preflight.md): reward implementation,
-  judge/scorer evidence, throughput accounting and remaining qualification.
+- [Post-training preflight](posttrain_preflight.md): judge/scorer evidence,
+  throughput accounting, reward-pipeline requirements and qualification.
 
 Platform accounts, images, storage roots, secrets and job submission details
 live in the machine-local `INSPIRE.md`. Completed experiment records with
@@ -32,7 +32,7 @@ The living notes contain the evidence needed to act on the current design.
 | D6 | Resolution | Variable-aspect 256p → 640p → 896p; 75:20:5 of optimizer updates, ending at 450k / 570k / 600k. |
 | D7 | Positions | Centered image-grid RoPE; text pinned to a fixed diagonal. Progressive training supplies resolution transfer. |
 | D8 | Platform account | Account-selected Inspire project, configured in `INSPIRE.md`. |
-| D9 | Training hardware | Ascend for both pretraining and post-training; qualify each workload on its actual allocation. Post-training target selected September 27. |
+| D9 | Training hardware | Ascend for both pretraining and post-training; qualify each workload on its actual allocation. |
 | D10 | Captioning | API-based VLM captioning with cached responses and recorded model/prompt provenance. |
 | D11 | Modulation | Independent image/text and attention/MLP modulation in the double-stream block; shared attention/MLP modulation within each single-stream block. |
 | D12 | Optimizer | Chunked Muon with original scaling, LR 0.02 and decay 0.0015; auxiliary AdamW LR 1e-4, ordinary decay 0.01 and conditioning-matrix decay 0.4. Full settings in [hero recipe](hero_recipe.md). |
@@ -88,7 +88,7 @@ Execute [the complete hero recipe](hero_recipe.md) on Ascend. The continuous
 time and NPU-hours throughout training.
 
 All three plans target 16×910B2C, with accumulation **1/3/4**. The 640p/896p
-plans use the settled September 27 mixtures and measured memory-sized
+plans use the settled mixtures and measured memory-sized
 micro-batches 5–12 / 3–6; native throughput was 173.47 / 83.90 samples/s.
 All 280 candidate aspect/length/batch tail cases passed. Measurement scope and
 transition/recovery evidence are in [the infrastructure record](infra_pretrain.md).
@@ -124,10 +124,10 @@ The shared VLM judge remains a remote API; place local reward scorers according
 to measured support, memory and throughput on the Ascend allocation. CPU
 weight-loading evidence is recorded in [preflight](posttrain_preflight.md).
 
-The source already contains DMD, joint-loss, NFT and asynchronous reward
-components. Complete the training orchestration and qualify the real workload:
-rollout sampling, VAE decode, fake-score/GAN backward passes, distributed
-updates, checkpoint/resume, and reward failure handling. Reuse the qualified
+Write the DMD, joint-loss, NFT and reward components per the method notes in
+`literature/`, then qualify the real workload: rollout sampling, VAE decode,
+fake-score/GAN backward passes, distributed updates, checkpoint/resume, and
+reward failure handling. Reuse the qualified
 Ascend attention, normalization and launch mechanisms where applicable.
 
 Embed one measurement pass in this bring-up, covering device memory and time
@@ -187,7 +187,7 @@ measured Ascend costs.
 
 Rewrite the standalone generation pipeline and demo **after all model training
 is complete**, using finalized checkpoint metadata, text conditioning and
-sampling behavior. This timing is the September 27 user decision.
+sampling behavior.
 
 Rename the repository and model to **`inko`** before publication. Update
 imports, configs, comments, documentation, model links and demo metadata;

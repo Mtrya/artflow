@@ -1,6 +1,6 @@
 # Ascend pretraining infrastructure
 
-Updated September 27, 2026. This record captures the Ascend execution path,
+This record captures the Ascend execution path,
 resolution-specific bucket plans and their measurements. The recipe is in
 [hero_recipe.md](hero_recipe.md); current operation and recovery are in
 [ascend_pretraining.md](archive/ascend_pretraining.md).
@@ -32,7 +32,7 @@ Real-workload and padded 2,048-token tail probes peaked at 52.61 and 49.10 GiB
 allocated. Native RMSNorm/SwiGLU and launch policies are settled mechanisms
 in code. The later-resolution measurements are recorded below.
 
-## Later-resolution plans — September 27
+## Later-resolution plans
 
 The final 640p/896p mixtures contain 1,304,540/794,599 eligible rows across
 17/14 sources. All source caption sidecars passed dataset validation, and all
