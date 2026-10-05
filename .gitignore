@@ -16,6 +16,8 @@ settings*json
 !README.md
 !AGENTS.md
 !notes/*.md
+!SKILL.md
+!/.agents/rule-examples.md
 /notes/archive/*.md
 test*
 
