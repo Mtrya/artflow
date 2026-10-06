@@ -194,6 +194,15 @@ identities and file hashes. Model, optimizer, scheduler, EMA, sampler and RNG
 artifacts remain byte-identical. It publishes the destination only after all
 copies and metadata checks pass. The original remains untouched.
 
+When source prompt or bucket files have been removed from their original
+locations, pass `--source-assets RECORD.json` to the migration command.
+The record maps each original absolute path to `{"text": "...", "sha256": "..."}`.
+The migration verifies those archived bytes and uses them to check the target
+prompts and completed-stage plans. A supplied record must contain every source
+asset needed for comparison; it never falls back to another source location.
+The record's path and hash enter the migration provenance. The trainer only
+reads the migrated recipe and repository config files.
+
 This metadata migration does not adapt saved
 sampler cycles or queued row IDs to filtered/replaced datasets. At a mid-stage
 restart such as 480k, that requires a separate explicit sampler-state decision;

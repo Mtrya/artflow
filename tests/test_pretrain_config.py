@@ -136,8 +136,9 @@ def test_resume_never_uses_parent_identity_or_hides_corruption(tmp_path):
         tracker_init_kwargs(checkpoint, "another-project", new_experiment=True)
 
 
+@pytest.mark.parametrize("archive_source_assets", [False, True])
 def test_migration_rebrands_metadata_preserves_training_state_and_records_origin(
-    tmp_path, recipe, monkeypatch, capsys
+    tmp_path, recipe, monkeypatch, capsys, archive_source_assets
 ):
     old = asdict(recipe)
     old["telemetry"]["swanlab_project"] = "original-project"
@@ -295,6 +296,60 @@ def test_migration_rebrands_metadata_preserves_training_state_and_records_origin
             step=15,
             active_bucket=json.loads((source / "bucket_plan.json").read_text()),
         )
+
+    if archive_source_assets:
+        import hashlib
+
+        old_prompt.write_bytes(Path(recipe.eval.prompts_file).read_bytes())
+        paths = [old_prompt] + [Path(s["bucket_plan"]) for s in old["stages"]]
+        saved = {
+            str(p): {
+                "text": p.read_text(),
+                "sha256": hashlib.sha256(p.read_bytes()).hexdigest(),
+            }
+            for p in paths
+        }
+        archive = tmp_path / "source-assets.json"
+        archive.write_text(json.dumps(saved))
+        for p in paths:
+            p.unlink()
+        restored = tmp_path / "from-archive" / source.name
+        with pytest.raises(FileNotFoundError):
+            migration.migrate(
+                source,
+                restored,
+                "input.toml",
+                storage_root=tmp_path,
+                reason="Import",
+                source_run_id="continuing-run",
+            )
+        report = migration.migrate(
+            source,
+            restored,
+            "input.toml",
+            storage_root=tmp_path,
+            reason="Import with archived config bytes",
+            source_run_id="continuing-run",
+            source_assets=archive,
+        )
+        assert report["source_assets"]["path"] == str(archive)
+        assert all((restored / name).read_bytes() == before[name] for name in artifacts)
+        assert {p.name: p.read_bytes() for p in source.iterdir()} == before
+        missing = copy.deepcopy(saved)
+        del missing[str(old_prompt)]
+        archive.write_text(json.dumps(missing))
+        with pytest.raises(ValueError, match="record is missing"):
+            migration.check_recipe_change(
+                old,
+                asdict(recipe),
+                step=15,
+                active_bucket=json.loads((source / "bucket_plan.json").read_text()),
+                archived_assets=migration.load_source_assets(archive),
+            )
+        saved[str(old_prompt)]["text"] = "corrupted archive"
+        archive.write_text(json.dumps(saved))
+        with pytest.raises(ValueError, match="hash mismatch"):
+            migration.load_source_assets(archive)
 
 
 def test_recipe_migration_locks_current_entries_but_allows_next_stage_at_boundary(

@@ -36,7 +36,35 @@ def sha256(path):
         return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
-def check_recipe_change(old, new, *, step, active_bucket):
+def load_source_assets(path):
+    """Read an explicitly supplied archive of source config bytes."""
+    assets = json.loads(Path(path).read_text())
+    if not isinstance(assets, dict):
+        raise TypeError("source assets must map original paths to text and sha256")
+    result = {}
+    for name, entry in assets.items():
+        if (
+            not isinstance(entry, dict)
+            or set(entry) != {"text", "sha256"}
+            or not isinstance(entry["text"], str)
+        ):
+            raise ValueError(f"invalid source asset: {name}")
+        content = entry["text"].encode()
+        if hashlib.sha256(content).hexdigest() != entry["sha256"]:
+            raise ValueError(f"source asset hash mismatch: {name}")
+        result[name] = content
+    return result
+
+
+def read_source_asset(path, archived_assets):
+    if archived_assets is None:
+        return Path(path).read_bytes()
+    if path not in archived_assets:
+        raise ValueError(f"source assets record is missing: {path}")
+    return archived_assets[path]
+
+
+def check_recipe_change(old, new, *, step, active_bucket, archived_assets=None):
     """Allow future data/batching changes and verified artifact relocation only."""
     expected = copy.deepcopy(old)
     if [s["name"] for s in old["stages"]] != [s["name"] for s in new["stages"]]:
@@ -55,7 +83,10 @@ def check_recipe_change(old, new, *, step, active_bucket):
     expected["train"]["run_name"] = new["train"]["run_name"]
     expected["telemetry"]["swanlab_project"] = new["telemetry"]["swanlab_project"]
     if old["eval"]["prompts_file"] != new["eval"]["prompts_file"]:
-        if sha256(old["eval"]["prompts_file"]) != sha256(new["eval"]["prompts_file"]):
+        if (
+            read_source_asset(old["eval"]["prompts_file"], archived_assets)
+            != Path(new["eval"]["prompts_file"]).read_bytes()
+        ):
             raise ValueError("relocated evaluation prompts must be byte-identical")
         expected["eval"]["prompts_file"] = new["eval"]["prompts_file"]
 
@@ -86,7 +117,9 @@ def check_recipe_change(old, new, *, step, active_bucket):
             reference = (
                 active_bucket
                 if i == active
-                else json.loads(Path(before["bucket_plan"]).read_text())
+                else json.loads(
+                    read_source_asset(before["bucket_plan"], archived_assets)
+                )
             )
             if reference != json.loads(Path(after["bucket_plan"]).read_text()):
                 raise ValueError(
@@ -143,7 +176,14 @@ def source_tracking(source, old_recipe, source_run_id):
 
 
 def migrate(
-    source, destination, config_path, *, storage_root, reason, source_run_id=None
+    source,
+    destination,
+    config_path,
+    *,
+    storage_root,
+    reason,
+    source_run_id=None,
+    source_assets=None,
 ):
     if not reason.strip():
         raise ValueError("a migration reason is required")
@@ -175,8 +215,15 @@ def migrate(
         raise ValueError("destination must be outside the source checkpoint")
     old = json.loads((source / "run_config.json").read_text())
     active_bucket = json.loads((source / "bucket_plan.json").read_text())
+    archived_assets = (
+        load_source_assets(source_assets) if source_assets is not None else None
+    )
     amendments = check_recipe_change(
-        old, recipe, step=step, active_bucket=active_bucket
+        old,
+        recipe,
+        step=step,
+        active_bucket=active_bucket,
+        archived_assets=archived_assets,
     )
     metadata = json.loads((source / "transformer_config.json").read_text())
     # This is an explicit metadata-only import; tensor keys and geometry agree.
@@ -218,6 +265,12 @@ def migrate(
             "source": str(source),
             "global_step": step,
             "source_completion_sha256": sha256(source / CHECKPOINT_RECORD),
+            "source_assets": {
+                "path": str(Path(source_assets).resolve()),
+                "sha256": sha256(source_assets),
+            }
+            if source_assets is not None
+            else None,
             "source_sha256": source_hashes,
             "destination_sha256": destination_hashes,
             "source_recipe": old,
@@ -255,6 +308,10 @@ if __name__ == "__main__":
     parser.add_argument("--reason", required=True)
     parser.add_argument("--storage-root", required=True)
     parser.add_argument(
+        "--source-assets",
+        help="Explicit JSON record of original config paths, text and SHA-256 hashes",
+    )
+    parser.add_argument(
         "--source-run-id",
         help="Required for a source checkpoint without its own tracking record",
     )
@@ -266,6 +323,7 @@ if __name__ == "__main__":
         storage_root=args.storage_root,
         reason=args.reason,
         source_run_id=args.source_run_id,
+        source_assets=args.source_assets,
     )
     print(
         json.dumps(
