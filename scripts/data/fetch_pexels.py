@@ -63,7 +63,7 @@ from PIL import Image
 
 API_ROOT = "https://api.pexels.com/v1/search"
 LICENSE = "Pexels License (https://www.pexels.com/license/)"
-USER_AGENT = "artflow-research/0.1 (personal research project)"
+USER_AGENT = "inko-research/0.1 (personal research project)"
 
 # Bounding box handed to the CDN.  The long side lands at 1792 px, so a picture
 # with an aspect ratio up to 2.0 keeps a short side of at least 896 px — enough

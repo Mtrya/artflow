@@ -28,7 +28,7 @@ from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import load_from_disk
 
-from ..models.artflow import ArtFlow
+from ..models.inko import Inko
 from ..dataset.sampler import (
     RowLengthQueueBatchSampler,
     RowDescriptorDataset,
@@ -52,11 +52,17 @@ from ..evaluation.eval_loss import EvalLossProbe
 from ..evaluation.prompt_grid import grid_due, run_prompt_grid_eval
 from ..evaluation.kid_eval import run_kid_eval
 from .config import load_config, flatten
-from .tracking import resume_run_id, validate_run_id, write_tracking_record
+from .tracking import (
+    read_tracking_record,
+    tracker_init_kwargs,
+    validate_run_id,
+    write_tracking_record,
+)
 from .stage_control import (
     CHECKPOINT_RECORD,
     stage_endpoint,
     validate_checkpoint,
+    validate_checkpoint_recipe,
     write_checkpoint_record,
     verify_restored_rng,
 )
@@ -159,13 +165,13 @@ def build_linear_cosine_scheduler(
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
-def restore_scheduler_base_lrs(scheduler, base_lrs) -> None:
-    """Apply configured rates before the first full-resume optimizer update."""
-    scheduler.base_lrs = list(base_lrs)
-    rates = scheduler.get_lr()
-    for group, rate in zip(scheduler.optimizer.param_groups, rates):
-        group["lr"] = rate
-    scheduler._last_lr = rates
+def validate_scheduler_lrs(scheduler, base_lrs) -> None:
+    """Reject a mismatched checkpoint instead of rewriting restored state."""
+    if scheduler.base_lrs != list(base_lrs):
+        raise ValueError("checkpoint scheduler base rates differ from the recipe")
+    rates = [group["lr"] for group in scheduler.optimizer.param_groups]
+    if rates != scheduler.get_last_lr():
+        raise ValueError("checkpoint optimizer and scheduler learning rates disagree")
 
 
 def _device_mem_allocated(device) -> float:
@@ -231,6 +237,10 @@ def parse_args():
         help="Restore the complete checkpoint, including optimizer, EMA, RNG and step",
     )
     parser.add_argument("--verify_resume_state", action="store_true")
+    parser.add_argument(
+        "--new-experiment", action="store_true",
+        help="Restore training state but start a new SwanLab experiment in the configured project",
+    )
     parser.add_argument("--step_breakdown", action="store_true")
     parser.add_argument("--cpu_wall_profile", action="store_true")
     parser.add_argument("--log_shapes", action="store_true")
@@ -260,6 +270,9 @@ def main():
         return
     if args.verify_resume_state and not args.resume:
         raise ValueError("--verify_resume_state requires --resume")
+    tracking_kwargs = tracker_init_kwargs(
+        args.resume, args.swanlab_project, new_experiment=args.new_experiment
+    )
     # Reject invalid stages/checkpoints before allocating the model or GPUs.
     resume_step = 0
     if args.resume:
@@ -277,13 +290,9 @@ def main():
         )
     reset_sampler = resume_step == args.stage_start and args.stage_start > 0
     if args.resume:
-        saved_config = Path(args.resume) / "run_config.json"
-        if not saved_config.is_file() or json.loads(saved_config.read_text()) != asdict(
-            config
-        ):
-            raise ValueError(
-                "resume requires the same complete run config recorded in the checkpoint"
-            )
+        validate_checkpoint_recipe(
+            args.resume, asdict(config), architecture=Inko.ARCHITECTURE
+        )
     if not Path(args.bucket_plan).is_file():
         raise ValueError(
             f"stage bucket plan is missing: {args.bucket_plan}; qualify it before launch"
@@ -328,21 +337,23 @@ def main():
         os.makedirs(args.output_dir, exist_ok=True)
 
     run_dir = os.path.join(args.output_dir, args.run_name)
-    runtime_path = os.path.join(run_dir, "runtime.json")
-
-    swanlab_kwargs = {"experiment_name": args.run_name, "mode": "online"}
-    if args.resume:
-        swanlab_kwargs.update(id=resume_run_id(args.resume), resume="must")
+    swanlab_kwargs = {"experiment_name": args.run_name, **tracking_kwargs}
 
     if accelerator.is_main_process:
+        tracking_config = {
+            "architecture": Inko.ARCHITECTURE,
+            "recipe": asdict(config),
+            "stage": cli.stage,
+            "active_bucket_plan": bucket_contents,
+        }
+        if args.new_experiment:
+            tracking_config["forked_from"] = dict(
+                read_tracking_record(args.resume), global_step=resume_step,
+                checkpoint=str(Path(args.resume).resolve()),
+            )
         accelerator.init_trackers(
             project_name=args.swanlab_project,
-            config={
-                "architecture": ArtFlow.ARCHITECTURE,
-                "recipe": asdict(config),
-                "stage": cli.stage,
-                "active_bucket_plan": bucket_contents,
-            },
+            config=tracking_config,
             init_kwargs={"swanlab": swanlab_kwargs},
         )
 
@@ -350,7 +361,7 @@ def main():
         import swanlab
 
         actual_run_id = validate_run_id(swanlab.get_run().id)
-        if args.resume and actual_run_id != swanlab_kwargs["id"]:
+        if "id" in swanlab_kwargs and actual_run_id != swanlab_kwargs["id"]:
             raise ValueError("SwanLab resumed a different experiment")
 
     # Load Text Encoder (Frozen, on GPU)
@@ -373,8 +384,8 @@ def main():
     vae_mean, vae_std = vae_mean.to(torch.bfloat16), vae_std.to(torch.bfloat16)
 
     # Load Model
-    accelerator.print("Initializing ArtFlow Model...")
-    model = ArtFlow(**asdict(config.model))
+    accelerator.print("Initializing Inko Model...")
+    model = Inko(**asdict(config.model))
     # Print model statistics
     accelerator.print(
         f"Model params: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}"
@@ -629,9 +640,7 @@ def main():
                     f"scheduler step does not match checkpoint step: {sch_path}"
                 )
             sch.load_state_dict(state)
-            # Restore the next update's LR at the resumed schedule position.
-            # Recipe equality was checked before loading optimizer state.
-            restore_scheduler_base_lrs(sch, optimizer_base_lrs[i])
+            validate_scheduler_lrs(sch, optimizer_base_lrs[i])
 
     if ema_model is not None:
         dtype = next(model_raw.parameters()).dtype
@@ -642,12 +651,11 @@ def main():
             ema_path = os.path.join(args.resume, "ema_weights.pt")
             if not os.path.isfile(ema_path):
                 raise ValueError(f"full resume requires EMA state: {ema_path}")
-            if os.path.exists(ema_path):
-                ema_model.load_state_dict(
-                    torch.load(ema_path, map_location="cpu", weights_only=False)
-                )
-                ema_model.to(accelerator.device, dtype=dtype)
-                accelerator.print("Restored EMA weights from checkpoint")
+            ema_model.load_state_dict(
+                torch.load(ema_path, map_location="cpu", weights_only=False)
+            )
+            ema_model.to(accelerator.device, dtype=dtype)
+            accelerator.print("Restored EMA weights from checkpoint")
         for param in ema_model.parameters():
             param.requires_grad_(False)
 
@@ -974,7 +982,7 @@ def main():
                     marker
                 )  # Invalidate an older completion record before overwriting.
         accelerator.wait_for_everyone()
-        accelerator.save_state(save_path)
+        accelerator.save_state(save_path, safe_serialization=True)
         # Save the rank-local NPU generator explicitly; its preservation must
         # not depend on Accelerate's device-extension integration.
         torch.save(
@@ -1015,12 +1023,7 @@ def main():
             import swanlab
 
             run_id = validate_run_id(swanlab.get_run().id)
-            write_tracking_record(save_path, run_id)
-            runtime = {"global_step": step, "swanlab_run_id": run_id}
-            os.makedirs(run_dir, exist_ok=True)
-            runtime_tmp = Path(runtime_path + ".tmp")
-            runtime_tmp.write_text(json.dumps(runtime) + "\n")
-            os.replace(runtime_tmp, runtime_path)
+            write_tracking_record(save_path, args.swanlab_project, run_id)
         accelerator.wait_for_everyone()
         if accelerator.is_main_process:
             write_checkpoint_record(
@@ -1040,6 +1043,7 @@ def main():
                     scheduler_count=len(schedulers),
                     use_ema=ema_model is not None,
                     world_size=accelerator.num_processes,
+                    protected_steps=[stage.end_step for stage in config.stages],
                 )
                 if removed:
                     accelerator.print(

@@ -11,7 +11,7 @@ where the data is mounted. Platform setup and credentials are in the local
 |---|---|
 | `pretrain.launch` | Launch or resume one curriculum stage from a complete run config. |
 | `pretrain/launch.sh` | Set up the Ascend environment and invoke `pretrain.launch`. |
-| `pretrain.migrate_stage_recipe` | Apply an explicit, recorded recipe amendment to a checkpoint copy before resume. |
+| `pretrain.migrate_checkpoint` | Migrate model/tracking metadata and declared recipe changes on a verified checkpoint copy. |
 | `pretrain.plan_buckets` | Fit measured calibration data and plan length boundaries and micro-batches against caption draws. |
 | `pretrain.resize_bucket_plan` | Draft fixed-boundary batch/accumulation candidates for validation on the full workload. |
 | `pretrain.pin_artifacts` | Record and verify input hashes before a training launch. |
@@ -23,6 +23,12 @@ check every worker's exit status before declaring success.
 Launchers, planners, recipe migration and configured dataset transfer require
 `--storage-root`. Prompts and bucket plans are tracked under `configs/` and
 resolve from the repository. The runtime root is not stored in the TOML.
+
+Ordinary resume requires the checkpoint-owned SwanLab project and run ID.
+`--new-experiment` explicitly restores training state into a fresh experiment
+in the configured project; it never modifies the source experiment. Migration
+requires `--source-run-id` when the source lacks a tracking record. See the
+[checkpoint migration procedure](../notes/pretrain_recipe.md#launch-checkpoints-and-resolution-transitions).
 
 The planner takes `--config`, `--stage` and `--storage-root`; dataset weights
 and caption policy come from that recipe. Calibration is a flat JSON list of
@@ -73,9 +79,9 @@ replaces its image-parquet shard set; a metadata-only release updates the table.
 
 ```bash
 python -m scripts.data.transfer_precomputed upload \
-  --provider hf --repo-id OWNER/DATASET --config configs/pretrain.toml --stage 896p --storage-root /external/artflow
+  --provider hf --repo-id OWNER/DATASET --config configs/pretrain.toml --stage 896p --storage-root /external/inko
 python -m scripts.data.transfer_precomputed download \
-  --provider modelscope --repo-id OWNER/DATASET --storage-root /external/artflow
+  --provider modelscope --repo-id OWNER/DATASET --storage-root /external/inko
 ```
 
 Uploads include every training source and the evaluation set in the selected

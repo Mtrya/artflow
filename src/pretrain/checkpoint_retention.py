@@ -8,16 +8,19 @@ from .stage_control import validate_checkpoint
 
 
 def prune_checkpoints(checkpoint, *, keep_last, max_steps, scheduler_count,
-                      use_ema, world_size):
-    """Keep the latest complete checkpoints within this stage's run directory.
+                      use_ema, world_size, protected_steps):
+    """Keep recent recovery copies and every completed curriculum endpoint.
 
-    A closed stage keeps its endpoint because nothing newer is written there.
+    Stages share one run directory; endpoints are explicitly protected.
     Incomplete, incompatible, symlinked and future checkpoints are untouched.
     The caller holds the run's writer lock and calls this after every rank has
     saved and the replacement's completion record has been published.
     """
     if type(keep_last) is not int or keep_last < 0:
         raise ValueError("checkpoint_keep_last must be a nonnegative integer")
+    if any(type(step) is not int or not 0 <= step <= max_steps for step in protected_steps):
+        raise ValueError("protected checkpoint steps must lie within the training schedule")
+    protected_steps = set(protected_steps)
     if keep_last == 0:
         return []
     checkpoint = Path(checkpoint)
@@ -42,7 +45,9 @@ def prune_checkpoints(checkpoint, *, keep_last, max_steps, scheduler_count,
     if checkpoint not in [path for _, path in complete[:keep_last]]:
         raise ValueError("replacement checkpoint changed during retention preflight")
     removed = []
-    for _, path in reversed(complete[keep_last:]):
+    for step, path in reversed(complete[keep_last:]):
+        if step in protected_steps:
+            continue
         shutil.rmtree(path)
         removed.append(path.name)
     return removed

@@ -2,7 +2,7 @@
 
 This record captures the Ascend execution path,
 resolution-specific bucket plans and their measurements. The recipe is in
-[hero_recipe.md](hero_recipe.md), including launch and recovery requirements.
+[pretrain_recipe.md](pretrain_recipe.md), including launch and recovery requirements.
 
 ## Measured improvements
 
@@ -33,9 +33,11 @@ in code. The later-resolution measurements are recorded below.
 
 ## Later-resolution plans
 
-The final 640p/896p mixtures contain 1,304,540/794,599 eligible rows across
+The mixtures measured during the original qualification contained 1,304,540/794,599 eligible rows across
 17/14 sources. All source caption sidecars passed dataset validation, and all
-five latent aspect shapes were inventoried. No source weights were changed.
+five latent aspect shapes were inventoried. Source weights were held fixed
+within those comparisons. These counts and rates describe that historical
+workload; they do not qualify the corrected mixture or subsequent caption filtering.
 
 Calibration retained the FP32 model, EMA, frozen BF16 Qwen k20, initialized
 Muon/AdamW states and gradients, plus a model-sized DDP-buffer reserve. The
@@ -76,7 +78,7 @@ The throughput probes used the same mature 180k model weights with fresh
 optimizers, fixed caption progress .85/.975, the normal 600k schedule, and
 monitoring disabled. Rates exclude startup, checkpoint and periodic evaluation
 costs. They qualify execution; actual 450k/570k model transfer and training
-stability remain observations for the hero at its normal monitoring cadence.
+stability remain observations for the pretrained model at its normal monitoring cadence.
 
 Selected plan SHA-256 values:
 
@@ -89,7 +91,7 @@ the repository record.
 
 A bounded native curriculum then exercised **256p→640p→896p**, using
 diagnostic endpoints 2/16 and stopping at 40 while retaining the 600k scheduler
-horizon. The first checkpoint carried the deployed hero's legacy future-stage
+horizon. The first checkpoint carried the deployed run's legacy future-stage
 fields; the migration tool independently copied it and amended six future
 data/bucket/accumulation fields. The other 56 inventoried artifacts were
 byte-identical. Both transitions and the 896p step-32 recovery verified exact
@@ -118,7 +120,7 @@ stability evidence. The mature-model/fresh-optimizer test is not the actual
 The prepared production recipe also passed read-only amendment preflight
 against the real 184k checkpoint without modifying that checkpoint.
 Stage activation follows the strict checkpoint migration and recovery procedure
-in [the recipe](hero_recipe.md#launch-checkpoints-and-resolution-transitions).
+in [the recipe](pretrain_recipe.md#launch-checkpoints-and-resolution-transitions).
 
 ## Recovery and monitoring qualification
 
@@ -181,7 +183,7 @@ Measured candidates explain why the September 25 pass closed:
 
 Further optimization starts from a measured bottleneck and changes one
 variable at a time. Adopt only a material end-to-end gain on the real workload,
-then qualify correctness, memory and recovery. The current hero supplies
+then qualify correctness, memory and recovery. The current run supplies
 longer stability evidence; a short throughput test cannot establish it.
 Operator fusion, custom NPU kernels, layouts and communication scheduling are
 all eligible when profiling identifies recoverable cost. Select representative

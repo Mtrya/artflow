@@ -99,3 +99,25 @@ def test_scheduler_roundtrip_preserves_learning_rates():
         assert resumed_sch.get_last_lr() == sch.get_last_lr()
     assert resumed_sch.last_epoch == 95
     assert sch.get_last_lr()[0] > .001  # The schedule has not ended at 95%.
+
+
+def test_restored_scheduler_rates_are_validated_without_rewriting():
+    param = torch.nn.Parameter(torch.ones(1))
+    opt = torch.optim.SGD([param], lr=0.02)
+    scheduler = train.build_linear_cosine_scheduler(
+        opt, num_warmup_steps=5, num_training_steps=100,
+        min_learning_rate=0.001, base_learning_rate=0.02,
+        start_learning_rate=0.0001,
+    )
+    for _ in range(12):
+        opt.step()
+        scheduler.step()
+    before = copy.deepcopy((opt.state_dict(), scheduler.state_dict()))
+    train.validate_scheduler_lrs(scheduler, [0.02])
+    assert before == (opt.state_dict(), scheduler.state_dict())
+    with pytest.raises(ValueError, match="base rates"):
+        train.validate_scheduler_lrs(scheduler, [0.04])
+    opt.param_groups[0]["lr"] = 0.3
+    with pytest.raises(ValueError, match="learning rates disagree"):
+        train.validate_scheduler_lrs(scheduler, [0.02])
+    assert opt.param_groups[0]["lr"] == 0.3

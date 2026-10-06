@@ -1,4 +1,4 @@
-# Ascend hero recipe
+# Pretraining recipe
 
 The complete runnable recipe is
 [`configs/pretrain.toml`](../configs/pretrain.toml). It explicitly specifies every
@@ -10,7 +10,7 @@ Recovery requirements are described below; machine-local run identity lives in `
 
 | Component | Selected setting |
 |---|---|
-| Architecture | `artflow-v2`, h1152, 16 heads, 1 double-stream + 24 single-stream blocks, FFN width 3072 (ratio 8/3), 532,496,992 parameters |
+| Architecture | `inko`, h1152, 16 heads, 1 double-stream + 24 single-stream blocks, FFN width 3072 (ratio 8/3), 532,496,992 parameters |
 | Text | Frozen Qwen3-0.6B, online true early exit at layer 20, hidden size 1024 |
 | Image latents | Qwen-Image VAE, 16 channels, factor 8; 2×2 latent patches |
 | Conditioning | Fused pooled text/time, factor-1000 timestep features, branch RMSNorm before gates |
@@ -50,44 +50,41 @@ buckets per aspect ratio, up to 2,048 tokens.
 | 640p | 5–12 | 3 | 528 planned; 532 measured |
 | 896p | 3–6 | 4 | 373 planned; 375 measured |
 
-The later-stage plans use the final mixtures below and their own caption
-progress windows. Accumulation 3/4 keeps effective batches near the historical
-targets of approximately 512/400; retaining 4/5 would increase training samples
-and compute per optimizer update substantially. These are qualified practical
-choices, not a claim of a globally optimal statistical batch size. Their
-52 GiB planner ceiling includes model, encoder, optimizer, EMA, gradients and
-DDP residency. The earlier 33/42 GiB DiT-only candidates failed before their
-first update and are superseded. Full-workload results and limits are in
-[the infrastructure record](infra_pretrain.md).
+The later-stage measurements below describe the previously qualified mixtures.
+Correcting source weights or filtering captions changes the distribution used
+by the planner; reassess expected batches and qualify the resulting plans on
+the full workload. The 52 GiB planner ceiling includes model, encoder,
+optimizer, EMA, gradients and DDP residency. Measurement conditions and limits
+are in [the infrastructure record](infra_pretrain.md).
 
-## Data additions for the later resolutions
+## Resolution-specific source mixture
 
-These amendments address full-body people and underexposed world
-content. The running 256p mixture stays fixed.
+For each resolution, count eligible training rows in the final dataset artifacts
+and assign source mass `rows × multiplier`, then normalize over that stage:
 
-| Source | Current eligible rows / change | 640p weight | 896p weight |
-|---|---|---:|---:|
-| `d3-pexels` | +6,008 rows; pool 37,417 → 43,425 | 8.50 | 11.50 |
-| `d2-museum` | User-selected source emphasis | 0.800000 | 0.825000 |
-| `d4-extra` | D4 Pexels merged with megalith; 34,935 usable rows at 640p, 30,726 at 896p | 2.476274 | 3.467343 |
+- 1.8: `d1`, `d2-wikiart`, `d2-museum`, `d3-pexels`.
+- 1.5: `d4-extra`, `d4-extra2`, `d4-extra3`.
+- 1.0: every other source.
 
-D4 Pexels contributes 29,574 rows. Megalith contributes 5,361/1,152 usable
-rows at the respective resolutions. Scaling its former weights 0.38/0.13
-by the eligible-row ratios preserves the unnormalized weight per pre-existing
-row; source probabilities are normalized over the complete mixture. See
-[dataset provenance](dataset_plan.md).
+The counts must come from that resolution after filtering. Caption variants
+are choices within an image row, not extra rows. Split sources such as
+`d3-people-a/b` and `d4-relaion-p0..4` each contribute their own eligible rows;
+splitting a source must not multiply its aggregate weight.
 
-These are the working recipe's later-stage amendments. The active deployment
-uses its pinned complete config. Strict resume compares the full recorded
-recipe, including future stages, so applying amendments requires an explicit
-stage-transition migration. Use
-[`migrate_stage_recipe.py`](../scripts/pretrain/migrate_stage_recipe.py) on an
-independent copy of the completed 450k checkpoint. It locks the completed
-stage, model, optimizer, monitoring and global schedule; allows future-stage
-data/bucket/accumulation amendments; verifies relocated current buckets and
-prompts; and records old/new recipes plus hashes of every preserved state
-artifact. Ordinary resume remains strict. Editing checkpoint metadata to
-conceal a recipe mismatch would invalidate recovery evidence.
+The previous 640p/896p weights reused 256p counts, overemphasizing sources
+whose higher-resolution eligible pools had shrunk. That error does not change
+the completed 256p stage. The legacy 640p continuation is stopped; corrected
+later-stage weights and their count evidence must be audited before restarting.
+The selected restart is the 480k checkpoint. Locating and migrating the real
+artifact, handling changed row pools, and launching training are separate
+operations from the repository cleanup.
+
+Strict resume compares the full recorded recipe, including future stages.
+[`migrate_checkpoint.py`](../scripts/pretrain/migrate_checkpoint.py) permits
+explicit future-stage data/bucket/accumulation changes, while preserving model
+capacity, optimizer policy and the global schedule. Current-stage entries may
+be reweighted but cannot be added, removed or reordered. A resolution
+transition constructs a fresh sampler. See [dataset provenance](dataset_plan.md).
 
 ## Evaluation and telemetry
 
@@ -95,7 +92,7 @@ conceal a recipe mismatch would invalidate recovery evidence.
   caption-length band with evaluation batch size 8. Record actual counts when
   eligibility or buckets reduce the requested set; compare matched panels/counts.
 - Image grids every 2,500 updates and at the explicit stage `grid_steps`.
-  [`hero_monitor_v1.jsonl`](../configs/prompts/hero_monitor_v1.jsonl) contains
+  [`monitor.jsonl`](../configs/prompts/monitor.jsonl) contains
   12 scenes × Chinese/English × short/long captions = 48 images. Each scene
   shares its seed across its four variants. Review anatomy, architecture,
   style and layout as improved / unchanged / regressed / uncertain.
@@ -110,7 +107,7 @@ regression. Read caption-band sample counts with their losses: underfilled bands
 reported, and an empty band has no loss estimate. Inspect fixed-prompt
 generations before attributing an internal-scale trend to quality regression.
 
-At the completed hero checkpoint, evaluate live weights first, then compare
+At the completed pretraining checkpoint, evaluate live weights first, then compare
 stored EMA on loss, grids and KID before selecting the post-training teacher.
 Post-hoc EMA is an option only if enough suitable checkpoint history was
 retained; the rotating two-checkpoint policy cannot reconstruct arbitrary
@@ -126,16 +123,16 @@ resolved checkpoint recipe records both sets of absolute paths. Platform
 preparation and ordinary SwanLab login/API-key setup belong in local `INSPIRE.md`.
 
 ```bash
-python -m src.pretrain.train --config configs/pretrain.toml --stage 256p --storage-root /external/artflow --check_config
-python -m scripts.pretrain.launch --config configs/pretrain.toml --stage 256p --storage-root /external/artflow --nproc_per_node 16
+python -m src.pretrain.train --config configs/pretrain.toml --stage 256p --storage-root /external/inko --check_config
+python -m scripts.pretrain.launch --config configs/pretrain.toml --stage 256p --storage-root /external/inko --nproc_per_node 16
 ```
 
 The launcher sets the qualified NPU expandable-segments allocator policy and
 one OpenMP thread per worker before initialization. It holds a writer lock,
 mirrors attempt output and terminates the worker group on NPU OOM.
 
-Save every 2,000 updates and retain the latest two complete checkpoints per
-stage. Checkpoints contain the complete run config, model metadata, active
+Save every 2,000 updates and retain the latest two complete checkpoints plus
+all configured stage endpoints. All stages share one run directory. Checkpoints contain the complete run config, model metadata, active
 bucket table, model/EMA, optimizers, schedulers, sampler and per-rank RNG state.
 Recovery chooses the latest complete same-stage checkpoint; a stage's first
 launch uses its predecessor's endpoint. `--resume` selects a complete checkpoint
@@ -148,36 +145,67 @@ tested migration with provenance. SwanLab records the complete actual recipe,
 architecture version, selected stage and active bucket contents.
 
 SwanLab always starts online; configuration/authentication failures stop startup.
-A resumed checkpoint must continue its recorded experiment. New checkpoints
-include `tracking.json`; existing version-1 checkpoints recover their ID from
-`runtime.json` beside the checkpoint directories. Missing or invalid identity
-is an error. The version-1 completion and sampler formats remain supported.
+Each checkpoint must contain `tracking.json` with `swanlab_project` and
+`swanlab_run_id`. Ordinary resume requires the recorded project and uses
+`resume="must"`. A missing record, project mismatch or invalid ID is an error;
+the trainer never reads identity from the checkpoint's parent directory.
 
-Moving a tracked prompt suite or bucket plan changes the resolved recipe, so
-ordinary resume deliberately rejects the old path. Use an explicit migration
-on a copy of a complete checkpoint before adopting a new checkout:
+Training-state continuation and experiment identity are separate operations.
+`--new-experiment` requires a checkpoint and explicitly starts a fresh experiment
+in the configured project while restoring its full training state. The initial
+experiment config records the source project, run ID, checkpoint and global step.
+Subsequent checkpoints record the new experiment's identity; ordinary recovery
+from those checkpoints omits `--new-experiment`. A fresh experiment explicitly
+uses `resume="never"`.
+
+The 256p and discarded 640p experiment histories remain in `artflow`. The
+corrected continuation uses `inko`. The model class/module is `Inko` /
+`src.models.inko`, and its architecture identifier is `inko`; tensor names,
+shapes and numerical operators are unchanged by this rename. The migration
+reader alone recognizes `artflow-v2` and records the metadata conversion.
+
+Before adopting a new checkout or recipe, migrate a complete checkpoint into
+an independent destination. For a checkpoint without its own tracking record,
+supply the verified source experiment ID explicitly:
 
 ```bash
-python -m scripts.pretrain.migrate_stage_recipe \
-  --source /external/artflow/runs/RUN/checkpoint_step_STEP \
-  --destination /external/artflow/recovery/checkpoint_step_STEP \
-  --config configs/pretrain.toml --storage-root /external/artflow \
-  --reason "Relocate tracked prompt suite and bucket plans into configs"
+python -m scripts.pretrain.migrate_checkpoint \
+  --source /external/inko/keep/SOURCE/checkpoint_step_STEP \
+  --destination /external/inko/keep/pretrain-start/checkpoint_step_STEP \
+  --config configs/pretrain.toml --storage-root /external/inko \
+  --source-run-id SOURCE_RUN_ID \
+  --reason "Import checkpoint metadata and correct future-stage mixture"
+
+python -m scripts.pretrain.launch \
+  --config configs/pretrain.toml --stage 640p --storage-root /external/inko \
+  --nproc_per_node 16 \
+  --resume /external/inko/keep/pretrain-start/checkpoint_step_STEP \
+  --new-experiment --verify_resume_state
 ```
 
-Keep the source checkpoint and its referenced assets available during migration.
-The tool verifies relocated prompts and completed/current bucket contents,
-records both recipes and hashes, copies the SwanLab identity, and preserves
-model, optimizer, scheduler, EMA, sampler and RNG files. Future-stage data and
-batching amendments remain explicit in the migration record. Run the launcher
-with `--resume` pointing to that copy and `--verify_resume_state` when qualifying
-recovery. Repository tests cover these state contracts; a real NPU restore and
-stage transition must still be qualified before deployment. A running job keeps
-its pinned checkout until a separately planned restart.
+The paths above are examples; the external storage directory need not share
+the repository's name. Migrate against the final checkout location: resolved
+config-asset paths are part of the checkpoint recipe. Repository renaming
+itself does not move datasets, weights, checkpoints or experiment histories.
 
-The [infrastructure record](infra_pretrain.md) contains matched throughput,
-recovery and monitoring measurements. The current run supplies longer-term
-stability evidence.
+The tool validates the source inventory, verifies relocated prompt bytes and
+completed/current bucket contents, and records both recipes, both model
+identities and file hashes. Model, optimizer, scheduler, EMA, sampler and RNG
+artifacts remain byte-identical. It publishes the destination only after all
+copies and metadata checks pass. The original remains untouched.
+
+This metadata migration does not adapt saved
+sampler cycles or queued row IDs to filtered/replaced datasets. At a mid-stage
+restart such as 480k, that requires a separate explicit sampler-state decision;
+`--new-experiment` changes tracking identity only. A migrated checkpoint
+retains its source tracking identity until the explicit new
+experiment begins; migration itself creates no SwanLab experiment.
+
+Repository tests verify artifact copying, state restoration contracts and
+scheduling mechanics. They do not establish training quality or a successful
+NPU restart. Qualify the actual migrated checkpoint with a device restore,
+then inspect real generations and telemetry under the corrected mixture.
+Historical measurements are in [the infrastructure record](infra_pretrain.md).
 
 ## Reading stability telemetry
 

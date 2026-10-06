@@ -51,7 +51,7 @@ caption_short_reserve = 0.20
 caption_short_threshold = 256
 
 [train]
-run_name = "ascend-hero-pretrain"
+run_name = "inko-pretrain"
 seed = 42
 num_workers = 8
 ema_decay = 0.9999
@@ -68,14 +68,14 @@ caption_loss_weight_reference = 128
 batch_size = 8
 loss_interval = 500
 loss_samples = 512
-prompts_file = "configs/prompts/hero_monitor_v1.jsonl"
+prompts_file = "configs/prompts/monitor.jsonl"
 ode_steps = 50
 # Zero disables final KID evaluation.
 kid_num_fake = 2000
 
 [telemetry]
 log_interval = 25
-swanlab_project = "artflow"
+swanlab_project = "inko"
 health_interval = 250
 stability_interval = 100
 
@@ -83,7 +83,7 @@ stability_interval = 100
 name = "256p"
 end_step = 450000
 gradient_accumulation_steps = 1
-bucket_plan = "configs/bucket_plans/hero-256p-k20.json"
+bucket_plan = "configs/bucket_plans/256p-k20.json"
 eval_dataset_path = "precomputed_dataset/light-eval@256p"
 grid_steps = [450000]
 
@@ -153,7 +153,7 @@ name = "640p"
 end_step = 570000
 # About 528 samples/update on 16 ranks; micro-batches 5–12 by bucket.
 gradient_accumulation_steps = 3
-bucket_plan = "configs/bucket_plans/hero-640p-k20.json"
+bucket_plan = "configs/bucket_plans/640p-k20.json"
 eval_dataset_path = "precomputed_dataset/light-eval@640p"
 grid_steps = [450000, 452000, 570000]
 
@@ -238,7 +238,7 @@ name = "896p"
 end_step = 600000
 # About 373 samples/update on 16 ranks; micro-batches 3–6 by bucket.
 gradient_accumulation_steps = 4
-bucket_plan = "configs/bucket_plans/hero-896p-k20.json"
+bucket_plan = "configs/bucket_plans/896p-k20.json"
 eval_dataset_path = "precomputed_dataset/light-eval@896p"
 grid_steps = [570000, 572000, 600000]
 

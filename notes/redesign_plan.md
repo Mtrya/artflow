@@ -1,13 +1,16 @@
-# ArtFlow redesign plan
+# Inko redesign plan
 
-ArtFlow is a bilingual text-to-image flow-matching
-DiT, with a 532M-parameter hero and an 8-step student as the release target.
-**Pretraining and post-training target Ascend on `main`.** The hero is in its
-256p stage; post-training preparation proceeds alongside it.
+Inko is a bilingual text-to-image flow-matching
+DiT, with a 532M-parameter model and an 8-step student as the release target.
+**Pretraining and post-training target Ascend.** The legacy 640p continuation
+is stopped after a source-weight audit found reused 256p row counts. The
+planned corrected continuation starts from the 480k checkpoint
+in a new `inko` experiment; checkpoint location and mixture audit remain
+restart prerequisites.
 
 ## Document map
 
-- [Hero recipe](hero_recipe.md): architecture, complete training configuration,
+- [Pretraining recipe](pretrain_recipe.md): architecture, complete training configuration,
   sampling and checkpoint contracts, and resolution transitions.
 - [Pretraining infrastructure](infra_pretrain.md): measured execution gains and
   qualification limits.
@@ -27,7 +30,7 @@ The living notes contain the evidence needed to act on the current design.
 | D1 | Data permissions | Research-only sources are permitted, including WikiArt, ArtBench-10 and FFHQ. Preserve per-sample provenance/license metadata and separate restricted mix entries so a clean variant can be assembled. Permission to use a source is distinct from its presence in the current corpus. |
 | D2 | Anatomy coverage | Photos and paintings; balance face and full-body coverage, with roughly equal representation as the curation goal. |
 | D3 | Corpus | Fixed eligible pools per resolution; source weights are explicit in the complete run config. See [dataset plan](dataset_plan.md). |
-| D4 | Model | `artflow-v2`: h1152, 16 heads, 1 double-stream + 24 single-stream blocks, FFN width 3072, 532,496,992 parameters. |
+| D4 | Model | `inko`: h1152, 16 heads, 1 double-stream + 24 single-stream blocks, FFN width 3072, 532,496,992 parameters. |
 | D5 | Text | Frozen Qwen3-0.6B, encoded online with a true early exit after layer 20. |
 | D6 | Resolution | Variable-aspect 256p → 640p → 896p; 75:20:5 of optimizer updates, ending at 450k / 570k / 600k. |
 | D7 | Positions | Centered image-grid RoPE; text pinned to a fixed diagonal. Progressive training supplies resolution transfer. |
@@ -35,7 +38,7 @@ The living notes contain the evidence needed to act on the current design.
 | D9 | Training hardware | Ascend for both pretraining and post-training; qualify each workload on its actual allocation. |
 | D10 | Captioning | API-based VLM captioning with cached responses and recorded model/prompt provenance. |
 | D11 | Modulation | Independent image/text and attention/MLP modulation in the double-stream block; shared attention/MLP modulation within each single-stream block. |
-| D12 | Optimizer | Chunked Muon with original scaling, LR 0.02 and decay 0.0015; auxiliary AdamW LR 1e-4, ordinary decay 0.01 and conditioning-matrix decay 0.4. Full settings in [hero recipe](hero_recipe.md). |
+| D12 | Optimizer | Chunked Muon with original scaling, LR 0.02 and decay 0.0015; auxiliary AdamW LR 1e-4, ordinary decay 0.01 and conditioning-matrix decay 0.4. Full settings in [pretraining recipe](pretrain_recipe.md). |
 | D13 | Monitoring | Fixed bilingual panels, loss probes and final KID; report observed strengths and limitations. Capability forecasts are not launch gates. |
 | D14 | Release execution | Reproducible sampling settings; deployment device and performance targets are selected during publication work. |
 
@@ -56,9 +59,9 @@ one strict run config covering the entire resolution curriculum.
 | 3: execution efficiency | Complete | Corrected CUDA measurements supplied the initial implementation evidence. |
 | 3.5: captions and buckets | Complete | Multi-caption row sampling, length curriculum and variable-aspect planning. |
 | 4: Ascend qualification | Complete | 16×910B2C plans for all resolutions, measured execution gains, native transitions, full-state recovery and monitoring. |
-| 5: hero pretraining | Active | Finish 256p, activate the finalized recipe at 450k, monitor the actual resolution transfers, then finish 600k. |
+| 5: pretraining | Restart preparation | Verify and migrate the 480k checkpoint, audit corrected later-stage mixtures, then qualify full-state recovery and resume in `inko`. |
 | 6: post-training | Preparation | Ascend execution/reward qualification, 640p pilot, then 896p cold start and joint DMD+RL. |
-| 7: publication | Pending completed training | Final inference pipeline, `inko` rename, model release and demo. |
+| 7: publication | Pending completed training | Final inference pipeline, model release and demo. |
 
 The following measurements explain retained choices; their experimental
 recipes and hardware define their scope:
@@ -80,30 +83,31 @@ recipes and hardware define their scope:
   656.29 → 878.91 samples/s (33.92%) with matched experiments and recovery
   checks. See [conditions and limits](infra_pretrain.md).
 
-## Stage 5 — Hero pretraining
+## Stage 5 — Pretraining
 
-Execute [the complete hero recipe](hero_recipe.md) on Ascend. The continuous
+Execute [the complete pretraining recipe](pretrain_recipe.md) on Ascend. The continuous
 600k schedule carries optimizer, EMA, caption curriculum and LR progress across
 450k and 570k resolution boundaries. Record actual sample exposure, elapsed
 time and NPU-hours throughout training.
 
 All three plans target 16×910B2C, with accumulation **1/3/4**. The 640p/896p
-plans use the settled mixtures and measured memory-sized
+previously qualified plans used the then-current mixtures and memory-sized
 micro-batches 5–12 / 3–6; native throughput was 173.47 / 83.90 samples/s.
 All 280 candidate aspect/length/batch tail cases passed. Measurement scope and
 transition/recovery evidence are in [the infrastructure record](infra_pretrain.md).
-Apply the complete recipe's future-stage amendments through the explicit
-checkpoint migration tool at 450k, preserving the predecessor's original
-complete endpoint. Continue normal loss/gradient/functional monitoring when
-the actual hero reaches each new resolution.
+Apply recipe and metadata amendments through the explicit checkpoint migration
+tool before resume, preserving the original complete source. The selected
+480k restart is mid-stage: changed row pools require an explicit sampler-state
+decision before training resumes. Continue normal loss/gradient/functional
+monitoring through subsequent resolution transitions.
 
 Review the fixed bilingual panel, live/EMA losses and internal stability
 telemetry at the recipe's cadence. Follow the evidence-based review and
-recovery rules in [the training recipe](hero_recipe.md). A concept
+recovery rules in [the training recipe](pretrain_recipe.md). A concept
 benchmark ran at 200k and 480k and is now retired; run a final capability
 benchmark at 600k (form to be decided) for the Stage-6 SFT go/no-go.
 
-Exit: a complete hero checkpoint, verified sampling and resolution transitions,
+Exit: a complete pretraining checkpoint, verified sampling and resolution transitions,
 measured compute/exposure, and a record of observed abilities and limitations.
 
 ## Stage 6 — Ascend post-training
@@ -132,7 +136,7 @@ Ascend attention, normalization and launch mechanisms where applicable.
 
 Embed one measurement pass in this bring-up, covering device memory and time
 spent in rollout, teacher/fake-score forwards, backward, synchronization,
-optimizer and reward waiting. Then run a 640p pilot using the 570k hero
+optimizer and reward waiting. Then run a 640p pilot using the 570k pretrained model
 endpoint, followed by the 896p main line using the final 600k checkpoint.
 Record end-to-end wall time and NPU-hours for the selected topology before
 setting the main-run and ablation budgets. Historical 4090-hour allocations
@@ -140,7 +144,7 @@ cannot be converted into an Ascend cap without workload measurements.
 
 ### Method and decisions
 
-1. **CFG study, after hero completion:** compare CFG 1 / 1.5 / 2 / 3 using
+1. **CFG study, after pretraining completion:** compare CFG 1 / 1.5 / 2 / 3 using
    conditional/unconditional loss, empty-caption behavior, KID, reward and
    fixed grids. Compare live and stored EMA weights. Use training/evaluation
    sampling helpers while the public generation pipeline awaits Stage 7.
@@ -148,7 +152,7 @@ cannot be converted into an Ascend cap without workload measurements.
    the go/no-go and identifies what targeted data could fix. Composition,
    anatomy and texture improvement belong to DMD+RL. Review the
    synthetic teacher and samples before including them.
-3. **DMD2 cold start at native 896p:** initialize from the hero; train an online
+3. **DMD2 cold start at native 896p:** initialize from the pretrained model; train an online
    fake-score copy on student outputs. Add a classification head on its
    bottleneck, using noise-injected latents, a non-saturating GAN objective and
    real precomputed latents. Start with five fake-score updates per generator
@@ -163,7 +167,7 @@ cannot be converted into an Ascend cap without workload measurements.
    criteria for anatomy, prompt adherence and over-smoothed artifacts. Keep
    a separately monitored reward outside the optimized ensemble. Final
    composition and weights are selected in the pilot.
-6. **Domain coverage:** mirror the hero mix in rollout prompts. Inspect fixed
+6. **Domain coverage:** mirror the pretrained model mix in rollout prompts. Inspect fixed
    canary grids for Chinese painting, Western painting, people and world
    content; track train/held-out reward divergence and diversity. The user's
    image review decides whether the output looks over-optimized.
@@ -177,7 +181,7 @@ Decide the cold-start → joint promotion rule with the 640p pilot. Promotion
 must leave room for joint learning before distillation converges. Build a
 small 5k-prompt pool for bring-up; finalize the roughly 20k pool with the user
 at the 640p checkpoint. Memory measurements set backward-simulation
-micro-batches. Main algorithm/λ studies use the completed hero.
+micro-batches. Main algorithm/λ studies use the completed pretrained model.
 
 Exit: an 8-step student with improved reward and panel review, preserved
 KID/diversity, recorded reward/λ configuration, domain comparison grids and
@@ -208,7 +212,7 @@ costs before deployment.
 ## Current risks
 
 - Persistent internal scale growth: follow the live/EMA, fixed-panel and
-  checkpoint evidence in [the training recipe](hero_recipe.md).
+  checkpoint evidence in [the training recipe](pretrain_recipe.md).
 - Resolution transitions: qualify each plan and preserve complete endpoints.
 - Caption/judge provider changes: cache responses and record exact request
   identity; measure limits again on the intended workload.

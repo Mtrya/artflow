@@ -1,4 +1,4 @@
-"""Dataset module for ArtFlow.
+"""Dataset module for Inko.
 
 This module provides utilities for data handling including:
 - Caption processing and curriculum sampling

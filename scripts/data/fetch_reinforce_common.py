@@ -33,7 +33,7 @@ from PIL import Image
 
 # A descriptive User-Agent: Wikimedia requires one, and the other APIs use it
 # to attribute the traffic.
-USER_AGENT = ("artflow-research/0.1 (concept-reinforcement image harvest; "
+USER_AGENT = ("inko-research/0.1 (concept-reinforcement image harvest; "
               "personal research project)")
 
 # Local counterpart of fetch_pexels' CDN_BOX.  The long side lands at 1792 px,

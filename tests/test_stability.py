@@ -3,14 +3,14 @@
 import pytest
 import torch
 
-from src.models.artflow import ArtFlow
+from src.models.inko import Inko
 from src.pretrain.stability import StabilityMonitor, update_metrics
 
 
 @pytest.fixture
 def observation(tmp_path):
     torch.manual_seed(82)
-    model = ArtFlow(hidden_size=32, num_heads=4, double_stream_depth=1,
+    model = Inko(hidden_size=32, num_heads=4, double_stream_depth=1,
                     single_stream_depth=1, mlp_ratio=2, )
     # Nonzero final output and modulation expose conditioning changes that
     # adaLN-zero deliberately hides at initialization.

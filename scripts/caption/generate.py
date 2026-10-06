@@ -9,7 +9,7 @@ identical request is never paid for twice.
 CLI:
     python -m scripts.caption.generate \
         --selection selection.jsonl --index thumbs/index.jsonl \
-        --out captions.jsonl --cache-dir ~/.cache/artflow_caption \
+        --out captions.jsonl --cache-dir ~/.cache/inko_caption \
         --models google/gemini-3.5-flash-lite --concurrency 16 --limit 300
 """
 
@@ -303,7 +303,7 @@ def main() -> None:
                         help="directory holding the thumbnails, if they were copied "
                              "away from the paths recorded in the index")
     parser.add_argument("--out", required=True, help="output caption JSONL (appended)")
-    parser.add_argument("--cache-dir", default=os.path.expanduser("~/.cache/artflow_caption"))
+    parser.add_argument("--cache-dir", default=os.path.expanduser("~/.cache/inko_caption"))
     parser.add_argument("--models", default="google/gemini-3.5-flash-lite")
     parser.add_argument("--routing", default=None,
                         help='JSON file mapping length band to model id; overrides --models')

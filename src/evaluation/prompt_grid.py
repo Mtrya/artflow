@@ -7,7 +7,6 @@ Bucket shapes are derived from the eval dataset itself (never hand-written),
 which keeps generation resolutions consistent with training data.
 """
 
-import hashlib
 import json
 import math
 import os
@@ -61,14 +60,9 @@ def load_prompt_suite(path: str) -> List[Dict[str, Any]]:
     return prompts
 
 
-def prompt_seed(prompt_id: str) -> int:
-    """Deterministic per-prompt noise seed."""
-    return int(hashlib.md5(prompt_id.encode("utf-8")).hexdigest()[:8], 16)
-
-
 def resolved_prompt_seed(prompt: Dict[str, Any]) -> int:
-    """Explicit seeds pair variants; old suites retain ID-derived noise."""
-    seed = prompt.get("seed", prompt_seed(prompt["id"]))
+    """Require explicit noise seeds so prompt edits cannot change the noise."""
+    seed = prompt.get("seed")
     if type(seed) is not int or not 0 <= seed < 2**63:
         raise ValueError("prompt seed must be an integer in [0, 2**63)")
     return seed
@@ -154,7 +148,7 @@ def sample_prompt_images(
 
     This is the per-prompt sampling shared by the training-time prompt grid and
     the offline blind-panel generator, so the same checkpoint and prompt yield
-    the same noise in both: the seed is explicit or comes from ``prompt_seed(id)``, the
+    the same noise in both: the seed is explicit in the prompt record, the
     sampler is ``sample_ode`` (Euler) from t=0 to t=1, text conditioning is
     ``encode_text`` and latents are decoded with the VAE's own statistics.
 

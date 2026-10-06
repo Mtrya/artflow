@@ -82,7 +82,7 @@ def test_restored_global_progress_matches_sampler_started_at_that_progress(progr
     assert [next(actual) for _ in range(50)] == [next(expected) for _ in range(50)]
 
 
-def test_resume_with_appended_dataset_replays_inflight_then_draws_from_it():
+def test_resume_rejects_appended_dataset():
     entries = [metadata([1] * 8, [2] * 8), metadata([1] * 8, [2] * 8)]
     plan = BucketPlan.uniform([1], [LenBucket(8, 1)])
     original = RowLengthQueueBatchSampler(entries, plan, dataset_weights=[1, 1], seed=47, caption_policy=CaptionPolicy(beta_start=-0.5, beta_end=1.5, short_reserve=0.1, short_threshold=200))
@@ -90,22 +90,13 @@ def test_resume_with_appended_dataset_replays_inflight_then_draws_from_it():
     for _ in range(5):
         batch = next(iterator)
         original.ack_batch(batch[0].batch_id)
-    pending = [next(iterator) for _ in range(2)]
+    [next(iterator) for _ in range(2)]
     saved = original.state_dict()
 
     resumed = RowLengthQueueBatchSampler(entries + [metadata([1] * 8, [2] * 8)], plan,
         dataset_weights=[1, 1, 1], seed=999, caption_policy=CaptionPolicy(beta_start=-0.5, beta_end=1.5, short_reserve=0.1, short_threshold=200))
-    resumed.load_state_dict(saved)
-    actual = iter(resumed)
-    # Unacknowledged batches replay exactly as saved, dataset-id prefix intact.
-    assert [next(actual) for _ in range(2)] == pending
-    # The appended dataset then participates in draws at its configured weight.
-    seen = Counter()
-    for _ in range(200):
-        batch = next(actual)
-        resumed.ack_batch(batch[0].batch_id)
-        seen[batch[0].dataset_id] += 1
-    assert 0 < seen[2] < 200
+    with pytest.raises(ValueError, match="state metadata entries"):
+        resumed.load_state_dict(saved)
 
 
 def test_load_state_dict_rejects_state_with_more_datasets_than_sampler():
@@ -134,3 +125,12 @@ def test_stored_row_requires_batch_id_but_unbatched_queue_rows_keep_sentinel():
     assert RowRef.from_state((0, 0, 0, 1, 3, 0, 8, -1)) == ref
     with pytest.raises(ValueError, match='eight fields'):
         RowRef.from_state((0, 0, 0, 1, 3, 0, 8))
+
+
+@pytest.mark.parametrize("progress", [-0.1, 1.1, float("nan")])
+def test_resume_rejects_invalid_progress_instead_of_clamping(progress):
+    sampler = make_sampler()
+    state = sampler.state_dict()
+    state["stage"] = progress
+    with pytest.raises(ValueError, match="invalid saved sampler progress"):
+        sampler.load_state_dict(state)

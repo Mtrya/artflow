@@ -399,7 +399,7 @@ def flatten(config: TrainConfig, stage_name: str) -> dict[str, Any]:
 
     flat["dataset_mix"] = shlex.join(f"{d.path}:{d.weight}" for d in stage.datasets)
     # One run directory and one SwanLab experiment span every stage; stage
-    # transitions resume the stored SwanLab run id from runtime.json.
+    # transitions resume the checkpoint-owned SwanLab identity.
     flat["run_name"] = config.train.run_name
     flat["max_steps"] = config.max_steps
     flat["stop_at_step"] = stage.end_step

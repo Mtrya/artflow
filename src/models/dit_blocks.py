@@ -1,4 +1,4 @@
-"""Attention, positional features and native ArtFlow transformer blocks."""
+"""Attention, positional features and native Inko transformer blocks."""
 
 from typing import Tuple, Optional, Sequence
 import functools
