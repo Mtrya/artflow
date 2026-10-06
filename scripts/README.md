@@ -27,7 +27,10 @@ resolve from the repository. The runtime root is not stored in the TOML.
 Ordinary resume requires the checkpoint-owned SwanLab project and run ID.
 `--new-experiment` explicitly restores training state into a fresh experiment
 in the configured project; it never modifies the source experiment. Migration
-requires `--source-run-id` when the source lacks a tracking record. See the
+requires `--source-run-id` when the source lacks a tracking record. An explicit
+`--source-assets RECORD.json` supplies hash-verified prompt and bucket bytes
+when the source recipe paths are unavailable. The shell launcher uses the
+package overlay at `<storage-root>/runtime/python`. See the
 [checkpoint migration procedure](../notes/pretrain_recipe.md#launch-checkpoints-and-resolution-transitions).
 
 The planner takes `--config`, `--stage` and `--storage-root`; dataset weights
@@ -35,8 +38,8 @@ and caption policy come from that recipe. Calibration is a flat JSON list of
 `latent_hw: [H, W]`, `txt_len`, `micro_batch`, `peak_mem_gb` and `ms_per_step`.
 Memory is peak allocated GiB (bytes / 2**30); time is milliseconds for the
 whole micro-batch DiT forward/backward. An OOM record contains the three shape
-fields and `error: "oom"`, without measurements. Convert older measurement
-formats explicitly before reuse. Planner estimates still require device validation.
+fields and `error: "oom"`, without measurements. Calibration inputs must
+conform to this schema. Planner estimates require device validation.
 
 ## Evaluation (`scripts/eval/`)
 

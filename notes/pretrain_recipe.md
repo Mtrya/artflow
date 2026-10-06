@@ -23,9 +23,8 @@ Recovery requirements are described below; machine-local run identity lives in `
 
 Muon chunks fused QKV/modulation matrices before orthogonalization. Its update
 multiplier is `sqrt(max(1, rows/cols))` for each chunk. Conditioning matrices
-belong to AdamW. The selected decay 0.4 was installed through a full-state
-migration at 56k. The checkpoint migration record retains the original recipe
-and state hashes; the selected decay applies to those conditioning matrices only.
+belong to AdamW. Decay 0.4 applies only to the three conditioning matrices
+listed above; other AdamW parameters use the configured ordinary decay.
 
 ## Schedule and sampling
 
@@ -44,23 +43,24 @@ precompute stores latents and cleaned caption text with sampling metadata.
 All three bucket plans target 16×910B2C. Each contains 20 caption-length
 buckets per aspect ratio, up to 2,048 tokens.
 
-| Stage | Micro-batch per rank | Accumulation | Expected samples/update |
+| Stage | Micro-batch per rank | Accumulation | Reference samples/update |
 |---|---:|---:|---:|
 | 256p | 8–72 | 1 | Depends on caption progress; about 950 in the early qualification |
 | 640p | 5–12 | 3 | 528 planned; 532 measured |
 | 896p | 3–6 | 4 | 373 planned; 375 measured |
 
-The later-stage measurements below describe the previously qualified mixtures.
-Correcting source weights or filtering captions changes the distribution used
-by the planner; reassess expected batches and qualify the resulting plans on
-the full workload. The 52 GiB planner ceiling includes model, encoder,
-optimizer, EMA, gradients and DDP residency. Measurement conditions and limits
-are in [the infrastructure record](infra_pretrain.md).
+The batch estimates and measurements describe the reference workloads in
+[the infrastructure record](infra_pretrain.md). The configured 640p/896p pools
+need their own expected-batch calculation and full-workload qualification:
+source weights and caption filtering affect bucket occupancy. The 52 GiB
+planner ceiling includes model, encoder, optimizer, EMA, gradients and DDP
+residency.
 
 ## Resolution-specific source mixture
 
-For each resolution, count eligible training rows in the final dataset artifacts
-and assign source mass `rows × multiplier`, then normalize over that stage:
+For the 640p and 896p stages, count eligible training rows in the final dataset
+artifacts and assign source mass `rows × multiplier`, then normalize over that
+stage. The completed 256p stage retains its recorded recipe weights.
 
 - 1.8: `d1`, `d2-wikiart`, `d2-museum`, `d3-pexels`.
 - 1.5: `d4-extra`, `d4-extra2`, `d4-extra3`.
@@ -89,19 +89,18 @@ tokens; the 896p threshold is 50. These are dataset-construction thresholds,
 separate from the retained prompt lengths used by the caption curriculum and
 bucket sampler. Caption variants within surviving rows remain selectable.
 
-The previous 640p/896p weights reused 256p counts, overemphasizing sources
-whose higher-resolution eligible pools had shrunk. The corrected d1 weights
-increase from 7.909056% to 9.922857% at 640p and from 8.154900% to 19.362067%
-at 896p. The completed 256p weights remain unchanged for strict checkpoint
-comparison. Its count annotations describe the current artifacts; recomputing
-from those counts would change its weights slightly (at most 0.001798 percentage
-points). Stored `dataset_info.json` split summaries can describe upstream data
-and are not authoritative counts of the saved Arrow rows.
+The completed 256p weights are part of the checkpoint recipe and remain fixed.
+Its count annotations inventory the available artifacts; recomputing from those
+counts would change its weights by at most 0.001798 percentage points. Stored
+`dataset_info.json` split summaries can describe upstream data and are not
+authoritative counts of the saved Arrow rows.
 
 The selected restart source is the preserved 480k checkpoint. Artifact
 integrity has been verified; migration, changed row-pool handling and training
-launch remain separate operations. The audit establishes the source mixture,
-not generation quality or hardware qualification of the changed workload.
+launch remain separate operations. The audit verifies Arrow counts, sidecar
+consistency and normalized weights.
+It does not replay raw-caption tokenization or establish generation quality
+or hardware qualification of the configured workload.
 
 Strict resume compares the full recorded recipe, including future stages.
 [`migrate_checkpoint.py`](../scripts/pretrain/migrate_checkpoint.py) permits
@@ -133,9 +132,8 @@ generations before attributing an internal-scale trend to quality regression.
 
 At the completed pretraining checkpoint, evaluate live weights first, then compare
 stored EMA on loss, grids and KID before selecting the post-training teacher.
-Post-hoc EMA is an option only if enough suitable checkpoint history was
-retained; the rotating two-checkpoint policy cannot reconstruct arbitrary
-historical decay profiles.
+Post-hoc EMA requires enough suitably spaced checkpoints; the rotating
+two-checkpoint policy cannot reconstruct arbitrary alternative decay profiles.
 
 ## Launch, checkpoints and resolution transitions
 
@@ -156,7 +154,8 @@ one OpenMP thread per worker before initialization. It holds a writer lock,
 mirrors attempt output and terminates the worker group on NPU OOM.
 
 Save every 2,000 updates and retain the latest two complete checkpoints plus
-all configured stage endpoints. All stages share one run directory. Checkpoints contain the complete run config, model metadata, active
+all configured stage endpoints. All stages share one run directory. Checkpoints
+contain the complete run config, model metadata, active
 bucket table, model/EMA, optimizers, schedulers, sampler and per-rank RNG state.
 Recovery chooses the latest complete same-stage checkpoint; a stage's first
 launch uses its predecessor's endpoint. `--resume` selects a complete checkpoint
@@ -182,11 +181,11 @@ Subsequent checkpoints record the new experiment's identity; ordinary recovery
 from those checkpoints omits `--new-experiment`. A fresh experiment explicitly
 uses `resume="never"`.
 
-The 256p and discarded 640p experiment histories remain in `artflow`. The
-corrected continuation uses `inko`. The model class/module is `Inko` /
-`src.models.inko`, and its architecture identifier is `inko`; tensor names,
-shapes and numerical operators are unchanged by this rename. The migration
-reader alone recognizes `artflow-v2` and records the metadata conversion.
+The configured SwanLab project is `inko`. The selected source checkpoint
+belongs to `artflow`; `--new-experiment` records that provenance. The model
+class/module is `Inko` / `src.models.inko`, and its architecture identifier is
+`inko`. Only the explicit migration reader accepts `artflow-v2` metadata; its
+conversion preserves tensor names, shapes and numerical operators.
 
 Before adopting a new checkout or recipe, migrate a complete checkpoint into
 an independent destination. For a checkpoint without its own tracking record,
@@ -198,7 +197,7 @@ python -m scripts.pretrain.migrate_checkpoint \
   --destination /external/inko/keep/pretrain-start/checkpoint_step_STEP \
   --config configs/pretrain.toml --storage-root /external/inko \
   --source-run-id SOURCE_RUN_ID \
-  --reason "Import checkpoint metadata and correct future-stage mixture"
+  --reason "Import checkpoint metadata and declared source weights"
 
 python -m scripts.pretrain.launch \
   --config configs/pretrain.toml --stage 640p --storage-root /external/inko \
@@ -238,7 +237,7 @@ Repository tests verify artifact copying, state restoration contracts and
 scheduling mechanics. They do not establish training quality or a successful
 NPU restart. Qualify the actual migrated checkpoint with a device restore,
 then inspect real generations and telemetry under the corrected mixture.
-Historical measurements are in [the infrastructure record](infra_pretrain.md).
+Measurement protocols and limits are in [the infrastructure record](infra_pretrain.md).
 
 ## Reading stability telemetry
 
