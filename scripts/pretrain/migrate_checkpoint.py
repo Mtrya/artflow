@@ -3,6 +3,7 @@
 Model, optimizer, scheduler, EMA and training RNG artifacts remain byte-identical.
 Sampler state is preserved unless --reset-sampler explicitly rebuilds it for
 filtered row pools, discarding queued/prefetched draws at the saved global step.
+Interior stage endpoints preserve sampler files: the next stage starts fresh.
 Future stages may change data/batching; the current stage may only reweight
 the same entries. Model capacity, completed stages and the global schedule
 cannot change. Old artifact conventions are read here, never in the trainer.
@@ -323,11 +324,15 @@ def migrate(
         write_tracking_record(
             staging, identity["swanlab_project"], identity["swanlab_run_id"]
         )
+        # The next stage constructs its own sampler at a resolution transition.
+        at_interior_endpoint = any(
+            step == stage.end_step for stage in config.stages[:-1]
+        )
         sampler_reset = (
             reset_sampler_files(
                 staging, config, step=step, world_size=record["world_size"]
             )
-            if reset_sampler else None
+            if reset_sampler and not at_interior_endpoint else None
         )
         destination_hashes = {p.name: sha256(p) for p in staging.iterdir()}
         provenance = {
@@ -355,7 +360,7 @@ def migrate(
             "sampler_reset": sampler_reset,
             "preserved": (
                 "Model, optimizer, scheduler, EMA and training RNG artifacts are byte-identical; sampler files are explicitly rebuilt."
-                if reset_sampler else
+                if sampler_reset is not None else
                 "Model, optimizer, scheduler, EMA, sampler and RNG artifacts are byte-identical."
             ),
         }

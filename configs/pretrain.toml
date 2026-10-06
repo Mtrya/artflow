@@ -233,7 +233,7 @@ weight = 9.436702
 path = "precomputed_dataset/d4-vintage@640p"
 weight = 9.633094
 
-# 45,228 rows, natural 3.312%, x1.0
+# 45,248 rows, natural 3.312%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d4-zimage@640p"
 weight = 2.749483

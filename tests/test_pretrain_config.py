@@ -142,11 +142,24 @@ def test_resume_never_uses_parent_identity_or_hides_corruption(tmp_path):
         tracker_init_kwargs(checkpoint, "another-project", new_experiment=True)
 
 
-@pytest.mark.parametrize("archive_source_assets,reset_sampler", [(False, False), (True, False), (True, True)])
+@pytest.mark.parametrize(
+    "archive_source_assets,reset_sampler,checkpoint_step,stage_index,reset_progress",
+    [
+        (False, False, 15, 1, None),
+        (True, False, 15, 1, None),
+        (True, True, 15, 1, 0.425),
+        (False, True, 0, 0, 0.2),
+        (False, True, 10, 0, None),
+        (False, True, 20, 1, None),
+        (False, True, 40, 2, 0.8),
+    ],
+)
 def test_migration_rebrands_metadata_preserves_training_state_and_records_origin(
-    tmp_path, recipe, monkeypatch, capsys, archive_source_assets, reset_sampler
+    tmp_path, recipe, monkeypatch, capsys, archive_source_assets, reset_sampler,
+    checkpoint_step, stage_index, reset_progress,
 ):
-    if reset_sampler:
+    # Interior endpoints need no dataset access; their fixture paths are absent.
+    if reset_progress is not None:
         from datasets import Dataset
 
         pool = tmp_path / "filtered-pool"
@@ -156,7 +169,9 @@ def test_migration_rebrands_metadata_preserves_training_state_and_records_origin
             metadata_info=prompt_metadata_contract(3),
         ).save(pool / "length_metadata.npz")
         stages = list(recipe.stages)
-        stages[1] = replace(stages[1], datasets=[DatasetConfig(str(pool), 1.0)])
+        stages[stage_index] = replace(
+            stages[stage_index], datasets=[DatasetConfig(str(pool), 1.0)]
+        )
         recipe = replace(recipe, stages=stages)
     old = asdict(recipe)
     old["telemetry"]["swanlab_project"] = "original-project"
@@ -167,14 +182,14 @@ def test_migration_rebrands_metadata_preserves_training_state_and_records_origin
         old_plan = tmp_path / f"old-plan-{i}.json"
         old_plan.write_bytes(Path(stage["bucket_plan"]).read_bytes())
         stage["bucket_plan"] = str(old_plan)
-    source = tmp_path / "original" / "checkpoint_step_000015"
+    source = tmp_path / "original" / f"checkpoint_step_{checkpoint_step:06d}"
     source.mkdir(parents=True)
     (source / "run_config.json").write_text(json.dumps(old))
     (source / "transformer_config.json").write_text(
         json.dumps(dict(asdict(recipe.model), architecture="artflow-v2"))
     )
     (source / "bucket_plan.json").write_bytes(
-        Path(recipe.stages[1].bucket_plan).read_bytes()
+        Path(recipe.stages[stage_index].bucket_plan).read_bytes()
     )
     artifacts = [
         "model.safetensors",
@@ -189,7 +204,7 @@ def test_migration_rebrands_metadata_preserves_training_state_and_records_origin
     ]
     for name in artifacts:
         (source / name).write_bytes(b"opaque saved training state")
-    if reset_sampler:
+    if reset_progress is not None:
         torch.save({
             "version": 1, "cycles": [[100, 101]], "next_batch_id": 37,
             "queues": {(1, 0): [(0, 100, 0, 1, 2, 0, 16, -1)]},
@@ -199,7 +214,7 @@ def test_migration_rebrands_metadata_preserves_training_state_and_records_origin
     write_tracking_record(source, "original-project", "continuing-run")
     write_checkpoint_record(
         source,
-        step=15,
+        step=checkpoint_step,
         max_steps=40,
         scheduler_count=2,
         use_ema=True,
@@ -237,7 +252,7 @@ def test_migration_rebrands_metadata_preserves_training_state_and_records_origin
     )
     assert (
         validate_checkpoint(destination, max_steps=40, world_size=1, device_type="npu")
-        == 15
+        == checkpoint_step
     )
     assert read_tracking_record(destination) == {
         "swanlab_project": "original-project",
@@ -256,17 +271,26 @@ def test_migration_rebrands_metadata_preserves_training_state_and_records_origin
     ) == {"mode": "online", "resume": "never"}
     assert json.loads((destination / "run_config.json").read_text()) == asdict(recipe)
     assert {p.name: p.read_bytes() for p in source.iterdir()} == before
-    preserved = [n for n in artifacts if not (reset_sampler and n.startswith("sampler_state_"))]
+    preserved = [
+        n for n in artifacts
+        if not (reset_progress is not None and n.startswith("sampler_state_"))
+    ]
     assert all((destination / name).read_bytes() == before[name] for name in preserved)
-    if reset_sampler:
+    if reset_progress is not None:
         state = torch.load(destination / "sampler_state_rank_00000.pt", weights_only=False)
         assert sorted(state["cycles"][0]) == [0, 1, 2]
         assert state["cursors"] == [0]
-        assert state["stage"] == pytest.approx(0.425)  # .2 + .6 * 15/40
+        assert state["stage"] == pytest.approx(reset_progress)
         assert state["next_batch_id"] == 37
         assert state["queues"] == {}
         assert state["inflight"] == state["replay"] == state["ready_batches"] == []
         assert report["sampler_reset"]["ranks"][0]["discarded_pending_rows"] == 2
+        assert "sampler files are explicitly rebuilt" in report["preserved"]
+    else:
+        assert report["sampler_reset"] is None
+        assert report["preserved"] == (
+            "Model, optimizer, scheduler, EMA, sampler and RNG artifacts are byte-identical."
+        )
     validate_checkpoint_recipe(destination, asdict(recipe), architecture="inko")
     # The launcher must carry the explicit fork into the trainer command.
     from scripts.pretrain import launch
@@ -281,7 +305,7 @@ def test_migration_rebrands_metadata_preserves_training_state_and_records_origin
             "--storage-root",
             str(tmp_path),
             "--stage",
-            "s1",
+            recipe.stages[stage_index].name,
             "--nproc_per_node",
             "1",
             "--resume",
@@ -321,7 +345,7 @@ def test_migration_rebrands_metadata_preserves_training_state_and_records_origin
         migration.check_recipe_change(
             old,
             changed,
-            step=15,
+            step=checkpoint_step,
             active_bucket=json.loads((source / "bucket_plan.json").read_text()),
         )
     old_prompt.write_text("different prompt suite")
@@ -329,7 +353,7 @@ def test_migration_rebrands_metadata_preserves_training_state_and_records_origin
         migration.check_recipe_change(
             old,
             asdict(recipe),
-            step=15,
+            step=checkpoint_step,
             active_bucket=json.loads((source / "bucket_plan.json").read_text()),
         )
 
@@ -379,7 +403,7 @@ def test_migration_rebrands_metadata_preserves_training_state_and_records_origin
             migration.check_recipe_change(
                 old,
                 asdict(recipe),
-                step=15,
+                step=checkpoint_step,
                 active_bucket=json.loads((source / "bucket_plan.json").read_text()),
                 archived_assets=migration.load_source_assets(archive),
             )
@@ -432,7 +456,10 @@ def test_sampler_migration_partitions_filtered_rows_without_advancing_training_r
     python_rng, numpy_rng, torch_rng = random.getstate(), np.random.get_state(), torch.get_rng_state()
     migration.reset_sampler_files(staging, recipe, step=15, world_size=2)
     assert random.getstate() == python_rng
-    assert np.array_equal(np.random.get_state()[1], numpy_rng[1])
+    numpy_after = np.random.get_state()
+    assert numpy_after[0] == numpy_rng[0]
+    assert np.array_equal(numpy_after[1], numpy_rng[1])
+    assert numpy_after[2:] == numpy_rng[2:]
     assert torch.equal(torch.get_rng_state(), torch_rng)
     for rank, expected_rows in enumerate(([0, 4], [1, 3, 5])):
         state = torch.load(staging / f"sampler_state_rank_{rank:05d}.pt", weights_only=False)

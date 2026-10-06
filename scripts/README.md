@@ -31,8 +31,10 @@ requires `--source-run-id` when the source lacks a tracking record. An explicit
 `--source-assets RECORD.json` supplies hash-verified prompt and bucket bytes
 when the source recipe paths are unavailable. For filtered row pools,
 `--reset-sampler` rebuilds rank-local cycles at the saved curriculum position
-and clears queued draws while preserving all other training state. The shell launcher uses the
-package overlay at `<storage-root>/runtime/python`. See the
+and clears queued draws while preserving all other training state. At interior
+stage endpoints, migration preserves sampler files because the next stage
+constructs its own sampler. The shell launcher uses the package overlay at
+`<storage-root>/runtime/python`. See the
 [checkpoint migration procedure](../notes/pretrain_recipe.md#launch-checkpoints-and-resolution-transitions).
 
 The planner takes `--config`, `--stage` and `--storage-root`; dataset weights

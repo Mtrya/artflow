@@ -191,21 +191,24 @@ class/module is `Inko` / `src.models.inko`, and its architecture identifier is
 conversion preserves tensor names, shapes and numerical operators.
 
 Before adopting a new checkout or recipe, migrate a complete checkpoint into
-an independent destination. For a checkpoint without its own tracking record,
-supply the verified source experiment ID explicitly:
+an independent destination. The 480k continuation requires archived config
+bytes and a sampler reset for the filtered pools. For a checkpoint without its
+own tracking record, supply the verified source experiment ID explicitly:
 
 ```bash
 python -m scripts.pretrain.migrate_checkpoint \
-  --source /external/inko/keep/SOURCE/checkpoint_step_STEP \
-  --destination /external/inko/keep/pretrain-start/checkpoint_step_STEP \
+  --source /external/inko/keep/pretrain/SOURCE/checkpoint_step_480000 \
+  --destination /external/inko/keep/pretrain/inko-pretrain/checkpoint_step_480000 \
   --config configs/pretrain.toml --storage-root /external/inko \
   --source-run-id SOURCE_RUN_ID \
-  --reason "Import checkpoint metadata and declared source weights"
+  --source-assets /external/inko/records/storage/checkpoint-assets.json \
+  --reset-sampler \
+  --reason "Import checkpoint metadata, corrected mixture and filtered row pools"
 
 python -m scripts.pretrain.launch \
   --config configs/pretrain.toml --stage 640p --storage-root /external/inko \
   --nproc_per_node 16 \
-  --resume /external/inko/keep/pretrain-start/checkpoint_step_STEP \
+  --resume /external/inko/keep/pretrain/inko-pretrain/checkpoint_step_480000 \
   --new-experiment --verify_resume_state
 ```
 
@@ -236,9 +239,12 @@ and prefetched draws, and uses the saved global step for caption curriculum
 progress. Seeds are the recipe seed plus rank; batch counters remain monotonic.
 Dataset state/sidecar hashes and discarded pending-row counts enter the
 migration record. This explicit data-stream restart preserves all other
-training state; `--new-experiment` changes tracking identity only. A migrated checkpoint
-retains its source tracking identity until the explicit new
-experiment begins; migration itself creates no SwanLab experiment.
+training state. At an interior stage endpoint, migration preserves sampler files
+even with `--reset-sampler`: the next stage constructs its own sampler. The reset
+applies within a stage and at the final endpoint. `--new-experiment` changes
+tracking identity only. A migrated checkpoint retains its source tracking
+identity until the explicit new experiment begins; migration itself creates no
+SwanLab experiment.
 
 Repository tests verify artifact copying, state restoration contracts and
 scheduling mechanics. They do not establish training quality or a successful
