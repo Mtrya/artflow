@@ -2,11 +2,12 @@
 
 Inko is a bilingual text-to-image flow-matching
 DiT, with a 532M-parameter model and an 8-step student as the release target.
-**Pretraining and post-training target Ascend.** Pretraining is stopped; the
-selected continuation source is the preserved, hash-verified 480k checkpoint.
-The 640p/896p source mixtures pass the eligible-row audit. Continuation in
-SwanLab project `inko` requires explicit checkpoint migration, a sampler-state
-decision for the filtered row pools, and qualification of the resulting workload.
+**Pretraining and post-training target Ascend.** The 640p continuation runs
+in SwanLab project `inko` from an independently migrated 480k checkpoint.
+The 640p/896p source mixtures pass the eligible-row audit. Filtered row pools
+use explicitly rebuilt sampler cycles; all 16 ranks verify exact restoration
+of model, EMA, optimizer, scheduler and training RNG state. Longer-run
+telemetry and generations establish training behavior under the mixture.
 
 ## Document map
 
@@ -58,8 +59,8 @@ one strict run config covering the entire resolution curriculum.
 | 2: model experiments | Complete | Width/depth, modulation, text exit, positional scheme and optimizer selected. |
 | 3: execution efficiency | Measured | CUDA operator and throughput comparisons; hardware-specific validation on Ascend. |
 | 3.5: captions and buckets | Complete | Multi-caption row sampling, length curriculum and variable-aspect planning. |
-| 4: Ascend qualification | Reference workloads qualified | 16×910B2C bucket plans, execution gains, native transitions, recovery and monitoring; configured later-stage pools need workload qualification. |
-| 5: pretraining | Stopped; continuation preparation | 480k source integrity and later-stage mixture audit verified; explicit migration, sampler handling and full-state recovery qualification pending. |
+| 4: Ascend qualification | Reference workloads and 640p restart verified | 16×910B2C plans, native transitions, recovery and monitoring; the 640p continuation passes all-rank restore and initial updates. The configured 896p pool needs its own qualification. |
+| 5: pretraining | 640p continuation | Migrated 480k input, audited source weights, explicit sampler rebuild and exact all-rank restoration in `inko`; monitor through the 570k boundary. |
 | 6: post-training | Preparation | Ascend execution/reward qualification, 640p pilot, then 896p cold start and joint DMD+RL. |
 | 7: publication | Pending completed training | Final inference pipeline, model release and demo. |
 
@@ -97,9 +98,9 @@ These measurements do not establish throughput or training quality for the
 configured eligible pools. Measurement scope and transition/recovery evidence are in [the infrastructure record](infra_pretrain.md).
 Apply recipe and metadata amendments through the explicit checkpoint migration
 tool before resume, preserving the original complete source. The selected
-480k restart is mid-stage: changed row pools require an explicit sampler-state
-decision before training resumes. Continue normal loss/gradient/functional
-monitoring through subsequent resolution transitions.
+480k restart is mid-stage: its sampler cycles are rebuilt from the filtered
+pools with empty queues at curriculum position 0.8. Continue normal
+loss/gradient/functional monitoring through subsequent resolution transitions.
 
 Review the fixed bilingual panel, live/EMA losses and internal stability
 telemetry at the recipe's cadence. Follow the evidence-based review and

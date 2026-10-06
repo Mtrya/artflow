@@ -120,6 +120,26 @@ stability evidence. The mature-model/fresh-optimizer test is not the actual
 Stage activation follows the strict checkpoint migration and recovery procedure
 in [the recipe](pretrain_recipe.md#launch-checkpoints-and-resolution-transitions).
 
+## 640p continuation
+
+The configured 19-source, 1,366,193-row pool has a verified full-state start at
+480k on 16×910B2C. Model, EMA, both optimizers, schedulers and per-rank training
+RNG restore exactly from the independent migration copy. The sampler uses
+fresh rank-local cycles and empty queues at curriculum position 0.8 because
+filtering changes row identities. The complete source checkpoint is preserved.
+
+The first 114 updates apply on all 16 ranks with finite loss and gradients;
+maximum pre-clip gradient is 0.77691. Maximum allocation across ranks is
+51.59 GiB. Updates 480,051–480,114 measure 161.51 global samples/s. This brief
+window uses the configured mixture, includes its ordinary update work and
+excludes the initial evaluation and first 50 warmup updates; it does not
+establish long-run throughput or generation quality.
+
+The initial held-out panel has 823 cases: 512 / 234 / 74 / 3 / 0 across the
+five caption-length bands. EMA/live loss is 0.77753 / 0.78121. The long-caption
+shortfall limits this panel's scope. SwanLab's server exposes the configured
+recipe, source experiment provenance and metrics under project `inko`.
+
 ## Recovery and monitoring qualification
 
 The 400→600 recovery test restored model, both optimizers, schedulers, EMA

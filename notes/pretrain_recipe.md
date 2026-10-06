@@ -95,12 +95,15 @@ counts would change its weights by at most 0.001798 percentage points. Stored
 `dataset_info.json` split summaries can describe upstream data and are not
 authoritative counts of the saved Arrow rows.
 
-The selected restart source is the preserved 480k checkpoint. Artifact
-integrity has been verified; migration, changed row-pool handling and training
-launch remain separate operations. The audit verifies Arrow counts, sidecar
-consistency and normalized weights.
-It does not replay raw-caption tokenization or establish generation quality
-or hardware qualification of the configured workload.
+The 640p continuation uses an independently migrated 480k checkpoint. Its
+source hashes are verified, and its sampler cycles use the filtered pools with
+empty queues at curriculum position 0.8. All 16 ranks restore model, EMA,
+optimizer, scheduler and training RNG state exactly before applying updates.
+
+The dataset audit verifies Arrow counts, sidecar consistency and normalized
+weights. It does not replay raw-caption tokenization or establish generation
+quality. Device restoration and initial-update evidence are recorded in
+[the infrastructure note](infra_pretrain.md#640p-continuation).
 
 Strict resume compares the full recorded recipe, including future stages.
 [`migrate_checkpoint.py`](../scripts/pretrain/migrate_checkpoint.py) permits

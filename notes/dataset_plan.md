@@ -92,8 +92,10 @@ prompt contract 与 source signature；所有行均有 caption。640p/896p 权�
 
 `dataset_info.json` 的 split 摘要可能描述上游数据，不能代替 Arrow 实际计数。
 逐来源行数、自然占比与倍数见配置，审计边界见
-[pretrain_recipe.md](pretrain_recipe.md)。480k 是阶段内重启点，采样池变化需
-显式处理 sampler state，并验证 bucket 规划对应的完整工作负载。
+[pretrain_recipe.md](pretrain_recipe.md)。480k 是阶段内重启点；迁移工件按过滤后的池重建
+sampler cycle，清空队列并从 curriculum position 0.8 开始新抽样。模型、EMA、
+optimizer、scheduler 和训练 RNG 在全部 16 个 rank 上精确恢复。训练遥测与
+实际生成结果用于评估该配比的运行表现。
 
 ## 训练评估与后训练数据
 
