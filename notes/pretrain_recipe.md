@@ -213,8 +213,9 @@ itself does not move datasets, weights, checkpoints or experiment histories.
 
 The tool validates the source inventory, verifies relocated prompt bytes and
 completed/current bucket contents, and records both recipes, both model
-identities and file hashes. Model, optimizer, scheduler, EMA, sampler and RNG
-artifacts remain byte-identical. It publishes the destination only after all
+identities and file hashes. Model, optimizer, scheduler, EMA and training RNG
+artifacts remain byte-identical. Sampler files are byte-identical unless an
+explicit reset is requested. It publishes the destination only after all
 copies and metadata checks pass. The original remains untouched.
 
 When source prompt or bucket files have been removed from their original
@@ -226,10 +227,13 @@ asset needed for comparison; it never falls back to another source location.
 The record's path and hash enter the migration provenance. The trainer only
 reads the migrated recipe and repository config files.
 
-This metadata migration does not adapt saved
-sampler cycles or queued row IDs to filtered/replaced datasets. At a mid-stage
-restart such as 480k, that requires a separate explicit sampler-state decision;
-`--new-experiment` changes tracking identity only. A migrated checkpoint
+For filtered row pools, pass `--reset-sampler` during migration. It rebuilds
+each rank's shuffled row cycles from the target dataset sidecars, clears queued
+and prefetched draws, and uses the saved global step for caption curriculum
+progress. Seeds are the recipe seed plus rank; batch counters remain monotonic.
+Dataset state/sidecar hashes and discarded pending-row counts enter the
+migration record. This explicit data-stream restart preserves all other
+training state; `--new-experiment` changes tracking identity only. A migrated checkpoint
 retains its source tracking identity until the explicit new
 experiment begins; migration itself creates no SwanLab experiment.
 

@@ -1,6 +1,8 @@
 """Migrate checkpoint metadata and recipe on an independent, verified copy.
 
-Model, optimizer, scheduler, EMA, sampler and RNG artifacts remain byte-identical.
+Model, optimizer, scheduler, EMA and training RNG artifacts remain byte-identical.
+Sampler state is preserved unless --reset-sampler explicitly rebuilds it for
+filtered row pools, discarding queued/prefetched draws at the saved global step.
 Future stages may change data/batching; the current stage may only reweight
 the same entries. Model capacity, completed stages and the global schedule
 cannot change. Old artifact conventions are read here, never in the trainer.
@@ -16,7 +18,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from src.models.inko import Inko
-from src.pretrain.config import load_config
+from src.pretrain.config import load_config, stage_caption_policy
 from src.pretrain.stage_control import (
     CHECKPOINT_RECORD,
     validate_checkpoint,
@@ -175,6 +177,68 @@ def source_tracking(source, old_recipe, source_run_id):
     return {"swanlab_project": project, "swanlab_run_id": run_id}
 
 
+def reset_sampler_files(staging, config, *, step, world_size):
+    """Write fresh rank-local cycles for the target pools, outside the trainer."""
+    import torch
+    from datasets import load_from_disk
+
+    from src.dataset.length_metadata import RowLengthMetadata
+    from src.dataset.sampler import RowLengthQueueBatchSampler, load_bucket_plan
+
+    stage = next(s for s in config.stages if step <= s.end_step)
+    metadata, datasets = [], []
+    for entry in stage.datasets:
+        path = Path(entry.path)
+        sidecar = path / "length_metadata.npz"
+        lengths = RowLengthMetadata.load(sidecar)
+        lengths.validate_against_dataset(load_from_disk(str(path)))
+        metadata.append(lengths)
+        datasets.append({
+            "path": str(path), "rows": lengths.num_rows,
+            "state_sha256": sha256(path / "state.json"),
+            "sidecar_sha256": sha256(sidecar),
+        })
+    plan = load_bucket_plan(
+        stage.bucket_plan,
+        {int(r) for m in metadata for r in m.resolution_ids},
+    )
+    policy, _ = stage_caption_policy(config, stage.name)
+    progress = config.data.curriculum_start + (
+        config.data.curriculum_end - config.data.curriculum_start
+    ) * step / config.max_steps
+    ranks = []
+    for rank in range(world_size):
+        path = staging / f"sampler_state_rank_{rank:05d}.pt"
+        old = torch.load(path, map_location="cpu", weights_only=False)
+        if old.get("version") != RowLengthQueueBatchSampler.STATE_VERSION:
+            raise ValueError("unsupported source sampler version for reset")
+        next_id = old["next_batch_id"]
+        if type(next_id) is not int or next_id < 0:
+            raise ValueError("invalid source sampler batch counter")
+        seed = config.train.seed + rank
+        sampler = RowLengthQueueBatchSampler(
+            metadata, plan, [d.weight for d in stage.datasets],
+            num_replicas=world_size, rank=rank, seed=seed,
+            initial_stage=progress, caption_policy=policy,
+        )
+        state = sampler.state_dict()
+        state["next_batch_id"] = next_id
+        torch.save(state, path)
+        ranks.append({
+            "rank": rank, "seed": seed, "next_batch_id": next_id,
+            "source_cycle_rows": [len(c) for c in old["cycles"]],
+            "destination_cycle_rows": [len(c) for c in state["cycles"]],
+            "discarded_pending_rows": sum(map(len, old["queues"].values()))
+            + sum(len(b) for k in ("inflight", "replay", "ready_batches")
+                  for b in old[k]),
+        })
+    return {
+        "policy": "Fresh shuffled cycles; empty queues and prefetch; seed = recipe seed + rank; batch counters preserved.",
+        "stage": stage.name, "curriculum_position": progress,
+        "datasets": datasets, "ranks": ranks,
+    }
+
+
 def migrate(
     source,
     destination,
@@ -184,6 +248,7 @@ def migrate(
     reason,
     source_run_id=None,
     source_assets=None,
+    reset_sampler=False,
 ):
     if not reason.strip():
         raise ValueError("a migration reason is required")
@@ -258,6 +323,12 @@ def migrate(
         write_tracking_record(
             staging, identity["swanlab_project"], identity["swanlab_run_id"]
         )
+        sampler_reset = (
+            reset_sampler_files(
+                staging, config, step=step, world_size=record["world_size"]
+            )
+            if reset_sampler else None
+        )
         destination_hashes = {p.name: sha256(p) for p in staging.iterdir()}
         provenance = {
             "migration": "checkpoint-metadata",
@@ -281,7 +352,12 @@ def migrate(
             "source_tracking": identity,
             "new_experiment_required": identity["swanlab_project"]
             != config.telemetry.swanlab_project,
-            "preserved": "Model, optimizer, scheduler, EMA, sampler and RNG artifacts are byte-identical.",
+            "sampler_reset": sampler_reset,
+            "preserved": (
+                "Model, optimizer, scheduler, EMA and training RNG artifacts are byte-identical; sampler files are explicitly rebuilt."
+                if reset_sampler else
+                "Model, optimizer, scheduler, EMA, sampler and RNG artifacts are byte-identical."
+            ),
         }
         (staging / provenance_name).write_text(json.dumps(provenance, indent=2) + "\n")
         write_checkpoint_record(
@@ -308,6 +384,10 @@ if __name__ == "__main__":
     parser.add_argument("--reason", required=True)
     parser.add_argument("--storage-root", required=True)
     parser.add_argument(
+        "--reset-sampler", action="store_true",
+        help="Rebuild shuffled cycles from target datasets and discard queued draws; preserve global training state",
+    )
+    parser.add_argument(
         "--source-assets",
         help="Explicit JSON record of original config paths, text and SHA-256 hashes",
     )
@@ -324,6 +404,7 @@ if __name__ == "__main__":
         reason=args.reason,
         source_run_id=args.source_run_id,
         source_assets=args.source_assets,
+        reset_sampler=args.reset_sampler,
     )
     print(
         json.dumps(
