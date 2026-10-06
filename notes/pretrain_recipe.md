@@ -71,13 +71,37 @@ are choices within an image row, not extra rows. Split sources such as
 `d3-people-a/b` and `d4-relaion-p0..4` each contribute their own eligible rows;
 splitting a source must not multiply its aggregate weight.
 
+The 640p/896p weights use the final resolution-specific Arrow row counts.
+An independent audit counted every configured shard and checked all 50
+dataset sidecars against their row counts, prompt contracts and source
+signatures. No configured row has an empty caption list. The 640p/896p
+weights match `100 × rows × multiplier / sum(rows × multiplier)` to their
+six-decimal precision; their sums are 100.000000 and 99.999999.
+
+| Stage | Source entries | Eligible rows | Weighted row mass | d1 weight (%) |
+|---|---:|---:|---:|---:|
+| 256p, completed recipe | 15 | 1,699,951 | — | 8.093704 |
+| 640p | 19 | 1,366,193 | 1,645,691.4 | 9.922857 |
+| 896p | 16 | 649,772 | 838,639.8 | 19.362067 |
+
+The 640p filter removes rows whose captions are all shorter than 16 raw
+tokens; the 896p threshold is 50. These are dataset-construction thresholds,
+separate from the retained prompt lengths used by the caption curriculum and
+bucket sampler. Caption variants within surviving rows remain selectable.
+
 The previous 640p/896p weights reused 256p counts, overemphasizing sources
-whose higher-resolution eligible pools had shrunk. That error does not change
-the completed 256p stage. The legacy 640p continuation is stopped; corrected
-later-stage weights and their count evidence must be audited before restarting.
-The selected restart is the 480k checkpoint. Locating and migrating the real
-artifact, handling changed row pools, and launching training are separate
-operations from the repository cleanup.
+whose higher-resolution eligible pools had shrunk. The corrected d1 weights
+increase from 7.909056% to 9.922857% at 640p and from 8.154900% to 19.362067%
+at 896p. The completed 256p weights remain unchanged for strict checkpoint
+comparison. Its count annotations describe the current artifacts; recomputing
+from those counts would change its weights slightly (at most 0.001798 percentage
+points). Stored `dataset_info.json` split summaries can describe upstream data
+and are not authoritative counts of the saved Arrow rows.
+
+The selected restart source is the preserved 480k checkpoint. Artifact
+integrity has been verified; migration, changed row-pool handling and training
+launch remain separate operations. The audit establishes the source mixture,
+not generation quality or hardware qualification of the changed workload.
 
 Strict resume compares the full recorded recipe, including future stages.
 [`migrate_checkpoint.py`](../scripts/pretrain/migrate_checkpoint.py) permits

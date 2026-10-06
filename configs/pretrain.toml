@@ -87,63 +87,81 @@ bucket_plan = "configs/bucket_plans/256p-k20.json"
 eval_dataset_path = "precomputed_dataset/light-eval@256p"
 grid_steps = [450000]
 
+# Keep the completed 256p recipe's weights for strict checkpoint comparison.
+# Row counts and natural shares below describe the current artifact inventory;
+# they do not redefine the completed-stage weights.
+
+# 91,006 rows, natural 5.353%, x1.8
 [[stages.datasets]]
 path = "precomputed_dataset/d1@256p"
 weight = 8.093704
 
+# 214,041 rows, natural 12.591%, x1.8
 [[stages.datasets]]
 path = "precomputed_dataset/d2-wikiart@256p"
 weight = 19.031336
 
+# 10,065 rows, natural 0.592%, x1.8
 [[stages.datasets]]
 path = "precomputed_dataset/d2-museum@256p"
 weight = 0.894924
 
+# 118,393 rows, natural 6.964%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d3-human@256p"
 weight = 5.848249
 
+# 114,345 rows, natural 6.726%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d3-people@256p"
 weight = 5.648290
 
+# 59,546 rows, natural 3.503%, x1.8
 [[stages.datasets]]
 path = "precomputed_dataset/d3-pexels@256p"
 weight = 5.294499
 
+# 10,893 rows, natural 0.641%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d3-synth-v2@256p"
 weight = 0.538081
 
+# 2,823 rows, natural 0.166%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d4-inat@256p"
 weight = 0.139447
 
+# 5,504 rows, natural 0.324%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d4-megalith@256p"
 weight = 0.271881
 
+# 162,307 rows, natural 9.548%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d4-pd12m@256p"
 weight = 8.017465
 
+# 194,625 rows, natural 11.449%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d4-vintage@256p"
 weight = 9.613874
 
+# 45,228 rows, natural 2.661%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d4-zimage@256p"
 weight = 2.234124
 
+# 621,773 rows, natural 36.576%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d4-relaion@256p"
 weight = 30.713667
 
+# 19,231 rows, natural 1.131%, x1.5
 [[stages.datasets]]
 path = "precomputed_dataset/d4-extra2@256p"
 weight = 1.424928
 
-# d4-extra3: 1001 batch (30,171 rows), all three resolutions.
+# 30,171 rows, natural 1.775%, x1.5
 [[stages.datasets]]
 path = "precomputed_dataset/d4-extra3@256p"
 weight = 2.235531
@@ -157,81 +175,103 @@ bucket_plan = "configs/bucket_plans/640p-k20.json"
 eval_dataset_path = "precomputed_dataset/light-eval@640p"
 grid_steps = [450000, 452000, 570000]
 
+# Weight = this stage's row count x multiplier, normalized to 100.
+# Row counts are after dropping rows whose captions are all < 16 raw tokens.
+
+# 90,722 rows, natural 6.640%, x1.8
 [[stages.datasets]]
 path = "precomputed_dataset/d1@640p"
-weight = 7.909056
+weight = 9.922857
 
+# 138,125 rows, natural 10.110%, x1.8
 [[stages.datasets]]
 path = "precomputed_dataset/d2-wikiart@640p"
-weight = 18.633565
+weight = 15.107632
 
+# 8,727 rows, natural 0.639%, x1.8
 [[stages.datasets]]
 path = "precomputed_dataset/d2-museum@640p"
-weight = 0.875289
+weight = 0.954529
 
+# 114,100 rows, natural 8.352%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d3-human@640p"
-weight = 5.802921
+weight = 6.933256
 
+# 54,967 rows, natural 4.023%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d3-people-a@640p"
-weight = 2.760126
+weight = 3.340055
 
+# 55,023 rows, natural 4.027%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d3-people-b@640p"
-weight = 2.760078
+weight = 3.343458
 
+# 59,544 rows, natural 4.358%, x1.8
 [[stages.datasets]]
 path = "precomputed_dataset/d3-pexels@640p"
-weight = 5.173712
+weight = 6.512716
 
+# 10,893 rows, natural 0.797%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d3-synth-v2@640p"
-weight = 0.525805
+weight = 0.661910
 
+# 34,934 rows, natural 2.557%, x1.5
 [[stages.datasets]]
 path = "precomputed_dataset/d4-extra@640p"
-weight = 2.529468
+weight = 3.184133
 
+# 155,299 rows, natural 11.367%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d4-pd12m@640p"
-weight = 7.834556
+weight = 9.436702
 
+# 158,531 rows, natural 11.604%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d4-vintage@640p"
-weight = 9.394545
+weight = 9.633094
 
+# 45,228 rows, natural 3.312%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d4-zimage@640p"
-weight = 2.184120
+weight = 2.749483
 
+# 78,305 rows, natural 5.732%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d4-relaion-p0@640p"
-weight = 6.007972
+weight = 4.758182
 
+# 78,051 rows, natural 5.713%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d4-relaion-p1@640p"
-weight = 6.007972
+weight = 4.742748
 
+# 78,342 rows, natural 5.734%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d4-relaion-p2@640p"
-weight = 6.007972
+weight = 4.760431
 
+# 78,327 rows, natural 5.733%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d4-relaion-p3@640p"
-weight = 6.007972
+weight = 4.759519
 
+# 78,381 rows, natural 5.737%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d4-relaion-p4@640p"
-weight = 6.007923
+weight = 4.762801
 
+# 18,503 rows, natural 1.354%, x1.5
 [[stages.datasets]]
 path = "precomputed_dataset/d4-extra2@640p"
-weight = 1.392420
+weight = 1.686495
 
+# 30,171 rows, natural 2.208%, x1.5
 [[stages.datasets]]
 path = "precomputed_dataset/d4-extra3@640p"
-weight = 2.184530
+weight = 2.749999
 
 [[stages]]
 name = "896p"
@@ -242,66 +282,85 @@ bucket_plan = "configs/bucket_plans/896p-k20.json"
 eval_dataset_path = "precomputed_dataset/light-eval@896p"
 grid_steps = [570000, 572000, 600000]
 
+# Weight = this stage's row count x multiplier, normalized to 100.
+# Row counts are after dropping rows whose captions are all < 50 raw tokens.
+
+# 90,210 rows, natural 13.883%, x1.8
 [[stages.datasets]]
 path = "precomputed_dataset/d1@896p"
-weight = 8.154900
+weight = 19.362067
 
+# 33,222 rows, natural 5.113%, x1.8
 [[stages.datasets]]
 path = "precomputed_dataset/d2-wikiart@896p"
-weight = 19.212768
+weight = 7.130546
 
+# 3,643 rows, natural 0.561%, x1.8
 [[stages.datasets]]
 path = "precomputed_dataset/d2-museum@896p"
-weight = 0.902497
+weight = 0.781909
 
+# 109,715 rows, natural 16.885%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d3-human@896p"
-weight = 5.983298
+weight = 13.082494
 
+# 56,824 rows, natural 8.745%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d3-people@896p"
-weight = 5.691793
+weight = 6.775734
 
+# 59,531 rows, natural 9.162%, x1.8
 [[stages.datasets]]
 path = "precomputed_dataset/d3-pexels@896p"
-weight = 5.334531
+weight = 12.777333
 
+# 30,721 rows, natural 4.728%, x1.5
 [[stages.datasets]]
 path = "precomputed_dataset/d4-extra@896p"
-weight = 2.293868
+weight = 5.494790
 
+# 38,875 rows, natural 5.983%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d4-pd12m@896p"
-weight = 8.078084
+weight = 4.635482
 
+# 16,416 rows, natural 2.526%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d4-vintage@896p"
-weight = 9.686564
+weight = 1.957455
 
+# 32,575 rows, natural 5.013%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d4-relaion-p0@896p"
-weight = 6.194723
+weight = 3.884266
 
+# 32,410 rows, natural 4.988%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d4-relaion-p1@896p"
-weight = 6.194723
+weight = 3.864591
 
+# 32,379 rows, natural 4.983%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d4-relaion-p2@896p"
-weight = 6.194723
+weight = 3.860895
 
+# 32,523 rows, natural 5.005%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d4-relaion-p3@896p"
-weight = 6.194723
+weight = 3.878065
 
+# 32,283 rows, natural 4.968%, x1.0
 [[stages.datasets]]
 path = "precomputed_dataset/d4-relaion-p4@896p"
-weight = 6.194673
+weight = 3.849448
 
+# 18,275 rows, natural 2.813%, x1.5
 [[stages.datasets]]
 path = "precomputed_dataset/d4-extra2@896p"
-weight = 1.435702
+weight = 3.268686
 
+# 30,170 rows, natural 4.643%, x1.5
 [[stages.datasets]]
 path = "precomputed_dataset/d4-extra3@896p"
-weight = 2.252434
+weight = 5.396238

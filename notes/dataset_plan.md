@@ -134,9 +134,19 @@ median 297 tokens，maximum 1,267。
 `d4-extra`、`d4-extra2`、`d4-extra3` 为 1.5；其余来源为 1.0。
 拆分目录各用自己的行数，caption 条数不当作图像行数。
 
-原 640p/896p 配比错误复用了 256p 行数。旧 640p 训练已停止，重启前
-须用每个分辨率过滤后的实际行数审计配置，保存行数与归一化权重的对账
-证据，并重新检查 bucket 规划。原始采集/增补记录不能代替这项审计。
+640p/896p 配比使用各自过滤后的实际 Arrow 行数。独立审计覆盖配置中的
+50 个数据集：逐 shard 计数，校验 sidecar 的行数、prompt contract 与
+source signature；所有行均有 caption。640p 为 19 个来源、1,366,193 行，
+896p 为 16 个来源、649,772 行。两阶段权重与行数乘倍数后的归一化结果
+在六位小数精度内一致；d1 占比分别为 9.922857% 与 19.362067%。
+
+640p 删除所有 caption 均不足 16 raw tokens 的行，896p 阈值为 50；
+这与训练时 caption curriculum 使用的 retained prompt length 不同。
+已完成的 256p 配方权重保持不变，配置中的 256p 行数注释是当前工件盘点。
+`dataset_info.json` 的 split 摘要可能保留上游行数，不能代替 Arrow 实际计数。
+逐来源行数、自然占比与倍数见 `configs/pretrain.toml`，归一化汇总与审计
+边界见 [pretrain_recipe.md](pretrain_recipe.md)。采样池变化仍需在重启时
+显式处理 sampler state，并重新验证 bucket 规划对应的完整工作负载。
 
 ## 后续数据工作
 
