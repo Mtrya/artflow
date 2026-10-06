@@ -23,8 +23,8 @@ def saved(root, step, *, complete=True, horizon=600000):
     return path
 
 
-def prune(path, keep_last=3):
-    return prune_checkpoints(path, keep_last=keep_last, **CONTRACT)
+def prune(path, keep_last=3, protected_steps=()):
+    return prune_checkpoints(path, keep_last=keep_last, protected_steps=protected_steps, **CONTRACT)
 
 
 def test_keep_latest_three_complete_without_touching_incomplete_or_future(tmp_path):
@@ -67,3 +67,10 @@ def test_incompatible_old_checkpoint_does_not_count_as_a_recovery_copy(tmp_path)
     current = saved(tmp_path, 6000)
     assert prune(current, keep_last=2) == []
     assert old.exists() and incompatible.exists()
+
+
+def test_stage_endpoints_survive_later_stages_in_the_same_run_directory(tmp_path):
+    paths = {step: saved(tmp_path, step) for step in (1000, 2000, 3000, 4000, 5000, 6000)}
+    assert prune(paths[6000], keep_last=2, protected_steps=[2000, 4000]) == [
+        "checkpoint_step_001000", "checkpoint_step_003000"]
+    assert all(paths[step].exists() for step in (2000, 4000, 5000, 6000))

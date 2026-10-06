@@ -65,8 +65,8 @@ PROVIDERS = {
     "sii": Provider(name="sii", root=SII_ROOT, key_env="SII_VLM_API_KEY"),
     "openrouter": Provider(
         name="openrouter", root=OPENROUTER_ROOT, key_env="OPENROUTER_API_KEY",
-        extra_headers={"HTTP-Referer": "https://github.com/kaupane/artflow",
-                       "X-Title": "artflow caption enrichment"},
+        extra_headers={"HTTP-Referer": "https://github.com/Mtrya/inko",
+                       "X-Title": "inko caption enrichment"},
     ),
 }
 

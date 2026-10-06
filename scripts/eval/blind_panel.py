@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
 
-DEFAULT_PROMPTS = str(Path(__file__).resolve().parents[2] / "configs/prompts/hero_monitor_v1.jsonl")
+DEFAULT_PROMPTS = str(Path(__file__).resolve().parents[2] / "configs/prompts/monitor.jsonl")
 TIE = "tie"
 
 

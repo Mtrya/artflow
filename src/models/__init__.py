@@ -1,5 +1,5 @@
-"""ArtFlow models."""
+"""Inko models."""
 
-from .artflow import ArtFlow
+from .inko import Inko
 
-__all__ = ["ArtFlow"]
+__all__ = ["Inko"]

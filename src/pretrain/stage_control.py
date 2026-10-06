@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 
+from .tracking import TRACKING_RECORD, read_tracking_record
 
 CHECKPOINT_RECORD = "training_state.json"
 
@@ -27,7 +28,7 @@ def _require_recovery_inventory(record):
     files = record.get("files")
     if not isinstance(files, dict) or not files:
         raise ValueError("checkpoint file inventory is empty or invalid")
-    if not any(name in files for name in ("model.safetensors", "pytorch_model.bin")):
+    if "model.safetensors" not in files:
         raise ValueError("checkpoint is missing required model weights")
     required = [
         f"{kind}.bin" if i == 0 else f"{kind}_{i}.bin"
@@ -85,6 +86,10 @@ def write_checkpoint_record(
         "files": files,
     }
     _require_recovery_inventory(record)
+    if device_type == "npu":
+        if TRACKING_RECORD not in files:
+            raise ValueError("checkpoint is missing its tracking record")
+        read_tracking_record(root)
     if any(size <= 0 for size in files.values()):
         raise ValueError("cannot publish a checkpoint with empty artifacts")
     temporary = root / (CHECKPOINT_RECORD + ".tmp")
@@ -130,6 +135,17 @@ def validate_checkpoint(
         raise ValueError("checkpoint world size does not match")
     if device_type is not None and record.get("device_type") != device_type:
         raise ValueError("checkpoint device type does not match")
+    validate_checkpoint_inventory(root, record)
+    if record.get("device_type") == "npu":
+        if TRACKING_RECORD not in record["files"]:
+            raise ValueError("checkpoint is missing its tracking record; migrate it explicitly")
+        read_tracking_record(root)
+    return step
+
+
+def validate_checkpoint_inventory(root, record):
+    """Validate training artifacts, shared with the explicit migration reader."""
+    root = Path(root)
     _require_recovery_inventory(record)
     files = record["files"]
     for name, size in files.items():
@@ -138,7 +154,16 @@ def validate_checkpoint(
         artifact = root / name
         if not artifact.is_file() or artifact.stat().st_size != size:
             raise ValueError(f"checkpoint file is missing or truncated: {artifact}")
-    return step
+
+
+def validate_checkpoint_recipe(checkpoint, recipe, *, architecture):
+    """Resume accepts the complete current recipe and model identity only."""
+    root = Path(checkpoint)
+    if json.loads((root / "run_config.json").read_text()) != recipe:
+        raise ValueError("checkpoint config differs from the complete run config")
+    expected = dict(recipe["model"], architecture=architecture)
+    if json.loads((root / "transformer_config.json").read_text()) != expected:
+        raise ValueError("checkpoint model metadata differs; migrate it explicitly")
 
 
 def verify_restored_rng(path, *, process_index, device):

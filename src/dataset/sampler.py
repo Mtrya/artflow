@@ -441,12 +441,8 @@ class RowLengthQueueBatchSampler(Sampler[List[RowRef]]):
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
         """Restore queues and replay unacknowledged emitted batches first.
 
-        The saved cycle list may be shorter than this sampler's: a deliberate
-        recipe amendment may append new datasets to the mixture (their rows
-        sit above every saved dataset id, so queued RowRefs stay valid).
-        Restored datasets take their saved cycle and cursor; appended
-        datasets keep the fresh constructor-built cycle at cursor 0. Saved
-        cycles longer than this sampler's are never acceptable.
+        Same-stage recovery requires the same dataset entries. Resolution
+        transitions construct a fresh sampler instead of adapting saved state.
         """
         if int(state.get("version", -1)) != self.STATE_VERSION:
             raise ValueError("unsupported RowLengthQueueBatchSampler state version")
@@ -456,12 +452,15 @@ class RowLengthQueueBatchSampler(Sampler[List[RowRef]]):
             raise ValueError(f"sampler state is missing fields: {sorted(missing)}")
         cycles = state["cycles"]
         cursors = state["cursors"]
-        if len(cursors) != len(cycles) or len(cycles) > len(self._cycles):
+        if len(cursors) != len(cycles) or len(cycles) != len(self._cycles):
             raise ValueError("state metadata entries do not match this sampler")
         if any(cursor < 0 or cursor > len(cycle) for cycle, cursor in zip(cycles, cursors)):
             raise ValueError("invalid row-cycle cursor in sampler state")
 
-        self._stage = min(max(float(state["stage"]), 0.0), 1.0)
+        progress = float(state["stage"])
+        if not 0.0 <= progress <= 1.0:
+            raise ValueError("invalid saved sampler progress")
+        self._stage = progress
         self._rng.setstate(state["rng_state"])
         for dataset_id, (cycle, cursor) in enumerate(zip(cycles, cursors)):
             self._cycles[dataset_id] = [int(row_idx) for row_idx in cycle]

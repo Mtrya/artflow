@@ -7,9 +7,9 @@ follows measured compatibility and throughput. The method and sequence are in
 
 This note holds the stack-independent evidence for the reward stack: judge
 configuration and probe results, scorer identities and output ranges,
-throughput accounting, and the pipeline requirements a rewrite must satisfy.
-The reward/RL implementation itself is still to be written; the measurements
-below constrain it.
+throughput accounting, and the reward pipeline requirements.
+Reward/RL implementation and Ascend qualification are pending. The measurements
+below constrain the implementation; they do not qualify its training workload.
 
 ## Qualification checklist
 
@@ -95,8 +95,8 @@ early generated cells plus three real Pexels images.
 | HPS | `xswu/HPSv2`, `HPS_v2.1_compressed.pt` |
 | HPS CLIP | ViT-H/14, `laion2b_s32b_b79k` |
 
-Checkpoint-format facts the rewrite must reproduce: the aesthetic head is a
-768→1024→128→64→16→1 MLP whose state dict carries a `layers.` prefix, and its
+The scorer implementation must satisfy these weight and output contracts:
+the aesthetic head is a 768→1024→128→64→16→1 MLP whose state dict carries a `layers.` prefix, and its
 prediction is divided by 10; HPSv2 scoring is image/text cosine similarity.
 Both require compatible Torch/torchvision/open_clip installations and cached
 weights. Prepared paths and dependency setup belong in machine-local
@@ -115,8 +115,7 @@ correctness check.
 
 ## Reward pipeline requirements
 
-Whatever shape the rewrite takes, these properties are requirements, not
-options:
+The reward pipeline requires the following behavior:
 
 - A held-out scorer is always configured at the call site and never
   optimized; it is the quantitative tripwire for hacking of the trained
@@ -173,6 +172,6 @@ using representative final-quality images. Record per-domain/language behavior
 and reward-versus-KID/diversity trends. Align these choices with the method
 and promotion rule in [the stage plan](redesign_plan.md).
 
-Concept-coverage assessment used the concept benchmark, retired after the
-480k round; the 600k final benchmark's form is still to be decided. Manual
-grid review remains the guard against false capability gaps.
+A final capability benchmark at 600k determines targeted-SFT needs; its form
+is pending. Review generated grids alongside scores to distinguish model gaps
+from limitations of the assessment.

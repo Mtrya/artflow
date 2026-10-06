@@ -45,9 +45,7 @@ def verify_restored_training_state(checkpoint, model, optimizers, schedulers, em
     from safetensors.torch import load_file
 
     checkpoint = Path(checkpoint)
-    weights_name = ("model.safetensors" if (checkpoint / "model.safetensors").is_file()
-                    else "pytorch_model.bin")
-    live_states = [(weights_name, model)]
+    live_states = [("model.safetensors", model)]
     for kind, objects in (("optimizer", optimizers), ("scheduler", schedulers)):
         live_states.extend((f"{kind}.bin" if index == 0 else f"{kind}_{index}.bin", obj)
                            for index, obj in enumerate(objects))

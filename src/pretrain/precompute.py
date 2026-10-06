@@ -51,7 +51,7 @@ def parse_resolution_buckets(bucket_str: str, offset: int) -> Dict[int, Tuple[in
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Precompute dataset for ArtFlow")
+    parser = argparse.ArgumentParser(description="Precompute dataset for Inko")
     parser.add_argument(
         "--dataset_name", type=str, required=True, help="Hugging Face dataset name"
     )

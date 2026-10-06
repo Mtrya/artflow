@@ -1,4 +1,4 @@
-"""ArtFlow: fused text/time conditioning with normalized residual branches."""
+"""Inko: fused text/time conditioning with normalized residual branches."""
 
 import json
 from pathlib import Path
@@ -15,7 +15,7 @@ from .dit_blocks import (
 )
 
 
-class ArtFlow(nn.Module, PyTorchModelHubMixin):
+class Inko(nn.Module, PyTorchModelHubMixin):
     """Versioned architecture; only capacity is configurable.
 
     The Qwen image VAE supplies 16 latent channels, patched 2×2. Text features
@@ -24,7 +24,7 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
     attention/MLP modulation; single-stream blocks share it within each layer.
     """
 
-    ARCHITECTURE = "artflow-v2"
+    ARCHITECTURE = "inko"
 
     def __init__(
         self,
@@ -175,7 +175,7 @@ class ArtFlow(nn.Module, PyTorchModelHubMixin):
         )
 
     @classmethod
-    def from_single_file(cls, checkpoint_path: str) -> "ArtFlow":
+    def from_single_file(cls, checkpoint_path: str) -> "Inko":
         """Load weights with their adjacent transformer_config.json.
 
         Old checkpoints without metadata require their original source revision;

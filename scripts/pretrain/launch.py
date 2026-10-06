@@ -1,7 +1,7 @@
 """Launch one Ascend stage from a complete recipe, resuming complete checkpoints.
 
 Run with the prepared environment and data already installed:
-  python -m scripts.pretrain.launch --config configs/pretrain.toml --stage 256p --storage-root /external/artflow --nproc_per_node 16
+  python -m scripts.pretrain.launch --config configs/pretrain.toml --stage 256p --storage-root /external/inko --nproc_per_node 16
 
 The platform owns environment setup, resource selection and retry policy. This
 launcher owns the single-writer lock, checkpoint preflight and worker lifetime.
@@ -17,9 +17,10 @@ import sys
 import time
 
 from src.pretrain.config import load_config, flatten
-from src.pretrain.stage_control import validate_checkpoint, CHECKPOINT_RECORD
+from src.pretrain.stage_control import validate_checkpoint, validate_checkpoint_recipe, CHECKPOINT_RECORD
+from src.models.inko import Inko
 from src.pretrain.train import parse_args
-from src.pretrain.tracking import resume_run_id
+from src.pretrain.tracking import tracker_init_kwargs
 
 
 def resolve_resume(config, stage_name, world_size):
@@ -160,13 +161,13 @@ def main():
                 world_size=args.nproc_per_node,
                 device_type="npu",
             )
-            resume_run_id(resume)
             from dataclasses import asdict
 
-            if json.loads((resume / "run_config.json").read_text()) != asdict(config):
-                raise ValueError(
-                    "checkpoint config differs from the complete run config"
-                )
+            validate_checkpoint_recipe(resume, asdict(config), architecture=Inko.ARCHITECTURE)
+        tracker_init_kwargs(
+            resume, config.telemetry.swanlab_project,
+            new_experiment=args.new_experiment,
+        )
         if not Path(resolved["bucket_plan"]).is_file():
             raise ValueError(f"missing stage bucket plan: {resolved['bucket_plan']}")
         command = [
@@ -188,6 +189,8 @@ def main():
         ]
         if resume:
             command += ["--resume", str(resume)]
+        if args.new_experiment:
+            command.append("--new-experiment")
         for name in (
             "verify_resume_state",
             "step_breakdown",

@@ -9,7 +9,7 @@ storage_dir=$(realpath -- "$2")
 shift 2
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$repo_dir"
-export PYTHONPATH="$storage_dir/pylibs${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$storage_dir/runtime/python${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONUNBUFFERED=1
 export HF_HOME="$storage_dir/cache/hf"
 export TORCH_HOME="$storage_dir/models/torch_home"

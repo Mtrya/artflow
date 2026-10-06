@@ -4,13 +4,14 @@ import json
 
 import pytest
 import torch
-from src.models.artflow import ArtFlow
+
+from src.models.inko import Inko
 
 
 @pytest.mark.parametrize("double,single", [(0, 2), (1, 2), (2, 0)])
 def test_padding_does_not_affect_output_or_receive_gradients(double, single):
     torch.manual_seed(32)
-    model = ArtFlow(
+    model = Inko(
         hidden_size=32,
         num_heads=4,
         double_stream_depth=double,
@@ -37,7 +38,7 @@ def test_padding_does_not_affect_output_or_receive_gradients(double, single):
 @pytest.mark.parametrize("double,single", [(0, 2), (1, 2), (2, 0)])
 def test_model_file_roundtrip_preserves_predictions(tmp_path, double, single):
     torch.manual_seed(9)
-    model = ArtFlow(hidden_size=32, num_heads=4, double_stream_depth=double,
+    model = Inko(hidden_size=32, num_heads=4, double_stream_depth=double,
                     single_stream_depth=single, mlp_ratio=2.25)
     with torch.no_grad():
         for parameter in model.parameters():
@@ -48,5 +49,5 @@ def test_model_file_roundtrip_preserves_predictions(tmp_path, double, single):
     path = tmp_path / "ema_weights.pt"
     torch.save(model.state_dict(), path)
     (tmp_path / "transformer_config.json").write_text(json.dumps(model.get_config()))
-    restored = ArtFlow.from_single_file(str(path))
+    restored = Inko.from_single_file(str(path))
     torch.testing.assert_close(restored(*inputs), expected)

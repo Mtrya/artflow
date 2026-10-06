@@ -2,11 +2,11 @@
 
 This record captures the Ascend execution path,
 resolution-specific bucket plans and their measurements. The recipe is in
-[hero_recipe.md](hero_recipe.md), including launch and recovery requirements.
+[pretrain_recipe.md](pretrain_recipe.md), including launch and recovery requirements.
 
 ## Measured improvements
 
-September 25 comparisons used 16×910B2C on matched allocations, the selected
+The early-256p comparisons use 16×910B2C on matched allocations, the selected
 variable-aspect/caption workload and updates 100–450. Rates exclude startup,
 profiling and periodic evaluation/checkpoint work. They describe early-256p
 caption lengths. Match actual sample identities and account for samples per
@@ -33,15 +33,17 @@ in code. The later-resolution measurements are recorded below.
 
 ## Later-resolution plans
 
-The final 640p/896p mixtures contain 1,304,540/794,599 eligible rows across
-17/14 sources. All source caption sidecars passed dataset validation, and all
-five latent aspect shapes were inventoried. No source weights were changed.
+The reference workloads contain 1,304,540/794,599 eligible rows across
+17/14 sources, with validated caption sidecars and five latent aspect shapes.
+Source weights are fixed within each comparison. The configured pools contain
+1,366,193/649,772 rows across 19/16 sources, so the measurements below do not
+qualify their bucket occupancy, throughput or training behavior.
 
 Calibration retained the FP32 model, EMA, frozen BF16 Qwen k20, initialized
 Muon/AdamW states and gradients, plus a model-sized DDP-buffer reserve. The
-52 GiB full-residency ceiling replaces the earlier DiT-only budgets; those
-earlier candidates OOMed before their first update. Fitted memory residuals
-were at most 0.60 GiB. Bounds use each stage's caption-progress window
+52 GiB ceiling applies to this full resident state. A DiT-only budget omits
+resident training memory and cannot establish that a bucket fits. Fitted
+memory residuals were at most 0.60 GiB. Bounds use each stage's caption-progress window
 (.75–.95 / .95–1.0), 20 buckets per aspect and the 2,048-token cap.
 
 Each resolution compared time-balanced and memory-sized buckets on the same
@@ -59,9 +61,8 @@ Time alignment needed a measured gain of at least 3% with a positive lower
 95% block-bootstrap bound to be retained. Its measured changes were −2.13%
 (interval −3.04% to −1.20%) and −0.72% (−1.61% to +0.13%); neither qualifies.
 These intervals describe variation within the short comparison phases, not
-future-node reproducibility. Earlier 128-update aligned bring-ups measured
-169.12/83.31 samples/s, consistent with the repeated baselines. Accumulation
-reduces the significance of the slowest individual micro-batch, which the
+future-node reproducibility. Separate 128-update aligned probes measure
+169.12/83.31 samples/s. Accumulation reduces the significance of the slowest individual micro-batch, which the
 planner's isolated time-alignment prediction does not model.
 
 The selected ranges are 5–12 / 3–6 samples per rank. Harmonic emitted-batch
@@ -75,8 +76,9 @@ mixed-stream tests; it is not a long-run allocator or stability guarantee.
 The throughput probes used the same mature 180k model weights with fresh
 optimizers, fixed caption progress .85/.975, the normal 600k schedule, and
 monitoring disabled. Rates exclude startup, checkpoint and periodic evaluation
-costs. They qualify execution; actual 450k/570k model transfer and training
-stability remain observations for the hero at its normal monitoring cadence.
+costs. They establish execution evidence for this reference workload. Full-state
+continuation from the selected 480k checkpoint and the 570k resolution
+transition require their own restore, telemetry and generation evidence.
 
 Selected plan SHA-256 values:
 
@@ -87,13 +89,13 @@ Platform artifact locations and retained measurement files are recorded in
 local `INSPIRE.md`. The measurement scope and selected-plan hashes above are
 the repository record.
 
-A bounded native curriculum then exercised **256p→640p→896p**, using
+A bounded native curriculum exercises **256p→640p→896p**, using
 diagnostic endpoints 2/16 and stopping at 40 while retaining the 600k scheduler
-horizon. The first checkpoint carried the deployed hero's legacy future-stage
-fields; the migration tool independently copied it and amended six future
-data/bucket/accumulation fields. The other 56 inventoried artifacts were
-byte-identical. Both transitions and the 896p step-32 recovery verified exact
-model, optimizers, schedulers, EMA and RNG restoration on **all 16 ranks**.
+horizon. Its migration check amends six future-stage data/bucket/accumulation
+fields in an independent checkpoint copy and verifies byte equality for the
+other 56 inventoried artifacts. Both transitions and the 896p step-32 recovery
+verify exact model, optimizers, schedulers, EMA and RNG restoration on
+**all 16 ranks**.
 The replay's eight updates matched all **128 rank/update identity hashes**
 (3,026 global samples); endpoint sampler and Python/NumPy/CPU-Torch/NPU RNG
 states also matched on every rank. Maximum absolute paired loss difference
@@ -115,10 +117,28 @@ brief transfer transients are recorded rather than presented as spike-free
 stability evidence. The mature-model/fresh-optimizer test is not the actual
 450k/570k continuation and does not justify changing its optimizer recipe.
 
-The prepared production recipe also passed read-only amendment preflight
-against the real 184k checkpoint without modifying that checkpoint.
 Stage activation follows the strict checkpoint migration and recovery procedure
-in [the recipe](hero_recipe.md#launch-checkpoints-and-resolution-transitions).
+in [the recipe](pretrain_recipe.md#launch-checkpoints-and-resolution-transitions).
+
+## 640p continuation
+
+The configured 19-source, 1,366,193-row pool has a verified full-state start at
+480k on 16×910B2C. Model, EMA, both optimizers, schedulers and per-rank training
+RNG restore exactly from the independent migration copy. The sampler uses
+fresh rank-local cycles and empty queues at curriculum position 0.8 because
+filtering changes row identities. The complete source checkpoint is preserved.
+
+The first 114 updates apply on all 16 ranks with finite loss and gradients;
+maximum pre-clip gradient is 0.77691. Maximum allocation across ranks is
+51.59 GiB. Updates 480,051–480,114 measure 161.51 global samples/s. This brief
+window uses the configured mixture, includes its ordinary update work and
+excludes the initial evaluation and first 50 warmup updates; it does not
+establish long-run throughput or generation quality.
+
+The initial held-out panel has 823 cases: 512 / 234 / 74 / 3 / 0 across the
+five caption-length bands. EMA/live loss is 0.77753 / 0.78121. The long-caption
+shortfall limits this panel's scope. SwanLab's server exposes the configured
+recipe, source experiment provenance and metrics under project `inko`.
 
 ## Recovery and monitoring qualification
 
@@ -128,10 +148,10 @@ matched; floating-point training continuation was not bit-exact. Checkpoint
 retention, complete saves at 400/600, the 48-prompt/12-grid panel and clean
 shutdown were exercised.
 
-Evaluation padding was reduced while preserving the panel. On the same
-864 cases, loss-evaluation time changed 65.19s (batch 64 with padding) →
-29.15s (trimmed batch 64) → 31.44s (trimmed configured batch 8), with maximum
-metric difference 9.4e-6. Production uses the explicit batch size 8.
+Evaluation trims padding while preserving the panel. On the same 864 cases,
+loss evaluation takes 65.19s with padded batch 64, 29.15s with trimmed batch 64
+and 31.44s with trimmed batch 8; the maximum metric difference is 9.4e-6.
+Production uses the explicit batch size 8.
 
 | Recurring work | Measured time | Cadence |
 |---|---:|---:|
@@ -144,33 +164,32 @@ At that workload, 450k updates project to about 150 hours plus one-time costs.
 Actual duration depends on caption progression, sample grouping and system
 conditions. Total curriculum time is
 `450k × t256 + 120k × t640 + 30k × t896 + one-time costs`; higher-resolution
-compute-only estimates are now approximately 102.2 hours for 640p and 37.3
+compute-only reference estimates are approximately 102.2 hours for 640p and 37.3
 hours for 896p using the measured rates above. Add their monitoring costs;
 these estimates are not a wall-clock completion promise.
 
-## Mechanisms and resolved failures
+## Execution mechanisms
 
 - Native Ascend attention uses a `[B,1,Sq,Sk]` boolean mask with **True meaning
   drop**, and an explicit `head_dim**-0.5` scale. The bring-up probe measured
   approximately 2.81 GiB extra saved tensors for generic float-mask SDPA versus
   0.06 GiB for the native path. Preserve mask and scale semantics in new callers.
-- DataLoader uses spawn. The diagnosed shutdown hang was a subprocess errpipe
-  inherited by forked loader workers during a CLOEXEC race. A teardown barrier
-  precedes `end_training` so distributed workers finish coherently.
+- DataLoader uses spawn to prevent forked loader workers from inheriting a
+  subprocess errpipe during a CLOEXEC race, which can block subprocess exit.
+  A teardown barrier precedes `end_training` so distributed workers finish coherently.
 - The launcher fixes expandable allocator segments and one OpenMP thread per
   worker. HCCL telemetry avoids unsupported double-precision reductions.
-- Read the training log before diagnosing a hang. An early alleged autocast
-  deadlock was a slow evaluation pass; elapsed platform-log silence alone did
-  not identify the failure.
+- Diagnose progress through worker logs, stacks and telemetry. Evaluation can
+  be slow; elapsed platform-log silence alone does not identify a hang.
 
 ## Optimization boundary
 
 The final three-update trace attributed 84.56% to compute, 7.22% to exposed
 communication and 8.22% to free gaps. Eliminating all non-compute time would
-remove only 15.44%; reaching the original 2× target would require a further
-compute improvement. Overlapping kernel sums do not add into wall time.
+remove only 15.44%, so larger gains require compute improvements. Overlapping
+kernel sums do not add into wall time.
 
-Measured candidates explain why the September 25 pass closed:
+The measured candidate comparisons support the selected execution path:
 
 | Candidate | Evidence / disposition |
 |---|---|
@@ -181,8 +200,9 @@ Measured candidates explain why the September 25 pass closed:
 
 Further optimization starts from a measured bottleneck and changes one
 variable at a time. Adopt only a material end-to-end gain on the real workload,
-then qualify correctness, memory and recovery. The current hero supplies
-longer stability evidence; a short throughput test cannot establish it.
+then qualify operator behavior, memory and recovery. Long-run telemetry and
+real generations supply stability and quality evidence; a short throughput
+test cannot establish either.
 Operator fusion, custom NPU kernels, layouts and communication scheduling are
 all eligible when profiling identifies recoverable cost. Select representative
 shapes and caption/aspect tails that resolve the decision; keep bounded profiling

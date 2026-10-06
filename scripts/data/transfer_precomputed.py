@@ -10,9 +10,9 @@ Credentials: HF_TOKEN for Hugging Face; MS_TOKEN or MODELSCOPE_TOKEN_PATH
 SDK in the transfer environment.
 
     python -m scripts.data.transfer_precomputed upload --provider hf \
-        --repo-id OWNER/DATASET --config configs/pretrain.toml --stage 896p --storage-root /external/artflow
+        --repo-id OWNER/DATASET --config configs/pretrain.toml --stage 896p --storage-root /external/inko
     python -m scripts.data.transfer_precomputed download --provider modelscope \
-        --repo-id OWNER/DATASET --storage-root /external/artflow
+        --repo-id OWNER/DATASET --storage-root /external/inko
 """
 
 from __future__ import annotations
